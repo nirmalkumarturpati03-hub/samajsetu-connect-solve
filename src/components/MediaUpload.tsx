@@ -23,11 +23,12 @@ interface MediaFile {
 
 interface MediaUploadProps {
   reportId?: string;
+  challengeId?: string | undefined;
   onMediaAdded?: (path: string, mimeType: string) => void;
   onError?: (error: string) => void;
 }
 
-export function MediaUpload({ reportId, onMediaAdded, onError }: MediaUploadProps) {
+export function MediaUpload({ reportId, challengeId, onMediaAdded, onError }: MediaUploadProps) {
   const [mediaFiles, setMediaFiles] = useState<MediaFile[]>([]);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -246,7 +247,14 @@ export function MediaUpload({ reportId, onMediaAdded, onError }: MediaUploadProp
         try {
           setUploadProgress((prev) => ({ ...prev, [media.id]: 0 }));
 
-          const mimeType = media.file.type;
+          // MediaRecorder may include codec parameters (for example `video/webm;codecs=vp9`).
+          // Store the canonical MIME type accepted by the database and storage policies.
+          const mimeType =
+            media.type === "video"
+              ? media.file.type.startsWith("video/mp4")
+                ? "video/mp4"
+                : "video/webm"
+              : media.file.type;
           const fileExtension =
             media.file.name.split(".").pop() ||
             (media.type === "image" ? "jpg" : media.type === "video" ? "mp4" : "webm");
@@ -273,6 +281,42 @@ export function MediaUpload({ reportId, onMediaAdded, onError }: MediaUploadProp
           });
 
           if (dbError) throw dbError;
+
+          // The full evidence file stays private. Images and videos receive separate public
+          // copies for the challenge's gallery post.
+          if ((media.type === "image" || media.type === "video") && challengeId) {
+            try {
+              const previewPath = `${user.id}/${challengeId}/${Date.now()}-${Math.random().toString(36).slice(2, 11)}.${fileExtension}`;
+              const { error: previewUploadError } = await supabase.storage
+                .from("challenge-previews")
+                .upload(previewPath, media.file, {
+                  contentType: mimeType,
+                  cacheControl: "3600",
+                  upsert: false,
+                });
+              if (previewUploadError) throw previewUploadError;
+
+              const { error: galleryError } = await supabase.rpc("add_challenge_media", {
+                challenge_uuid: challengeId,
+                media_path: previewPath,
+                media_mime_type: mimeType,
+              });
+              if (galleryError) throw galleryError;
+
+              // Retain the first image as a compatibility fallback for older clients.
+              if (media.type === "image") {
+                const { error: previewError } = await supabase.rpc("set_challenge_preview", {
+                  challenge_uuid: challengeId,
+                  preview_path: previewPath,
+                });
+                if (previewError) throw previewError;
+              }
+            } catch (previewError) {
+              // Do not make the reporter retry an already-saved private evidence upload.
+              const message = previewError instanceof Error ? previewError.message : "Preview upload failed";
+              onError?.(`Evidence saved, but its public card preview could not be created: ${message}`);
+            }
+          }
 
           setMediaFiles((prev) =>
             prev.map((m) => (m.id === media.id ? { ...m, uploadedPath: storagePath } : m)),
