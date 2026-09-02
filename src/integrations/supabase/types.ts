@@ -14,7 +14,364 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      escalations: {
+        Row: {
+          created_at: string
+          from_org_id: string | null
+          id: string
+          problem_id: string
+          reason: string
+          status: string
+          to_org_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          from_org_id?: string | null
+          id?: string
+          problem_id: string
+          reason: string
+          status?: string
+          to_org_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          from_org_id?: string | null
+          id?: string
+          problem_id?: string
+          reason?: string
+          status?: string
+          to_org_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "escalations_from_org_id_fkey"
+            columns: ["from_org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "escalations_problem_id_fkey"
+            columns: ["problem_id"]
+            isOneToOne: false
+            referencedRelation: "problems"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "escalations_to_org_id_fkey"
+            columns: ["to_org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      organizations: {
+        Row: {
+          address: string | null
+          contact_email: string | null
+          contact_person: string | null
+          contact_phone: string | null
+          created_at: string
+          district: string
+          expertise: string[]
+          id: string
+          lat: number | null
+          lng: number | null
+          name: string
+          org_type: string
+          owner_id: string | null
+          resources: string | null
+        }
+        Insert: {
+          address?: string | null
+          contact_email?: string | null
+          contact_person?: string | null
+          contact_phone?: string | null
+          created_at?: string
+          district: string
+          expertise?: string[]
+          id?: string
+          lat?: number | null
+          lng?: number | null
+          name: string
+          org_type: string
+          owner_id?: string | null
+          resources?: string | null
+        }
+        Update: {
+          address?: string | null
+          contact_email?: string | null
+          contact_person?: string | null
+          contact_phone?: string | null
+          created_at?: string
+          district?: string
+          expertise?: string[]
+          id?: string
+          lat?: number | null
+          lng?: number | null
+          name?: string
+          org_type?: string
+          owner_id?: string | null
+          resources?: string | null
+        }
+        Relationships: []
+      }
+      problem_events: {
+        Row: {
+          created_at: string
+          detail: string | null
+          event: string
+          id: string
+          problem_id: string
+        }
+        Insert: {
+          created_at?: string
+          detail?: string | null
+          event: string
+          id?: string
+          problem_id: string
+        }
+        Update: {
+          created_at?: string
+          detail?: string | null
+          event?: string
+          id?: string
+          problem_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "problem_events_problem_id_fkey"
+            columns: ["problem_id"]
+            isOneToOne: false
+            referencedRelation: "problems"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      problem_supports: {
+        Row: {
+          comment: string | null
+          created_at: string
+          id: string
+          media: Json
+          problem_id: string
+          supporter_name: string | null
+        }
+        Insert: {
+          comment?: string | null
+          created_at?: string
+          id?: string
+          media?: Json
+          problem_id: string
+          supporter_name?: string | null
+        }
+        Update: {
+          comment?: string | null
+          created_at?: string
+          id?: string
+          media?: Json
+          problem_id?: string
+          supporter_name?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "problem_supports_problem_id_fkey"
+            columns: ["problem_id"]
+            isOneToOne: false
+            referencedRelation: "problems"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      problems: {
+        Row: {
+          affected_count: number
+          assigned_org_id: string | null
+          category: string
+          created_at: string
+          description: string
+          district: string | null
+          id: string
+          lat: number | null
+          lng: number | null
+          location_text: string | null
+          media: Json
+          public_id: string | null
+          reporter_contact: string | null
+          reporter_name: string | null
+          resolution_note: string | null
+          severity: string
+          status: string
+          title: string
+          updated_at: string
+        }
+        Insert: {
+          affected_count?: number
+          assigned_org_id?: string | null
+          category?: string
+          created_at?: string
+          description: string
+          district?: string | null
+          id?: string
+          lat?: number | null
+          lng?: number | null
+          location_text?: string | null
+          media?: Json
+          public_id?: string | null
+          reporter_contact?: string | null
+          reporter_name?: string | null
+          resolution_note?: string | null
+          severity?: string
+          status?: string
+          title: string
+          updated_at?: string
+        }
+        Update: {
+          affected_count?: number
+          assigned_org_id?: string | null
+          category?: string
+          created_at?: string
+          description?: string
+          district?: string | null
+          id?: string
+          lat?: number | null
+          lng?: number | null
+          location_text?: string | null
+          media?: Json
+          public_id?: string | null
+          reporter_contact?: string | null
+          reporter_name?: string | null
+          resolution_note?: string | null
+          severity?: string
+          status?: string
+          title?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "problems_assigned_org_id_fkey"
+            columns: ["assigned_org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      tasks: {
+        Row: {
+          completion_note: string | null
+          created_at: string
+          deadline: string | null
+          description: string
+          evidence_media: Json
+          id: string
+          org_id: string
+          problem_id: string
+          review_status: string
+          status: string
+          volunteer_id: string | null
+        }
+        Insert: {
+          completion_note?: string | null
+          created_at?: string
+          deadline?: string | null
+          description: string
+          evidence_media?: Json
+          id?: string
+          org_id: string
+          problem_id: string
+          review_status?: string
+          status?: string
+          volunteer_id?: string | null
+        }
+        Update: {
+          completion_note?: string | null
+          created_at?: string
+          deadline?: string | null
+          description?: string
+          evidence_media?: Json
+          id?: string
+          org_id?: string
+          problem_id?: string
+          review_status?: string
+          status?: string
+          volunteer_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tasks_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "tasks_problem_id_fkey"
+            columns: ["problem_id"]
+            isOneToOne: false
+            referencedRelation: "problems"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "tasks_volunteer_id_fkey"
+            columns: ["volunteer_id"]
+            isOneToOne: false
+            referencedRelation: "volunteers"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      volunteers: {
+        Row: {
+          availability: string
+          created_at: string
+          department: string | null
+          email: string | null
+          experience: string | null
+          id: string
+          name: string
+          org_id: string
+          phone: string | null
+          photo_url: string | null
+          skills: string[]
+        }
+        Insert: {
+          availability?: string
+          created_at?: string
+          department?: string | null
+          email?: string | null
+          experience?: string | null
+          id?: string
+          name: string
+          org_id: string
+          phone?: string | null
+          photo_url?: string | null
+          skills?: string[]
+        }
+        Update: {
+          availability?: string
+          created_at?: string
+          department?: string | null
+          email?: string | null
+          experience?: string | null
+          id?: string
+          name?: string
+          org_id?: string
+          phone?: string | null
+          photo_url?: string | null
+          skills?: string[]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "volunteers_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
