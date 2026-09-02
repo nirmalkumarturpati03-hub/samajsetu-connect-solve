@@ -1,4 +1,3 @@
-import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { LocateFixed, MapPin, Users } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
@@ -102,13 +101,12 @@ export function NearbyProblems({ limit, radiusKm = 25 }: { limit?: number; radiu
           {shown.map(({ row, km }) => (
             <li key={row.id} className="card-surface flex flex-col gap-2 p-4">
               <div className="flex items-start justify-between gap-2">
-                <Link
-                  to="/track/$publicId"
-                  params={{ publicId: row.public_id }}
+                <a
+                  href={`/?track=${row.public_id}`}
                   className="font-display font-bold text-ink hover:text-primary"
                 >
                   {row.title}
-                </Link>
+                </a>
                 <StatusBadge status={row.status} />
               </div>
               <p className="line-clamp-2 text-sm text-muted-foreground">{row.description}</p>

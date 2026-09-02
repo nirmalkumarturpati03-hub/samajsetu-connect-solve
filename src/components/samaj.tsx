@@ -1,4 +1,3 @@
-import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Camera, FileText, LogOut, Menu, Paperclip, X } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
@@ -24,17 +23,17 @@ export function Shell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const nav = (
     <>
-      <Link to="/problems" className="hover:text-primary">
+      <a href="/?view=problems" className="hover:text-primary">
         Nearby problems
-      </Link>
-      <Link to="/track" className="hover:text-primary">
+      </a>
+      <a href="/?view=track" className="hover:text-primary">
         Track a report
-      </Link>
+      </a>
       {session ? (
         <>
-          <Link to="/dashboard" className="hover:text-primary">
+          <a href="/?view=dashboard" className="hover:text-primary">
             SPO dashboard
-          </Link>
+          </a>
           <button
             onClick={() => supabase.auth.signOut()}
             className="inline-flex items-center gap-1 hover:text-primary"
@@ -43,25 +42,25 @@ export function Shell({ children }: { children: ReactNode }) {
           </button>
         </>
       ) : (
-        <Link to="/auth" className="hover:text-primary">
+        <a href="/?view=auth" className="hover:text-primary">
           Organisation login
-        </Link>
+        </a>
       )}
-      <Link
-        to="/report"
+      <a
+        href="/?view=report"
         className="rounded-lg bg-primary px-4 py-2 text-primary-foreground hover:opacity-90"
       >
         Report a problem
-      </Link>
+      </a>
     </>
   );
   return (
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur">
         <div className="container-page flex h-16 items-center justify-between">
-          <Link to="/" className="font-display text-xl font-bold text-primary">
+          <a href="/" className="font-display text-xl font-bold text-primary">
             SamajSetu
-          </Link>
+          </a>
           <nav className="hidden items-center gap-5 text-sm font-semibold md:flex">{nav}</nav>
           <button className="md:hidden" onClick={() => setOpen((v) => !v)} aria-label="Menu">
             {open ? <X size={20} /> : <Menu size={20} />}
