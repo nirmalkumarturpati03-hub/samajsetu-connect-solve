@@ -78,7 +78,10 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
       { title: "SamajSetu — Community Innovation Platform" },
-      { name: "description", content: "Connecting community problems with collaborative solutions across Jharkhand." },
+      {
+        name: "description",
+        content: "Connecting community problems with collaborative solutions across Jharkhand.",
+      },
       { name: "author", content: "SamajSetu" },
       { property: "og:title", content: "SamajSetu" },
       { property: "og:description", content: "From community problems to measurable impact." },

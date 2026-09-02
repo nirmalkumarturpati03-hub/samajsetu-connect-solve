@@ -596,15 +596,15 @@ HIGH PRIORITY
 
 Show WHY:
 
-+ High number of affected people
+- High number of affected people
 
-+ Schoolchildren affected
+- Schoolchildren affected
 
-+ Essential service
+- Essential service
 
-+ Multiple supporting reports
+- Multiple supporting reports
 
-+ Strong evidence
+- Strong evidence
 
 Do not make raw upvotes the main priority mechanism.
 
