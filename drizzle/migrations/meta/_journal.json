@@ -15,6 +15,13 @@
       "when": 1788375763680,
       "tag": "0001_media_storage_policies",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788375813901,
+      "tag": "0002_seed_demo_organizations",
+      "breakpoints": true
     }
   ]
 }
