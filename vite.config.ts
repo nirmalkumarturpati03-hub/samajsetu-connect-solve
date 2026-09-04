@@ -7,6 +7,16 @@
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 
 export default defineConfig({
+  vite: {
+    server: {
+      // Required for an ngrok agent running outside the Vite process.
+      host: "0.0.0.0",
+      port: 5173,
+      strictPort: true,
+      // Permit ngrok's generated forwarding host without allowing arbitrary hosts.
+      allowedHosts: [".ngrok.app", ".ngrok-free.app", ".ngrok-free.dev"],
+    },
+  },
   tanstackStart: {
     // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
     // nitro/vite builds from this

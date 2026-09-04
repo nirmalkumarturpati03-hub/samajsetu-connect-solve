@@ -22,6 +22,7 @@ import {
   ListChecks,
   LogOut,
   MapPin,
+  Mic,
   Navigation,
   Paperclip,
   Plus,
@@ -62,6 +63,7 @@ type Challenge = {
   stage: string;
   affected_population: number | null;
   reports: number;
+  reposts: number;
   created_at: string;
   preview_image_path: string | null;
   media: { path: string; type: string }[] | null;
@@ -904,6 +906,10 @@ function Report({
   const [title, setTitle] = useState(""),
     [description, setDescription] = useState(""),
     [supportingInfo, setSupportingInfo] = useState(""),
+    [nearProblem, setNearProblem] = useState<"yes" | "no" | "">(""),
+    [voiceTranscript, setVoiceTranscript] = useState(""),
+    [voiceRecording, setVoiceRecording] = useState(false),
+    [reviewing, setReviewing] = useState(false),
     [district, setDistrict] = useState(""),
     [block, setBlock] = useState(""),
     [locality, setLocality] = useState(""),
@@ -923,6 +929,44 @@ function Report({
     distance: (0.4 + index * 0.7).toFixed(1),
   }));
 
+  const getProblemGps = () => {
+    if (!navigator.geolocation) return setError("GPS is not supported on this device. Enter the problem location manually.");
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setLatitude(position.coords.latitude);
+        setLongitude(position.coords.longitude);
+        setLocationLabel("Current GPS location detected. Please review the coordinates below.");
+        setShowNearby(true);
+      },
+      () => setError("Location permission was denied. Please enter the problem location manually."),
+      { enableHighAccuracy: true, timeout: 12000 },
+    );
+  };
+  const startVoiceTranscription = () => {
+    const Recognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!Recognition) return setError("Voice transcription is not supported in this browser. You can type your report instead.");
+    const recognition = new Recognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = "en-IN";
+    recognition.onresult = (event: any) => {
+      const transcript = Array.from(event.results as any).map((result: any) => result[0].transcript).join(" ");
+      setVoiceTranscript(transcript);
+      if (!description.trim()) setDescription(transcript);
+    };
+    recognition.onerror = () => setError("Voice transcription could not be completed. Please edit or type your report.");
+    recognition.onend = () => setVoiceRecording(false);
+    setVoiceRecording(true);
+    recognition.start();
+  };
+  const review = () => {
+    setError("");
+    if (!nearProblem) return setError("Please select whether you are currently near the problem location.");
+    if (!title.trim() || description.trim().length < 10) return setError("Enter a problem title and a description of at least 10 characters.");
+    if (!district.trim() || !block.trim() || !locality.trim()) return setError("District, Block / Mandal, and Village / City are required.");
+    setReviewing(true);
+  };
+
   const submit = async () => {
     if (!supabase) return;
     setBusy(true);
@@ -941,7 +985,7 @@ function Report({
       .from("challenges")
       .insert({
         title: title.trim(),
-        summary: `${description}${supportingInfo ? `\n\nSupporting information: ${supportingInfo}` : ""}`,
+        summary: `${description}${voiceTranscript ? `\n\nVoice transcription: ${voiceTranscript}` : ""}${supportingInfo ? `\n\nSupporting information: ${supportingInfo}` : ""}`,
         domain,
         district,
         block,
@@ -965,7 +1009,7 @@ function Report({
       .insert({
         challenge_id: c.id,
         reporter_id: actor.id,
-        description,
+        description: `${description}${voiceTranscript ? `\n\nVoice transcription: ${voiceTranscript}` : ""}`,
         district,
         block,
         locality,
@@ -1067,6 +1111,23 @@ function Report({
           placeholder="What is happening? Who is affected?"
           className="mt-3 min-h-36 w-full rounded-lg border border-input p-3"
         />
+        <div className="mt-4 rounded-xl border border-primary/20 bg-primary-soft/40 p-4">
+          <p className="font-bold">Are you currently near the location where the problem exists? <span className="text-destructive">*</span></p>
+          <div className="mt-3 flex flex-wrap gap-3">
+            {(["yes", "no"] as const).map((value) => (
+              <label key={value} className="flex items-center gap-2 rounded-lg bg-card px-3 py-2 text-sm font-semibold">
+                <input type="radio" name="near-problem" checked={nearProblem === value} onChange={() => { setNearProblem(value); setError(""); if (value === "yes") getProblemGps(); else { setLatitude(null); setLongitude(null); setLocationLabel("Describe the problem location below. Your current GPS will not be requested."); } }} />
+                {value === "yes" ? "Yes, I am nearby" : "No, I am elsewhere"}
+              </label>
+            ))}
+          </div>
+          {nearProblem === "yes" && <div className="mt-3 text-sm"><button type="button" onClick={getProblemGps} className="font-bold text-primary"><LocateFixed className="mr-1 inline" size={16} /> Get / retry GPS location</button>{latitude != null && longitude != null && <p className="mt-2 font-mono text-xs">Latitude: {latitude.toFixed(6)} · Longitude: {longitude.toFixed(6)}</p>}</div>}
+        </div>
+        <div className="mt-4 rounded-xl border border-border p-4">
+          <p className="font-bold">Describe by voice (optional)</p><p className="mt-1 text-xs text-muted-foreground">Speak, then review and edit the converted text.</p>
+          <button type="button" onClick={startVoiceTranscription} disabled={voiceRecording} className="mt-3 rounded-lg border border-primary px-3 py-2 text-sm font-bold text-primary disabled:opacity-50"><Mic className="mr-1 inline" size={16} /> {voiceRecording ? "Listening…" : "Record and convert to text"}</button>
+          {voiceTranscript && <textarea value={voiceTranscript} onChange={(event) => setVoiceTranscript(event.target.value)} className="mt-3 min-h-20 w-full rounded-lg border border-input p-3 text-sm" aria-label="Editable voice transcription" />}
+        </div>
         <div className="mt-5 flex items-center justify-between gap-3">
           <label className="text-sm font-bold">Location</label>
           <span className="text-xs text-muted-foreground">GPS or manual entry</span>
@@ -1097,25 +1158,6 @@ function Report({
           placeholder="Supporting information (optional)"
           className="mt-3 min-h-24 w-full rounded-lg border border-input p-3"
         />
-        <button
-          onClick={() =>
-            navigator.geolocation?.getCurrentPosition(
-              (position) => {
-                setLatitude(position.coords.latitude);
-                setLongitude(position.coords.longitude);
-                setLocationLabel("Current location added");
-                setShowNearby(true);
-              },
-              () =>
-                setError("Location could not be obtained. Please enter your location manually."),
-            )
-          }
-          type="button"
-          className="mt-3 inline-flex items-center gap-2 rounded-lg border border-input px-3 py-2 text-sm font-bold text-primary"
-        >
-          <LocateFixed size={16} />{" "}
-          {latitude !== null ? "Location added" : "Use current GPS location"}
-        </button>
         {locationLabel && (
           <span className="ml-3 text-sm font-medium text-accent">{locationLabel}</span>
         )}
@@ -1161,10 +1203,25 @@ function Report({
           <ShieldCheck className="mr-2 inline text-accent" size={16} />
           Sensitive evidence and exact locations stay private.
         </p>
+        {reviewing && (
+          <div className="mt-5 rounded-xl border border-primary bg-primary-soft/40 p-5">
+            <h2 className="text-lg font-bold">Review Report</h2>
+            <div className="mt-3 space-y-2 text-sm">
+              <p><b>Problem:</b> {title} — {description}</p>
+              {voiceTranscript && <p><b>Voice transcription:</b> {voiceTranscript}</p>}
+              <p><b>Near the problem:</b> {nearProblem === "yes" ? "Yes" : "No"}</p>
+              {nearProblem === "yes" && latitude != null && <p><b>Reporter GPS:</b> {latitude.toFixed(6)}, {longitude?.toFixed(6)}</p>}
+              <p><b>Problem location:</b> {district}, {block}, {locality}</p>
+              {supportingInfo && <p><b>Supporting information:</b> {supportingInfo}</p>}
+            </div>
+            <button onClick={() => void submit()} disabled={busy} className="mt-5 rounded-lg bg-primary px-5 py-3 font-bold text-primary-foreground disabled:opacity-50">{busy ? "Submitting…" : "Submit Report"}</button>
+            <button onClick={() => setReviewing(false)} className="ml-3 text-sm font-bold text-primary">Edit report</button>
+          </div>
+        )}
         {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
         <button
-          disabled={busy || title.trim().length < 3 || description.length < 10 || !district}
-          onClick={() => void submit()}
+          disabled={busy || reviewing}
+          onClick={review}
           className="mt-6 rounded-lg bg-primary px-5 py-3 font-bold text-primary-foreground disabled:opacity-50"
         >
           {busy ? "Saving…" : "Submit for review"}
@@ -1361,6 +1418,9 @@ function Explorer({
                     </span>
                     <span className="rounded-full bg-surface px-2 py-1">
                       {c.reports} community reports
+                    </span>
+                    <span className="rounded-full bg-primary-soft px-2 py-1 text-primary">
+                      <Repeat2 className="mr-1 inline" size={12} /> {c.reposts} reposts
                     </span>
                   </div>
                   {comments.length > 0 && (
@@ -1655,7 +1715,8 @@ function OrganizationDashboardLegacy({
       students: ["Ravi Singh", "Sai Teja"],
     },
   ]);
-  const task = tasks.find((item) => item.id === selectedTask) ?? tasks[0];
+  // This dashboard always starts with seeded task cards; the assertion keeps that invariant explicit.
+  const task = tasks.find((item) => item.id === selectedTask) ?? tasks[0]!;
   if (!user) return <Forbidden />;
   const statusTone: Record<OrganizationTaskStatus, string> = {
     Pending: "bg-amber-100 text-amber-800",
@@ -2557,6 +2618,7 @@ type PartnerTaskStatus =
   | "Couldn't Solve — Reassigned";
 type PartnerTask = {
   id: string;
+  assignmentId?: string;
   title: string;
   description: string;
   category: string;
@@ -2613,46 +2675,7 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
       available: true,
     },
   ]);
-  const [tasks, setTasks] = useState<PartnerTask[]>([
-    {
-      id: "SS-1024",
-      title: "Damaged street light on main road",
-      description:
-        "A street-light pole near Duvvada junction has been non-functional for three nights, creating a safety concern for residents.",
-      category: "Electricity & Energy",
-      location: "Duvvada, Ward 12",
-      coordinates: "17.7231, 83.3014",
-      reported: "Today, 09:42 AM",
-      priority: "High",
-      status: "Pending",
-      people: [],
-    },
-    {
-      id: "SS-1021",
-      title: "Unsafe drinking-water supply",
-      description:
-        "Residents reported discoloured water and need field testing and a documented response.",
-      category: "Water & Sanitation",
-      location: "MVP Colony, Sector 4",
-      coordinates: "17.7416, 83.3230",
-      reported: "Yesterday, 03:18 PM",
-      priority: "Medium",
-      status: "Accepted",
-      people: ["Rahul Kumar"],
-    },
-    {
-      id: "SS-1018",
-      title: "Drainage blockage after rainfall",
-      description: "Storm-water drainage is blocked along the school boundary.",
-      category: "Roads & Infrastructure",
-      location: "Madhurawada",
-      coordinates: "17.8194, 83.3502",
-      reported: "28 Aug, 11:06 AM",
-      priority: "Low",
-      status: "Work in Progress",
-      people: ["Suresh Kumar"],
-    },
-  ]);
+  const [tasks, setTasks] = useState<PartnerTask[]>([]);
   useEffect(() => {
     if (!user || !supabase) return;
     const metadata = user.user_metadata;
@@ -2683,10 +2706,106 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
         if (error) flash(`Could not sync this ${isNgo ? "NGO" : "organization"}: ${error.message}`);
       });
   }, [user, isNgo, partnerName]);
+  useEffect(() => {
+    const database = supabase;
+    if (!user || !database) return;
+    let channel: ReturnType<typeof database.channel> | undefined;
+    const statusFor = (status: string): PartnerTaskStatus =>
+      status === "pending"
+        ? "Pending"
+        : status === "in_progress"
+          ? "Work in Progress"
+          : status === "completed" || status === "verified"
+            ? "Solved"
+            : "Couldn't Solve — Reassigned";
+    const loadAssignedTasks = async () => {
+      const { data: organization, error: orgError } = await database
+        .from("organization_accounts")
+        .select("id")
+        .eq("owner_id", user.id)
+        .maybeSingle();
+      if (orgError || !organization) return;
+      const { data, error } = await database
+        .from("problem_assignments")
+        .select(
+          "id,status,unable_reason,created_at,challenges(public_id,title,summary,domain,district,locality,public_latitude,public_longitude,priority_score)",
+        )
+        .eq("organization_id", organization.id)
+        .order("created_at", { ascending: false });
+      if (error) {
+        flash(`Could not sync assigned tasks: ${error.message}`);
+        return;
+      }
+      setTasks(
+        ((data ?? []) as Array<any>).map((assignment) => {
+          const challenge = assignment.challenges;
+          const priority = Number(challenge?.priority_score ?? 0);
+          return {
+            id: challenge?.public_id ?? assignment.id,
+            assignmentId: assignment.id,
+            title: challenge?.title ?? "Assigned community problem",
+            description: challenge?.summary ?? "Problem details are available in the task record.",
+            category: challenge?.domain ?? "Community service",
+            location: challenge?.locality || challenge?.district || "Location pending",
+            coordinates:
+              challenge?.public_latitude != null && challenge?.public_longitude != null
+                ? `${challenge.public_latitude}, ${challenge.public_longitude}`
+                : "GPS not available",
+            reported: new Date(assignment.created_at).toLocaleString(),
+            priority: priority >= 75 ? "High" : priority >= 45 ? "Medium" : "Low",
+            status: statusFor(assignment.status),
+            people: [],
+            remarks: assignment.unable_reason ?? undefined,
+          };
+        }),
+      );
+      if (!channel) {
+        channel = database
+          .channel(`partner-assignments-${organization.id}`)
+          .on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: "problem_assignments",
+              filter: `organization_id=eq.${organization.id}`,
+            },
+            () => void loadAssignedTasks(),
+          )
+          .subscribe();
+      }
+    };
+    void loadAssignedTasks();
+    return () => {
+      if (channel) void database.removeChannel(channel);
+    };
+  }, [user, flash]);
   if (!user) return <Forbidden />;
-  const task = tasks.find((item) => item.id === selectedId) ?? tasks[0];
-  const update = (id: string, patch: Partial<PartnerTask>) =>
+  const task: PartnerTask =
+    tasks.find((item) => item.id === selectedId) ??
+    tasks[0] ?? {
+      id: "no-assignment",
+      title: "No assigned tasks",
+      description: "New algorithmic assignments will appear here automatically.",
+      category: "Community service",
+      location: "—",
+      coordinates: "—",
+      reported: "—",
+      priority: "Low",
+      status: "Pending",
+      people: [],
+    };
+  const update = (id: string, patch: Partial<PartnerTask>) => {
+    const existing = tasks.find((item) => item.id === id);
     setTasks((items) => items.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+    if (!existing?.assignmentId || !patch.status || !supabase) return;
+    const status = patch.status === "Pending" ? "pending" : patch.status === "Solved" ? "completed" : patch.status.includes("Couldn't") ? "unable_to_resolve" : "in_progress";
+    void supabase
+      .from("problem_assignments")
+      .update({ status, ...(status === "unable_to_resolve" ? { unable_reason: patch.remarks ?? "Unable to resolve" } : {}) })
+      .eq("id", existing.assignmentId)
+      .then(({ error }) => error && flash(`Could not sync task update: ${error.message}`));
+  };
   const open = (id: string) => {
     setSelectedId(id);
     setSection("Task Details");
@@ -2896,7 +3015,7 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
               </div>
               <h2 className="mt-8 text-xl font-bold">Recent Assigned Tasks</h2>
               <PartnerTaskCards
-                tasks={tasks}
+                tasks={tasks.filter((task) => task.status !== "Solved")}
                 tone={tone}
                 open={open}
                 accept={(id) => {
@@ -3996,6 +4115,29 @@ type AdminTransfer = {
   reason: string;
   created_at: string;
 };
+type AllocationRanking = {
+  id: string;
+  challenge_id: string;
+  organization_id: string;
+  allocation_rank: number;
+  suitability_score: number;
+  distance_km: number | null;
+  expertise_score: number;
+  resource_score: number;
+  availability_score: number;
+  performance_score: number;
+  workload_score: number;
+  is_selected: boolean;
+  created_at: string;
+};
+type AllocationSettings = {
+  expertise_weight: number;
+  resource_weight: number;
+  availability_weight: number;
+  distance_weight: number;
+  performance_weight: number;
+  workload_weight: number;
+};
 
 function AdminLogin({ complete }: { complete: () => void }) {
   const [email, setEmail] = useState(""),
@@ -4092,6 +4234,8 @@ function AdminControlCenter({
     [members, setMembers] = useState<AdminMember[]>([]),
     [assignments, setAssignments] = useState<AdminAssignment[]>([]),
     [transfers, setTransfers] = useState<AdminTransfer[]>([]),
+    [rankings, setRankings] = useState<AllocationRanking[]>([]),
+    [allocationSettings, setAllocationSettings] = useState<AllocationSettings | null>(null),
     [selected, setSelected] = useState<AdminPartner | null>(null),
     [status, setStatus] = useState("All");
   const load = async () => {
@@ -4109,7 +4253,7 @@ function AdminControlCenter({
         .select(
           "id,name,organization_type,contact_email,district,locality,latitude,longitude,expertise,capabilities,created_at",
         );
-      orgs = fallback.data;
+      orgs = fallback.data as typeof orgs;
       organizationError = fallback.error;
     }
     const [
@@ -4117,6 +4261,8 @@ function AdminControlCenter({
       { data: memberData },
       { data: assignmentData },
       { data: transferData },
+      { data: rankingData },
+      { data: settingData },
     ] = await Promise.all([
       supabase.rpc("search_challenges", { search_text: "" }),
       supabase
@@ -4130,6 +4276,18 @@ function AdminControlCenter({
       supabase
         .from("problem_transfers")
         .select("id,assignment_id,to_organization_id,reason,created_at"),
+      supabase
+        .from("task_allocation_rankings")
+        .select(
+          "id,challenge_id,organization_id,allocation_rank,suitability_score,distance_km,expertise_score,resource_score,availability_score,performance_score,workload_score,is_selected,created_at",
+        )
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("task_allocation_settings")
+        .select(
+          "expertise_weight,resource_weight,availability_weight,distance_weight,performance_weight,workload_weight",
+        )
+        .maybeSingle(),
     ]);
     if (organizationError) flash(`Could not load partners: ${organizationError.message}`);
     if (challengesError) flash(`Could not load tasks: ${challengesError.message}`);
@@ -4138,6 +4296,8 @@ function AdminControlCenter({
     setMembers((memberData ?? []) as AdminMember[]);
     setAssignments((assignmentData ?? []) as AdminAssignment[]);
     setTransfers((transferData ?? []) as AdminTransfer[]);
+    setRankings((rankingData ?? []) as AllocationRanking[]);
+    setAllocationSettings((settingData ?? null) as AllocationSettings | null);
   };
   useEffect(() => {
     void load();
@@ -4153,6 +4313,7 @@ function AdminControlCenter({
     "NGOs",
     "All Tasks",
     "Task Tracking",
+    "Smart Task Allocation",
     "Reassignments",
     "Skilled Participants",
     "Volunteers",
@@ -4556,6 +4717,7 @@ function AdminControlCenter({
           )}
           {[
             "Task Tracking",
+            "Smart Task Allocation",
             "Reassignments",
             "Skilled Participants",
             "Volunteers",
@@ -4571,6 +4733,8 @@ function AdminControlCenter({
               members={members}
               assignments={assignments}
               transfers={transfers}
+              rankings={rankings}
+              allocationSettings={allocationSettings}
             />
           )}
         </main>
@@ -4587,6 +4751,8 @@ function AdminDataSection({
   members,
   assignments,
   transfers,
+  rankings,
+  allocationSettings,
 }: {
   section: string;
   query: string;
@@ -4595,11 +4761,119 @@ function AdminDataSection({
   members: AdminMember[];
   assignments: AdminAssignment[];
   transfers: AdminTransfer[];
+  rankings: AllocationRanking[];
+  allocationSettings: AllocationSettings | null;
 }) {
   const matches = (value: string) => value.toLowerCase().includes(query.toLowerCase());
   const partner = (id: string) => partners.find((item) => item.id === id);
   const challenge = (id: string) => tasks.find((item) => item.id === id);
   const isVolunteerView = section === "Volunteers";
+  const [weights, setWeights] = useState<AllocationSettings>(
+    allocationSettings ?? {
+      expertise_weight: 30,
+      resource_weight: 20,
+      availability_weight: 15,
+      distance_weight: 15,
+      performance_weight: 10,
+      workload_weight: 10,
+    },
+  );
+  useEffect(() => {
+    if (allocationSettings) setWeights(allocationSettings);
+  }, [allocationSettings]);
+  const latestRankings = Array.from(new Set(rankings.map((row) => row.challenge_id)))
+    .filter((challengeId) => challenge(challengeId)?.stage !== "impact")
+    .flatMap(
+    (challengeId) => {
+      const activeAssignment = assignments
+        .filter(
+          (assignment) =>
+            assignment.challenge_id === challengeId &&
+            !["completed", "verified", "unable_to_resolve"].includes(assignment.status),
+        )
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+      const candidates = rankings.filter((row) => row.challenge_id === challengeId);
+      // Follow the selected organization of the live assignment. This keeps the display on the
+      // reassignment snapshot instead of incorrectly showing the original failed assignment.
+      const selected = candidates
+        .filter(
+          (row) =>
+            row.is_selected &&
+            (!activeAssignment || row.organization_id === activeAssignment.organization_id),
+        )
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+      const snapshotAt =
+        selected?.created_at ??
+        candidates.reduce(
+          (latest, row) => (row.created_at > latest ? row.created_at : latest),
+          "",
+        );
+      return candidates.filter((row) => row.created_at === snapshotAt);
+    },
+  );
+  const saveWeights = async () => {
+    if (!supabase) return;
+    const total = Object.values(weights).reduce((sum, value) => sum + Number(value || 0), 0);
+    if (total <= 0) return;
+    await supabase.from("task_allocation_settings").upsert({ id: true, ...weights });
+  };
+  if (section === "Smart Task Allocation")
+    return (
+      <section className="mt-7">
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-bold">Smart Task Allocation</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Explainable rankings use live capability, available people, GPS distance, performance, and workload.
+            </p>
+          </div>
+          <button
+            onClick={() => void saveWeights()}
+            className="rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground"
+          >
+            Save ranking weights
+          </button>
+        </div>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+          {Object.entries(weights).map(([key, value]) => (
+            <label key={key} className="card-surface p-3 text-xs font-bold capitalize">
+              {key.replace("_weight", "")}%
+              <input
+                type="number"
+                min="0"
+                value={value}
+                onChange={(event) =>
+                  setWeights((current) => ({ ...current, [key]: Number(event.target.value || 0) }))
+                }
+                className="mt-2 w-full rounded border border-input p-2 text-sm font-normal"
+              />
+            </label>
+          ))}
+        </div>
+        <div className="mt-6 overflow-x-auto card-surface">
+          <table className="w-full min-w-300 text-left text-sm">
+            <thead className="bg-surface text-xs text-muted-foreground">
+              <tr>
+                <th className="p-4">TASK</th><th className="p-4">PARTNER</th><th className="p-4">RANK</th><th className="p-4">SCORE</th><th className="p-4">GPS DISTANCE</th><th className="p-4">EXPERTISE</th><th className="p-4">RESOURCES</th><th className="p-4">AVAILABLE PEOPLE</th><th className="p-4">PERFORMANCE</th><th className="p-4">WORKLOAD</th><th className="p-4">DECISION</th>
+              </tr>
+            </thead>
+            <tbody>
+              {latestRankings.map((row) => (
+                <tr key={row.id} className="border-t border-border">
+                  <td className="p-4 font-semibold">{challenge(row.challenge_id)?.public_id ?? "Task"}<br /><span className="font-normal text-muted-foreground">{challenge(row.challenge_id)?.title ?? ""}</span></td>
+                  <td className="p-4">{partner(row.organization_id)?.name ?? "—"}</td>
+                  <td className="p-4">#{row.allocation_rank}</td><td className="p-4 font-bold text-primary">{row.suitability_score}</td>
+                  <td className="p-4">{row.distance_km == null ? "GPS unavailable" : `${row.distance_km} km`}</td>
+                  <td className="p-4">{row.expertise_score}%</td><td className="p-4">{row.resource_score}%</td><td className="p-4">{row.availability_score}%</td><td className="p-4">{row.performance_score}%</td><td className="p-4">{row.workload_score}%</td>
+                  <td className="p-4">{row.is_selected ? <span className="rounded-full bg-primary-soft px-2 py-1 text-xs font-bold text-primary">Assigned</span> : "Eligible"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!latestRankings.length && <p className="p-8 text-center text-sm text-muted-foreground">No smart allocation decisions yet. New reported problems are evaluated automatically.</p>}
+        </div>
+      </section>
+    );
   if (section === "Skilled Participants" || section === "Volunteers") {
     const rows = members.filter((member) => {
       const owner = partner(member.organization_id);

@@ -17,7 +17,7 @@ interface MediaFile {
   id: string;
   file: File;
   preview: string;
-  type: "image" | "video" | "audio";
+  type: "image" | "video" | "audio" | "document";
   uploadedPath?: string;
 }
 
@@ -194,7 +194,9 @@ export function MediaUpload({ reportId, challengeId, onMediaAdded, onError }: Me
         ? "image"
         : file.type.startsWith("video/")
           ? "video"
-          : "audio";
+          : file.type === "application/pdf"
+            ? "document"
+            : "audio";
 
       let preview = "";
       if (type === "image") {
@@ -213,7 +215,7 @@ export function MediaUpload({ reportId, challengeId, onMediaAdded, onError }: Me
     e.target.value = "";
   };
 
-  const addMediaFile = (file: File, preview: string, type: "image" | "video" | "audio") => {
+  const addMediaFile = (file: File, preview: string, type: "image" | "video" | "audio" | "document") => {
     // Validate file size (25MB max)
     if (file.size > 26214400) {
       onError?.("File size exceeds 25MB limit");
@@ -358,7 +360,7 @@ export function MediaUpload({ reportId, challengeId, onMediaAdded, onError }: Me
             }}
             className="flex items-center gap-2 rounded-lg border border-input px-3 py-2 text-sm font-medium hover:bg-surface"
           >
-            <Camera size={16} /> Capture photo
+            <Camera size={16} /> Capture now: photo
           </button>
           <button
             onClick={() => {
@@ -367,7 +369,7 @@ export function MediaUpload({ reportId, challengeId, onMediaAdded, onError }: Me
             }}
             className="flex items-center gap-2 rounded-lg border border-input px-3 py-2 text-sm font-medium hover:bg-surface"
           >
-            <Camera size={16} /> Record video
+            <Camera size={16} /> Capture now: video
           </button>
           <button
             onClick={() => {
@@ -475,11 +477,11 @@ export function MediaUpload({ reportId, challengeId, onMediaAdded, onError }: Me
       {/* File Upload */}
       <label className="flex items-center gap-2 rounded-lg border-2 border-dashed border-input px-4 py-3 cursor-pointer hover:border-primary hover:bg-primary-soft transition">
         <Upload size={18} className="text-primary" />
-        <span className="text-sm font-medium">Upload files</span>
+        <span className="text-sm font-medium">Upload from gallery (photos, video, PDF)</span>
         <input
           type="file"
           multiple
-          accept="image/*,video/*,audio/*"
+          accept="image/*,video/*,audio/*,application/pdf"
           onChange={handleFileInput}
           className="hidden"
         />
@@ -515,6 +517,11 @@ export function MediaUpload({ reportId, challengeId, onMediaAdded, onError }: Me
                 {media.type === "audio" && (
                   <div className="flex h-32 w-full items-center justify-center rounded bg-surface-dark">
                     <Volume2 size={32} className="text-primary" />
+                  </div>
+                )}
+                {media.type === "document" && (
+                  <div className="flex h-32 w-full items-center justify-center rounded bg-surface text-sm font-bold text-primary">
+                    PDF document
                   </div>
                 )}
 
