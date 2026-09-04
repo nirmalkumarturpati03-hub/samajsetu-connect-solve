@@ -39,7 +39,17 @@ import { MediaUpload } from "@/components/MediaUpload";
 import type { User } from "@supabase/supabase-js";
 
 export const Route = createFileRoute("/")({ component: SamajSetu });
-type Screen = "home" | "auth" | "report" | "explore" | "my-reports" | "admin" | "organization" | "coordinator" | "volunteer";
+type Screen =
+  | "home"
+  | "auth"
+  | "report"
+  | "explore"
+  | "my-reports"
+  | "admin-login"
+  | "admin"
+  | "organization"
+  | "coordinator"
+  | "volunteer";
 type Profile = { id: string; display_name: string | null; role: string; district: string | null };
 type Challenge = {
   id: string;
@@ -93,6 +103,32 @@ function SamajSetu() {
       .eq("id", u.id)
       .single();
     setProfile(data);
+    // Accounts confirmed by email do not have a session during registration, so
+    // provision their private partner record on first successful sign-in.
+    if (u.user_metadata?.["account_type"] === "organization") {
+      const meta = u.user_metadata;
+      const latitude = Number(meta["latitude"]);
+      const longitude = Number(meta["longitude"]);
+      await supabase.from("organization_accounts").upsert(
+        {
+          owner_id: u.id,
+          name: String(meta["display_name"] || u.email?.split("@")[0] || "Organization"),
+          organization_type: String(meta["organization_type"] || "Organization"),
+          contact_email: u.email ?? null,
+          latitude: Number.isFinite(latitude) ? latitude : null,
+          longitude: Number.isFinite(longitude) ? longitude : null,
+          expertise: String(meta["expertise"] || "")
+            .split(",")
+            .map((item) => item.trim())
+            .filter(Boolean),
+          capabilities: String(meta["resources"] || "")
+            .split(",")
+            .map((item) => item.trim())
+            .filter(Boolean),
+        },
+        { onConflict: "owner_id" },
+      );
+    }
   };
   const flash = (x: string) => {
     setNotice(x);
@@ -145,13 +181,11 @@ function SamajSetu() {
       go("auth");
       return;
     }
-    const { error } = await supabase!
-      .from("challenge_supports")
-      .insert({
-        challenge_id: challenge.id,
-        supporter_id: user.id,
-        ...(note.trim() ? { note: note.trim() } : {}),
-      });
+    const { error } = await supabase!.from("challenge_supports").insert({
+      challenge_id: challenge.id,
+      supporter_id: user.id,
+      ...(note.trim() ? { note: note.trim() } : {}),
+    });
     if (error) {
       flash(error.code === "23505" ? "You have already reposted this problem." : error.message);
       return;
@@ -169,7 +203,7 @@ function SamajSetu() {
         go={go}
         logout={async () => {
           await supabase!.auth.signOut();
-          flash("Signed out successfully.");
+          go("home");
         }}
       />
       {screen === "home" && <Home go={go} count={challenges.length} user={user} />}{" "}
@@ -177,7 +211,13 @@ function SamajSetu() {
         <Auth
           complete={(accountType) => {
             flash("Welcome to SamajSetu.");
-            go(accountType === "organization" ? "organization" : accountType === "volunteer" ? "volunteer" : "my-reports");
+            go(
+              accountType === "organization"
+                ? "coordinator"
+                : accountType === "volunteer"
+                  ? "volunteer"
+                  : "my-reports",
+            );
           }}
         />
       )}{" "}
@@ -206,10 +246,15 @@ function SamajSetu() {
       )}{" "}
       {screen === "my-reports" && <MyReports user={user} go={go} />}{" "}
       {screen === "organization" && <OrganizationRegistration user={user} go={go} flash={flash} />}{" "}
-      {screen === "coordinator" && <OrganizationDashboard user={user} flash={flash} />}{" "}
-      {screen === "volunteer" && <VolunteerDashboard user={user} />} {" "}
+      {screen === "coordinator" && <PartnerDashboard user={user} flash={flash} />}{" "}
+      {screen === "volunteer" && <VolunteerDashboard user={user} />}{" "}
+      {screen === "admin-login" && <AdminLogin complete={() => go("admin")} />}
       {screen === "admin" &&
-        (isAdmin ? <Admin flash={flash} refresh={loadChallenges} /> : <Forbidden />)}
+        (isAdmin ? (
+          <AdminControlCenter flash={flash} refresh={loadChallenges} />
+        ) : (
+          <AdminRedirect user={user} go={go} />
+        ))}
       {notice && (
         <div className="fixed bottom-5 right-5 z-50 rounded-xl bg-ink px-4 py-3 text-sm font-semibold text-white shadow-lift">
           <Check className="mr-2 inline text-emerald-300" size={16} />
@@ -249,10 +294,14 @@ function Header({
           )}
           {user && isOrganizationUser && (
             <button onClick={() => go("coordinator")} className="hidden sm:block">
-              Coordinator
+              Partner dashboard
             </button>
           )}
-          {user && isVolunteer && <button onClick={() => go("volunteer")} className="hidden sm:block">My workspace</button>}
+          {user && isVolunteer && (
+            <button onClick={() => go("volunteer")} className="hidden sm:block">
+              My workspace
+            </button>
+          )}
           {profile?.role === "admin" && (
             <button onClick={() => go("admin")} className="hidden sm:block text-primary">
               Admin
@@ -272,12 +321,20 @@ function Header({
               </button>
             </>
           ) : (
-            <button
-              onClick={() => go("auth")}
-              className="rounded-lg border border-border px-3 py-2"
-            >
-              Sign in
-            </button>
+            <>
+              <button
+                onClick={() => go("admin-login")}
+                className="hidden text-xs font-bold text-muted-foreground sm:block"
+              >
+                Admin login
+              </button>
+              <button
+                onClick={() => go("auth")}
+                className="rounded-lg border border-border px-3 py-2"
+              >
+                Sign in
+              </button>
+            </>
           )}
           <button
             onClick={() => go("report")}
@@ -285,11 +342,6 @@ function Header({
           >
             Report
           </button>
-          {user && isOrganizationUser && (
-            <button onClick={() => go("organization")} className="hidden rounded-lg border border-border px-3 py-2 sm:block">
-              Organization
-            </button>
-          )}
         </nav>
       </div>
     </header>
@@ -422,20 +474,26 @@ function AuthLegacy({ complete }: { complete: (accountType: string) => void }) {
             ? "New accounts start as citizens. Protected roles are assigned by the platform administrator."
             : "Sign in to view your reports and role-based workspace."}
         </p>
-        {mode === "signup" && (<>
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Full name"
-            className="mt-5 w-full rounded-lg border border-input p-3"
-          />
-          <label className="mt-4 block text-sm font-bold">I want to join as</label>
-          <select value={accountType} onChange={(e) => setAccountType(e.target.value as typeof accountType)} className="mt-2 w-full rounded-lg border border-input bg-background p-3">
-            <option value="citizen">Citizen — report and track local problems</option>
-            <option value="volunteer">Volunteer — help solve community challenges</option>
-            <option value="organization">Organization — coordinate projects and teams</option>
-          </select>
-        </>)}
+        {mode === "signup" && (
+          <>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Full name"
+              className="mt-5 w-full rounded-lg border border-input p-3"
+            />
+            <label className="mt-4 block text-sm font-bold">I want to join as</label>
+            <select
+              value={accountType}
+              onChange={(e) => setAccountType(e.target.value as typeof accountType)}
+              className="mt-2 w-full rounded-lg border border-input bg-background p-3"
+            >
+              <option value="citizen">Citizen — report and track local problems</option>
+              <option value="volunteer">Volunteer — help solve community challenges</option>
+              <option value="organization">Organization — coordinate projects and teams</option>
+            </select>
+          </>
+        )}
         <input
           value={email}
           onChange={(e) => setEmail(e.target.value)}
@@ -475,17 +533,357 @@ function AuthLegacy({ complete }: { complete: (accountType: string) => void }) {
 }
 function Auth({ complete }: { complete: (accountType: string) => void }) {
   const [kind, setKind] = useState<"Organization" | "NGO" | null>(null);
-  const [signIn, setSignIn] = useState(false), [email, setEmail] = useState(""), [password, setPassword] = useState(""), [error, setError] = useState(""), [busy, setBusy] = useState(false);
-  const login = async () => { if (!supabase) return; setBusy(true); setError(""); const { data, error: loginError } = await supabase.auth.signInWithPassword({ email, password }); setBusy(false); if (loginError) setError(loginError.message); else complete(data.user?.user_metadata?.["account_type"] ?? "organization"); };
-  return <section className="container-page max-w-3xl py-14"><div className="card-surface p-7 sm:p-10"><span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">SECURE PARTNER ACCESS</span><h1 className="mt-4 text-3xl font-bold">Sign In / Register</h1><p className="mt-2 text-muted-foreground">Choose the type of partner account you want to create.</p><div className="mt-7 grid gap-4 sm:grid-cols-2"><button onClick={() => setKind("Organization")} className="rounded-2xl border border-border p-6 text-left transition hover:border-primary hover:shadow-lift"><Users className="text-primary" size={26}/><h2 className="mt-5 text-xl font-bold">Organization</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">Register an institution, college, department, or company response team.</p><span className="mt-5 inline-block text-sm font-bold text-primary">Register organization →</span></button><button onClick={() => setKind("NGO")} className="rounded-2xl border border-border p-6 text-left transition hover:border-primary hover:shadow-lift"><ShieldCheck className="text-accent" size={26}/><h2 className="mt-5 text-xl font-bold">NGO</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">Register a non-profit team to contribute expertise and community resources.</p><span className="mt-5 inline-block text-sm font-bold text-primary">Register NGO →</span></button></div><div className="mt-8 border-t border-border pt-6 text-center"><button onClick={() => { setSignIn(!signIn); setError(""); }} className="text-sm font-bold text-primary">Already registered? Sign in securely</button>{signIn && <div className="mx-auto mt-4 grid max-w-md gap-3 text-left"><input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="Official email ID" className="rounded-lg border border-input p-3"/><input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="Password" className="rounded-lg border border-input p-3"/>{error && <p className="text-sm text-destructive">{error}</p>}<button disabled={busy || !email || !password} onClick={() => void login()} className="rounded-lg bg-primary py-3 font-bold text-primary-foreground disabled:opacity-50">{busy ? "Signing in…" : "Sign in"}</button></div>}</div></div>{kind && <PartnerRegistration kind={kind} close={() => setKind(null)} complete={complete}/>}</section>;
+  const [signIn, setSignIn] = useState(false),
+    [email, setEmail] = useState(""),
+    [password, setPassword] = useState(""),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false);
+  const login = async () => {
+    if (!supabase) return;
+    setBusy(true);
+    setError("");
+    const { data, error: loginError } = await supabase.auth.signInWithPassword({ email, password });
+    setBusy(false);
+    if (loginError) setError(loginError.message);
+    else complete(data.user?.user_metadata?.["account_type"] ?? "organization");
+  };
+  return (
+    <section className="container-page max-w-3xl py-14">
+      <div className="card-surface p-7 sm:p-10">
+        <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
+          SECURE PARTNER ACCESS
+        </span>
+        <h1 className="mt-4 text-3xl font-bold">Sign In / Register</h1>
+        <p className="mt-2 text-muted-foreground">
+          Choose the type of partner account you want to create.
+        </p>
+        <div className="mt-7 grid gap-4 sm:grid-cols-2">
+          <button
+            onClick={() => setKind("Organization")}
+            className="rounded-2xl border border-border p-6 text-left transition hover:border-primary hover:shadow-lift"
+          >
+            <Users className="text-primary" size={26} />
+            <h2 className="mt-5 text-xl font-bold">Organization</h2>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              Register a response team that contributes skilled people, expertise, and resources.
+            </p>
+            <span className="mt-5 inline-block text-sm font-bold text-primary">
+              Register organization →
+            </span>
+          </button>
+          <button
+            onClick={() => setKind("NGO")}
+            className="rounded-2xl border border-border p-6 text-left transition hover:border-primary hover:shadow-lift"
+          >
+            <ShieldCheck className="text-accent" size={26} />
+            <h2 className="mt-5 text-xl font-bold">NGO</h2>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              Register a non-profit team to contribute expertise and community resources.
+            </p>
+            <span className="mt-5 inline-block text-sm font-bold text-primary">Register NGO →</span>
+          </button>
+        </div>
+        <div className="mt-8 border-t border-border pt-6 text-center">
+          <button
+            onClick={() => {
+              setSignIn(!signIn);
+              setError("");
+            }}
+            className="text-sm font-bold text-primary"
+          >
+            Already registered? Sign in securely
+          </button>
+          {signIn && (
+            <div className="mx-auto mt-4 grid max-w-md gap-3 text-left">
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="Official email ID"
+                className="rounded-lg border border-input p-3"
+              />
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Password"
+                className="rounded-lg border border-input p-3"
+              />
+              {error && <p className="text-sm text-destructive">{error}</p>}
+              <button
+                disabled={busy || !email || !password}
+                onClick={() => void login()}
+                className="rounded-lg bg-primary py-3 font-bold text-primary-foreground disabled:opacity-50"
+              >
+                {busy ? "Signing in…" : "Sign in"}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+      {kind && <PartnerRegistration kind={kind} close={() => setKind(null)} complete={complete} />}
+    </section>
+  );
 }
 
-function PartnerRegistration({ kind, close, complete }: { kind: "Organization" | "NGO"; close: () => void; complete: (type: string) => void }) {
+function PartnerRegistration({
+  kind,
+  close,
+  complete,
+}: {
+  kind: "Organization" | "NGO";
+  close: () => void;
+  complete: (type: string) => void;
+}) {
   const noun = kind === "NGO" ? "NGO" : "Organization";
-  const [name, setName] = useState(""), [latitude, setLatitude] = useState(""), [longitude, setLongitude] = useState(""), [email, setEmail] = useState(""), [expertise, setExpertise] = useState(""), [resources, setResources] = useState(""), [password, setPassword] = useState(""), [confirm, setConfirm] = useState(""), [error, setError] = useState(""), [info, setInfo] = useState(""), [busy, setBusy] = useState(false);
-  const getGps = () => { setError(""); setInfo("Requesting location permission…"); if (!navigator.geolocation) { setInfo(""); setError("GPS is not supported on this device. Enter coordinates manually."); return; } navigator.geolocation.getCurrentPosition(p => { setLatitude(p.coords.latitude.toFixed(6)); setLongitude(p.coords.longitude.toFixed(6)); setInfo("Current GPS location retrieved. You can edit these values if needed."); }, e => { setInfo(""); setError(e.code === e.PERMISSION_DENIED ? "Location permission was denied. Enter latitude and longitude manually." : "Unable to retrieve GPS location. Please try again or enter coordinates manually."); }, { enableHighAccuracy: true, timeout: 12000 }); };
-  const register = async () => { const lat = Number(latitude), lng = Number(longitude); if (![name, latitude, longitude, email, expertise, resources, password, confirm].every(x => x.trim())) return setError("Complete all required fields before registering."); if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setError("Enter a valid email address."); if (password !== confirm) return setError("Password and Confirm Password must match."); if (password.length < 6) return setError("Password must be at least 6 characters."); if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) return setError("Enter valid coordinates: latitude −90 to 90 and longitude −180 to 180."); if (!supabase) return; setBusy(true); setError(""); const { data, error: signupError } = await supabase.auth.signUp({ email, password, options: { data: { display_name: name.trim(), account_type: "organization", organization_type: kind, latitude: lat, longitude: lng, expertise, resources } } }); if (signupError) { setError(signupError.message); setBusy(false); return; } if (data.user && data.session) { const { error: orgError } = await supabase.from("organization_accounts").upsert({ owner_id: data.user.id, name: name.trim(), organization_type: kind, contact_email: email.trim(), latitude: lat, longitude: lng, expertise: expertise.split(",").map(x => x.trim()).filter(Boolean), capabilities: resources.split(",").map(x => x.trim()).filter(Boolean) }, { onConflict: "owner_id" }); setBusy(false); if (orgError) return setError(orgError.message); close(); complete("organization"); } else { setBusy(false); setInfo("Registration created. Check your email to verify your account, then sign in."); } };
-  return <div className="fixed inset-0 z-50 grid place-items-center bg-ink/50 p-4" role="dialog" aria-modal="true"><div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-card p-6 shadow-lift sm:p-8"><div className="flex items-start justify-between gap-4"><div><span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">SECURE REGISTRATION</span><h2 className="mt-3 text-2xl font-bold">{noun} Registration</h2><p className="mt-1 text-sm text-muted-foreground">All fields are required. GPS coordinates may be entered manually.</p></div><button onClick={close} className="rounded-lg border border-border px-3 py-2 text-sm font-bold">Close</button></div><div className="mt-6 grid gap-4"><label className="text-sm font-bold">{noun} Name<input value={name} onChange={e=>setName(e.target.value)} className="mt-2 w-full rounded-lg border border-input p-3"/></label><div className="rounded-xl bg-surface p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><b className="text-sm">{noun} GPS Location</b><p className="mt-1 text-xs text-muted-foreground">Use the actual current location from this device.</p></div><button type="button" onClick={getGps} className="inline-flex items-center gap-2 rounded-lg border border-primary px-3 py-2 text-sm font-bold text-primary"><MapPin size={16}/> Get GPS Location</button></div><div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-bold">Latitude<input value={latitude} onChange={e=>setLatitude(e.target.value)} inputMode="decimal" placeholder="e.g. 16.5062" className="mt-2 w-full rounded-lg border border-input bg-card p-3"/></label><label className="text-sm font-bold">Longitude<input value={longitude} onChange={e=>setLongitude(e.target.value)} inputMode="decimal" placeholder="e.g. 80.6480" className="mt-2 w-full rounded-lg border border-input bg-card p-3"/></label></div>{latitude && longitude && <p className="mt-3 rounded-lg bg-card p-3 font-mono text-xs text-primary">Latitude: {latitude}<br/>Longitude: {longitude}</p>}</div><label className="text-sm font-bold">{kind === "NGO" ? "Email ID" : "Official Email ID"}<input value={email} onChange={e=>setEmail(e.target.value)} type="email" className="mt-2 w-full rounded-lg border border-input p-3"/></label><label className="text-sm font-bold">Area of Expertise<textarea value={expertise} onChange={e=>setExpertise(e.target.value)} className="mt-2 min-h-22 w-full rounded-lg border border-input p-3"/></label><label className="text-sm font-bold">Available Resources<textarea value={resources} onChange={e=>setResources(e.target.value)} className="mt-2 min-h-22 w-full rounded-lg border border-input p-3"/></label><div className="grid gap-3 sm:grid-cols-2"><label className="text-sm font-bold">Create Password<input value={password} onChange={e=>setPassword(e.target.value)} type="password" className="mt-2 w-full rounded-lg border border-input p-3"/></label><label className="text-sm font-bold">Confirm Password<input value={confirm} onChange={e=>setConfirm(e.target.value)} type="password" className="mt-2 w-full rounded-lg border border-input p-3"/></label></div>{error && <p className="rounded-lg bg-destructive-soft p-3 text-sm text-destructive">{error}</p>}{info && <p className="rounded-lg bg-accent-soft p-3 text-sm text-accent">{info}</p>}<button disabled={busy} onClick={() => void register()} className="rounded-lg bg-primary py-3 font-bold text-primary-foreground disabled:opacity-50">{busy ? "Registering…" : `Register ${noun}`}</button></div></div></div>;
+  const [name, setName] = useState(""),
+    [latitude, setLatitude] = useState(""),
+    [longitude, setLongitude] = useState(""),
+    [email, setEmail] = useState(""),
+    [expertise, setExpertise] = useState(""),
+    [resources, setResources] = useState(""),
+    [password, setPassword] = useState(""),
+    [confirm, setConfirm] = useState(""),
+    [error, setError] = useState(""),
+    [info, setInfo] = useState(""),
+    [busy, setBusy] = useState(false);
+  const getGps = () => {
+    setError("");
+    setInfo("Requesting location permission…");
+    if (!navigator.geolocation) {
+      setInfo("");
+      setError("GPS is not supported on this device. Enter coordinates manually.");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (p) => {
+        setLatitude(p.coords.latitude.toFixed(6));
+        setLongitude(p.coords.longitude.toFixed(6));
+        setInfo("Current GPS location retrieved. You can edit these values if needed.");
+      },
+      (e) => {
+        setInfo("");
+        setError(
+          e.code === e.PERMISSION_DENIED
+            ? "Location permission was denied. Enter latitude and longitude manually."
+            : "Unable to retrieve GPS location. Please try again or enter coordinates manually.",
+        );
+      },
+      { enableHighAccuracy: true, timeout: 12000 },
+    );
+  };
+  const register = async () => {
+    const lat = Number(latitude),
+      lng = Number(longitude);
+    if (
+      ![name, latitude, longitude, email, expertise, resources, password, confirm].every((x) =>
+        x.trim(),
+      )
+    )
+      return setError("Complete all required fields before registering.");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setError("Enter a valid email address.");
+    if (password !== confirm) return setError("Password and Confirm Password must match.");
+    if (password.length < 6) return setError("Password must be at least 6 characters.");
+    if (
+      !Number.isFinite(lat) ||
+      !Number.isFinite(lng) ||
+      lat < -90 ||
+      lat > 90 ||
+      lng < -180 ||
+      lng > 180
+    )
+      return setError("Enter valid coordinates: latitude −90 to 90 and longitude −180 to 180.");
+    if (!supabase) return;
+    setBusy(true);
+    setError("");
+    const { data, error: signupError } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          display_name: name.trim(),
+          account_type: "organization",
+          organization_type: kind,
+          latitude: lat,
+          longitude: lng,
+          expertise,
+          resources,
+        },
+      },
+    });
+    if (signupError) {
+      setError(signupError.message);
+      setBusy(false);
+      return;
+    }
+    if (data.user && data.session) {
+      const { error: orgError } = await supabase.from("organization_accounts").upsert(
+        {
+          owner_id: data.user.id,
+          name: name.trim(),
+          organization_type: kind,
+          contact_email: email.trim(),
+          latitude: lat,
+          longitude: lng,
+          expertise: expertise
+            .split(",")
+            .map((x) => x.trim())
+            .filter(Boolean),
+          capabilities: resources
+            .split(",")
+            .map((x) => x.trim())
+            .filter(Boolean),
+        },
+        { onConflict: "owner_id" },
+      );
+      setBusy(false);
+      if (orgError) return setError(orgError.message);
+      close();
+      complete("organization");
+    } else {
+      setBusy(false);
+      setInfo("Registration created. Check your email to verify your account, then sign in.");
+    }
+  };
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-ink/50 p-4"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-card p-6 shadow-lift sm:p-8">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
+              SECURE REGISTRATION
+            </span>
+            <h2 className="mt-3 text-2xl font-bold">{noun} Registration</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              All fields are required. GPS coordinates may be entered manually.
+            </p>
+          </div>
+          <button
+            onClick={close}
+            className="rounded-lg border border-border px-3 py-2 text-sm font-bold"
+          >
+            Close
+          </button>
+        </div>
+        <div className="mt-6 grid gap-4">
+          <label className="text-sm font-bold">
+            {noun} Name
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="mt-2 w-full rounded-lg border border-input p-3"
+            />
+          </label>
+          <div className="rounded-xl bg-surface p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <b className="text-sm">{noun} GPS Location</b>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Use the actual current location from this device.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={getGps}
+                className="inline-flex items-center gap-2 rounded-lg border border-primary px-3 py-2 text-sm font-bold text-primary"
+              >
+                <MapPin size={16} /> Get GPS Location
+              </button>
+            </div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <label className="text-sm font-bold">
+                Latitude
+                <input
+                  value={latitude}
+                  onChange={(e) => setLatitude(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="e.g. 16.5062"
+                  className="mt-2 w-full rounded-lg border border-input bg-card p-3"
+                />
+              </label>
+              <label className="text-sm font-bold">
+                Longitude
+                <input
+                  value={longitude}
+                  onChange={(e) => setLongitude(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="e.g. 80.6480"
+                  className="mt-2 w-full rounded-lg border border-input bg-card p-3"
+                />
+              </label>
+            </div>
+            {latitude && longitude && (
+              <p className="mt-3 rounded-lg bg-card p-3 font-mono text-xs text-primary">
+                Latitude: {latitude}
+                <br />
+                Longitude: {longitude}
+              </p>
+            )}
+          </div>
+          <label className="text-sm font-bold">
+            {kind === "NGO" ? "Email ID" : "Official Email ID"}
+            <input
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              type="email"
+              className="mt-2 w-full rounded-lg border border-input p-3"
+            />
+          </label>
+          <label className="text-sm font-bold">
+            Area of Expertise
+            <textarea
+              value={expertise}
+              onChange={(e) => setExpertise(e.target.value)}
+              className="mt-2 min-h-22 w-full rounded-lg border border-input p-3"
+            />
+          </label>
+          <label className="text-sm font-bold">
+            Available Resources
+            <textarea
+              value={resources}
+              onChange={(e) => setResources(e.target.value)}
+              className="mt-2 min-h-22 w-full rounded-lg border border-input p-3"
+            />
+          </label>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="text-sm font-bold">
+              Create Password
+              <input
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                type="password"
+                className="mt-2 w-full rounded-lg border border-input p-3"
+              />
+            </label>
+            <label className="text-sm font-bold">
+              Confirm Password
+              <input
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                type="password"
+                className="mt-2 w-full rounded-lg border border-input p-3"
+              />
+            </label>
+          </div>
+          {error && (
+            <p className="rounded-lg bg-destructive-soft p-3 text-sm text-destructive">{error}</p>
+          )}
+          {info && <p className="rounded-lg bg-accent-soft p-3 text-sm text-accent">{info}</p>}
+          <button
+            disabled={busy}
+            onClick={() => void register()}
+            className="rounded-lg bg-primary py-3 font-bold text-primary-foreground disabled:opacity-50"
+          >
+            {busy ? "Registering…" : `Register ${noun}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function Report({
@@ -605,12 +1003,17 @@ function Report({
         >
           ← Back
         </button>
-        <span className="rounded-full bg-accent-soft px-3 py-1 text-xs font-bold text-accent">REPORT SAVED — NO ACCOUNT NEEDED</span>
+        <span className="rounded-full bg-accent-soft px-3 py-1 text-xs font-bold text-accent">
+          REPORT SAVED — NO ACCOUNT NEEDED
+        </span>
         <h1 className="mt-5 text-3xl font-bold">Your Problem ID is ready</h1>
         <p className="mt-2 rounded-lg bg-primary-soft p-3 text-sm font-bold text-primary">
           Problem ID: {publicId ?? "Generating…"}. Keep this ID to track your report.
         </p>
-        <div className="mt-3 rounded-lg border border-border bg-surface p-3 text-sm"><b>Tracking link</b><span className="ml-2 break-all text-primary">samajsetu.in/track/{publicId}</span></div>
+        <div className="mt-3 rounded-lg border border-border bg-surface p-3 text-sm">
+          <b>Tracking link</b>
+          <span className="ml-2 break-all text-primary">samajsetu.in/track/{publicId}</span>
+        </div>
         <p className="mt-2 text-muted-foreground">
           Attach photos, videos, or audio recordings to strengthen your report and help verify the
           problem.
@@ -643,10 +1046,13 @@ function Report({
       <button onClick={() => go("home")} className="text-sm font-bold text-muted-foreground">
         ← Back
       </button>
-      <span className="rounded-full bg-accent-soft px-3 py-1 text-xs font-bold text-accent">NO SIGN-IN REQUIRED</span>
+      <span className="rounded-full bg-accent-soft px-3 py-1 text-xs font-bold text-accent">
+        NO SIGN-IN REQUIRED
+      </span>
       <h1 className="mt-5 text-3xl font-bold">Report a community problem</h1>
       <p className="mt-2 text-muted-foreground">
-        Share what you see in plain language. You will receive a Problem ID and tracking link after submission.
+        Share what you see in plain language. You will receive a Problem ID and tracking link after
+        submission.
       </p>
       <div className="card-surface mt-7 p-6">
         <input
@@ -661,7 +1067,10 @@ function Report({
           placeholder="What is happening? Who is affected?"
           className="mt-3 min-h-36 w-full rounded-lg border border-input p-3"
         />
-        <div className="mt-5 flex items-center justify-between gap-3"><label className="text-sm font-bold">Location</label><span className="text-xs text-muted-foreground">GPS or manual entry</span></div>
+        <div className="mt-5 flex items-center justify-between gap-3">
+          <label className="text-sm font-bold">Location</label>
+          <span className="text-xs text-muted-foreground">GPS or manual entry</span>
+        </div>
         <div className="mt-2 grid gap-3 sm:grid-cols-3">
           <input
             value={district}
@@ -689,25 +1098,63 @@ function Report({
           className="mt-3 min-h-24 w-full rounded-lg border border-input p-3"
         />
         <button
-          onClick={() => navigator.geolocation?.getCurrentPosition(
-            (position) => {
-              setLatitude(position.coords.latitude);
-              setLongitude(position.coords.longitude);
-              setLocationLabel("Current location added");
-              setShowNearby(true);
-            },
-            () => setError("Location could not be obtained. Please enter your location manually."),
-          )}
+          onClick={() =>
+            navigator.geolocation?.getCurrentPosition(
+              (position) => {
+                setLatitude(position.coords.latitude);
+                setLongitude(position.coords.longitude);
+                setLocationLabel("Current location added");
+                setShowNearby(true);
+              },
+              () =>
+                setError("Location could not be obtained. Please enter your location manually."),
+            )
+          }
           type="button"
           className="mt-3 inline-flex items-center gap-2 rounded-lg border border-input px-3 py-2 text-sm font-bold text-primary"
         >
-          <LocateFixed size={16} /> {latitude !== null ? "Location added" : "Use current GPS location"}
+          <LocateFixed size={16} />{" "}
+          {latitude !== null ? "Location added" : "Use current GPS location"}
         </button>
-        {locationLabel && <span className="ml-3 text-sm font-medium text-accent">{locationLabel}</span>}
+        {locationLabel && (
+          <span className="ml-3 text-sm font-medium text-accent">{locationLabel}</span>
+        )}
         {(showNearby || locality.length > 2) && nearby.length > 0 && (
           <div className="mt-5 rounded-xl border border-primary/20 bg-primary-soft/40 p-4">
-            <div className="flex items-start justify-between gap-3"><div><p className="font-bold">Possible matches nearby</p><p className="mt-1 text-sm text-muted-foreground">Avoid duplicate reports by supporting an existing problem.</p></div><Navigation className="text-primary" size={20} /></div>
-            <div className="mt-3 space-y-2">{nearby.map(({ challenge, distance }) => <div key={challenge.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-card p-3"><div><b className="text-sm">{challenge.title}</b><p className="mt-1 text-xs text-muted-foreground"><MapPin className="mr-1 inline" size={12}/>{distance} km away · {challenge.stage.replaceAll("_", " ")}</p></div><button disabled={supportedIds.includes(challenge.id)} onClick={() => void repost(challenge, "Also affected — submitted from report flow.")} className="rounded-lg border border-primary px-3 py-2 text-xs font-bold text-primary disabled:opacity-50">{supportedIds.includes(challenge.id) ? "Supporting" : "I am also affected"}</button></div>)}</div>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-bold">Possible matches nearby</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Avoid duplicate reports by supporting an existing problem.
+                </p>
+              </div>
+              <Navigation className="text-primary" size={20} />
+            </div>
+            <div className="mt-3 space-y-2">
+              {nearby.map(({ challenge, distance }) => (
+                <div
+                  key={challenge.id}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-card p-3"
+                >
+                  <div>
+                    <b className="text-sm">{challenge.title}</b>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      <MapPin className="mr-1 inline" size={12} />
+                      {distance} km away · {challenge.stage.replaceAll("_", " ")}
+                    </p>
+                  </div>
+                  <button
+                    disabled={supportedIds.includes(challenge.id)}
+                    onClick={() =>
+                      void repost(challenge, "Also affected — submitted from report flow.")
+                    }
+                    className="rounded-lg border border-primary px-3 py-2 text-xs font-bold text-primary disabled:opacity-50"
+                  >
+                    {supportedIds.includes(challenge.id) ? "Supporting" : "I am also affected"}
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         )}
         <p className="mt-5 rounded-lg bg-surface p-3 text-sm text-muted-foreground">
@@ -747,12 +1194,63 @@ function Explorer({
     [located, setLocated] = useState(false);
   return (
     <section className="container-page py-12">
-      <div className="flex flex-wrap items-end justify-between gap-4"><div><span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">LOCATION-BASED DISCOVERY</span><h1 className="mt-4 text-3xl font-bold">Problems near you</h1></div><button onClick={() => navigator.geolocation?.getCurrentPosition(() => setLocated(true), () => setLocated(true))} className="inline-flex items-center gap-2 rounded-lg border border-primary px-4 py-2 text-sm font-bold text-primary"><LocateFixed size={16}/>{located ? "Location shared" : "Use my location"}</button></div>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
+            LOCATION-BASED DISCOVERY
+          </span>
+          <h1 className="mt-4 text-3xl font-bold">Problems near you</h1>
+        </div>
+        <button
+          onClick={() =>
+            navigator.geolocation?.getCurrentPosition(
+              () => setLocated(true),
+              () => setLocated(true),
+            )
+          }
+          className="inline-flex items-center gap-2 rounded-lg border border-primary px-4 py-2 text-sm font-bold text-primary"
+        >
+          <LocateFixed size={16} />
+          {located ? "Location shared" : "Use my location"}
+        </button>
+      </div>
       <p className="mt-2 text-muted-foreground">
         Found the same problem? Repost it instead of creating another card. Each person can repost
         once.
       </p>
-      <div className="mt-6 grid gap-4 lg:grid-cols-[1.1fr_.9fr]"><div className="relative min-h-64 overflow-hidden rounded-2xl border border-border bg-[radial-gradient(circle_at_20%_30%,oklch(0.9_0.05_268),transparent_2px),radial-gradient(circle_at_75%_60%,oklch(0.9_0.05_155),transparent_2px)] bg-[length:32px_32px]"><div className="absolute inset-0 bg-primary/5"/><div className="absolute left-[22%] top-[34%] grid size-10 place-items-center rounded-full bg-primary text-white shadow-lift"><MapPin size={20}/></div><div className="absolute left-[62%] top-[52%] grid size-9 place-items-center rounded-full bg-destructive text-white shadow-lift"><MapPin size={18}/></div><div className="absolute bottom-4 left-4 rounded-lg bg-card/95 px-3 py-2 text-xs font-bold shadow-card">{located ? "Showing results within 5 km" : "Enable location for exact distance"}</div></div><div className="card-surface p-5"><p className="text-sm font-bold">Your local response network</p><div className="mt-4 space-y-4 text-sm"><p><b className="text-2xl text-primary">{challenges.length}</b><span className="ml-2 text-muted-foreground">reported problems nearby</span></p><p><b className="text-2xl text-accent">3</b><span className="ml-2 text-muted-foreground">partner organizations available</span></p><button onClick={() => go("report")} className="w-full rounded-lg bg-primary py-3 font-bold text-primary-foreground">Report a new problem</button></div></div></div>
+      <div className="mt-6 grid gap-4 lg:grid-cols-[1.1fr_.9fr]">
+        <div className="relative min-h-64 overflow-hidden rounded-2xl border border-border bg-[radial-gradient(circle_at_20%_30%,oklch(0.9_0.05_268),transparent_2px),radial-gradient(circle_at_75%_60%,oklch(0.9_0.05_155),transparent_2px)] bg-[length:32px_32px]">
+          <div className="absolute inset-0 bg-primary/5" />
+          <div className="absolute left-[22%] top-[34%] grid size-10 place-items-center rounded-full bg-primary text-white shadow-lift">
+            <MapPin size={20} />
+          </div>
+          <div className="absolute left-[62%] top-[52%] grid size-9 place-items-center rounded-full bg-destructive text-white shadow-lift">
+            <MapPin size={18} />
+          </div>
+          <div className="absolute bottom-4 left-4 rounded-lg bg-card/95 px-3 py-2 text-xs font-bold shadow-card">
+            {located ? "Showing results within 5 km" : "Enable location for exact distance"}
+          </div>
+        </div>
+        <div className="card-surface p-5">
+          <p className="text-sm font-bold">Your local response network</p>
+          <div className="mt-4 space-y-4 text-sm">
+            <p>
+              <b className="text-2xl text-primary">{challenges.length}</b>
+              <span className="ml-2 text-muted-foreground">reported problems nearby</span>
+            </p>
+            <p>
+              <b className="text-2xl text-accent">3</b>
+              <span className="ml-2 text-muted-foreground">partner organizations available</span>
+            </p>
+            <button
+              onClick={() => go("report")}
+              className="w-full rounded-lg bg-primary py-3 font-bold text-primary-foreground"
+            >
+              Report a new problem
+            </button>
+          </div>
+        </div>
+      </div>
       <div className="relative mt-5 max-w-xl">
         <Search className="absolute left-3 top-3 text-muted-foreground" size={18} />
         <input
@@ -792,13 +1290,19 @@ function Explorer({
                   <div className="relative aspect-square bg-black">
                     {activeMedia.type.startsWith("video/") ? (
                       <video
-                        src={supabase.storage.from("challenge-previews").getPublicUrl(activeMedia.path).data.publicUrl}
+                        src={
+                          supabase.storage.from("challenge-previews").getPublicUrl(activeMedia.path)
+                            .data.publicUrl
+                        }
                         controls
                         className="h-full w-full object-contain"
                       />
                     ) : (
                       <img
-                        src={supabase.storage.from("challenge-previews").getPublicUrl(activeMedia.path).data.publicUrl}
+                        src={
+                          supabase.storage.from("challenge-previews").getPublicUrl(activeMedia.path)
+                            .data.publicUrl
+                        }
                         alt={`Community evidence for ${c.title}`}
                         className="h-full w-full object-cover"
                         loading="lazy"
@@ -808,14 +1312,24 @@ function Explorer({
                       <>
                         <button
                           aria-label="Previous media"
-                          onClick={() => setMediaIndexes((items) => ({ ...items, [c.id]: (mediaIndex - 1 + media.length) % media.length }))}
+                          onClick={() =>
+                            setMediaIndexes((items) => ({
+                              ...items,
+                              [c.id]: (mediaIndex - 1 + media.length) % media.length,
+                            }))
+                          }
                           className="absolute left-3 top-1/2 -translate-y-1/2 rounded-full bg-black/60 p-2 text-white"
                         >
                           <ChevronLeft size={20} />
                         </button>
                         <button
                           aria-label="Next media"
-                          onClick={() => setMediaIndexes((items) => ({ ...items, [c.id]: (mediaIndex + 1) % media.length }))}
+                          onClick={() =>
+                            setMediaIndexes((items) => ({
+                              ...items,
+                              [c.id]: (mediaIndex + 1) % media.length,
+                            }))
+                          }
                           className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full bg-black/60 p-2 text-white"
                         >
                           <ChevronRight size={20} />
@@ -836,42 +1350,48 @@ function Explorer({
                   </div>
                 )}
                 <div className="p-4">
-                <h2 className="mt-2 font-bold">{c.title}</h2>
-                <p className="mt-2 text-sm text-muted-foreground">
-                  <MapPin className="inline" size={14} />
-                  {c.district} · {c.domain}
-                </p>
-                <div className="mt-4 flex gap-2 text-xs font-bold">
-                  <span className="rounded-full bg-surface px-2 py-1">
-                    {c.verification.replaceAll("_", " ")}
-                  </span>
-                  <span className="rounded-full bg-surface px-2 py-1">
-                    {c.reports} community reports
-                  </span>
-                </div>
-                {comments.length > 0 && (
-                  <section className="mt-4 border-t border-border pt-3" aria-label="Community comments">
-                    <p className="text-xs font-bold text-muted-foreground">Community comments</p>
-                    <div className="mt-2 space-y-2">
-                      {visibleComments.map((comment) => (
-                        <p key={comment.id} className="rounded-lg bg-surface px-3 py-2 text-sm">
-                          <span className="mr-1 font-bold">Community member</span>
-                          {comment.note}
-                        </p>
-                      ))}
-                    </div>
-                    {comments.length > 2 && (
-                      <button
-                        onClick={() =>
-                          setExpandedComments((items) => ({ ...items, [c.id]: !commentsExpanded }))
-                        }
-                        className="mt-2 text-sm font-bold text-primary"
-                      >
-                        {commentsExpanded ? "Show less" : `See ${comments.length - 2} more`}
-                      </button>
-                    )}
-                  </section>
-                )}
+                  <h2 className="mt-2 font-bold">{c.title}</h2>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    <MapPin className="inline" size={14} />
+                    {c.district} · {c.domain}
+                  </p>
+                  <div className="mt-4 flex gap-2 text-xs font-bold">
+                    <span className="rounded-full bg-surface px-2 py-1">
+                      {c.verification.replaceAll("_", " ")}
+                    </span>
+                    <span className="rounded-full bg-surface px-2 py-1">
+                      {c.reports} community reports
+                    </span>
+                  </div>
+                  {comments.length > 0 && (
+                    <section
+                      className="mt-4 border-t border-border pt-3"
+                      aria-label="Community comments"
+                    >
+                      <p className="text-xs font-bold text-muted-foreground">Community comments</p>
+                      <div className="mt-2 space-y-2">
+                        {visibleComments.map((comment) => (
+                          <p key={comment.id} className="rounded-lg bg-surface px-3 py-2 text-sm">
+                            <span className="mr-1 font-bold">Community member</span>
+                            {comment.note}
+                          </p>
+                        ))}
+                      </div>
+                      {comments.length > 2 && (
+                        <button
+                          onClick={() =>
+                            setExpandedComments((items) => ({
+                              ...items,
+                              [c.id]: !commentsExpanded,
+                            }))
+                          }
+                          className="mt-2 text-sm font-bold text-primary"
+                        >
+                          {commentsExpanded ? "Show less" : `See ${comments.length - 2} more`}
+                        </button>
+                      )}
+                    </section>
+                  )}
                   {reposted ? (
                     <button
                       disabled
@@ -881,7 +1401,9 @@ function Explorer({
                     </button>
                   ) : confirming ? (
                     <div className="mt-5 rounded-lg border border-primary/30 bg-primary-soft p-3 text-sm">
-                      <p className="font-medium">Repost this problem to add your community support?</p>
+                      <p className="font-medium">
+                        Repost this problem to add your community support?
+                      </p>
                       <label className="mt-3 block text-xs font-medium text-muted-foreground">
                         Add any points about this problem (optional)
                         <textarea
@@ -940,22 +1462,146 @@ function Explorer({
     </section>
   );
 }
-function OrganizationRegistration({ user, go, flash }: { user: User | null; go: (x: Screen) => void; flash: (x: string) => void }) {
-  const [name, setName] = useState(""), [kind, setKind] = useState("Institution"), [district, setDistrict] = useState(""), [locality, setLocality] = useState(""), [contact, setContact] = useState(""), [expertise, setExpertise] = useState(""), [capabilities, setCapabilities] = useState(""), [busy, setBusy] = useState(false);
+function OrganizationRegistration({
+  user,
+  go,
+  flash,
+}: {
+  user: User | null;
+  go: (x: Screen) => void;
+  flash: (x: string) => void;
+}) {
+  const [name, setName] = useState(""),
+    [kind, setKind] = useState("Institution"),
+    [district, setDistrict] = useState(""),
+    [locality, setLocality] = useState(""),
+    [contact, setContact] = useState(""),
+    [expertise, setExpertise] = useState(""),
+    [capabilities, setCapabilities] = useState(""),
+    [busy, setBusy] = useState(false);
   if (!user) return <Forbidden />;
   const submit = async () => {
     setBusy(true);
-    const { error } = await supabase!.from("organization_accounts").upsert({ owner_id: user.id, name, organization_type: kind, district, locality, contact_email: contact, expertise: expertise.split(",").map((x) => x.trim()).filter(Boolean), capabilities: capabilities.split(",").map((x) => x.trim()).filter(Boolean) }, { onConflict: "owner_id" });
+    const { error } = await supabase!.from("organization_accounts").upsert(
+      {
+        owner_id: user.id,
+        name,
+        organization_type: kind,
+        district,
+        locality,
+        contact_email: contact,
+        expertise: expertise
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean),
+        capabilities: capabilities
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean),
+      },
+      { onConflict: "owner_id" },
+    );
     setBusy(false);
-    if (error) flash(error.message); else { flash("Organization profile saved."); go("coordinator"); }
+    if (error) flash(error.message);
+    else {
+      flash("Organization profile saved.");
+      go("coordinator");
+    }
   };
-  return <section className="container-page max-w-2xl py-12"><h1 className="text-3xl font-bold">Register your organization</h1><p className="mt-2 text-muted-foreground">You can review and correct the location before saving.</p><div className="card-surface mt-6 grid gap-3 p-6"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="Organization name *" className="rounded-lg border border-input p-3" /><select value={kind} onChange={(e) => setKind(e.target.value)} className="rounded-lg border border-input p-3"><option>Institution</option><option>NGO</option><option>CSR / Industry</option></select><div className="grid gap-3 sm:grid-cols-2"><input value={district} onChange={(e) => setDistrict(e.target.value)} placeholder="District" className="rounded-lg border border-input p-3" /><input value={locality} onChange={(e) => setLocality(e.target.value)} placeholder="Locality" className="rounded-lg border border-input p-3" /></div><input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Contact email" className="rounded-lg border border-input p-3" /><input value={expertise} onChange={(e) => setExpertise(e.target.value)} placeholder="Areas of expertise (comma separated)" className="rounded-lg border border-input p-3" /><input value={capabilities} onChange={(e) => setCapabilities(e.target.value)} placeholder="Resources and capabilities (comma separated)" className="rounded-lg border border-input p-3" /><button disabled={!name || busy} onClick={() => void submit()} className="rounded-lg bg-primary px-5 py-3 font-bold text-primary-foreground disabled:opacity-50">{busy ? "Saving…" : "Save and open coordinator dashboard"}</button></div></section>;
+  return (
+    <section className="container-page max-w-2xl py-12">
+      <h1 className="text-3xl font-bold">Register your organization</h1>
+      <p className="mt-2 text-muted-foreground">
+        You can review and correct the location before saving.
+      </p>
+      <div className="card-surface mt-6 grid gap-3 p-6">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Organization name *"
+          className="rounded-lg border border-input p-3"
+        />
+        <select
+          value={kind}
+          onChange={(e) => setKind(e.target.value)}
+          className="rounded-lg border border-input p-3"
+        >
+          <option>Institution</option>
+          <option>NGO</option>
+          <option>CSR / Industry</option>
+        </select>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <input
+            value={district}
+            onChange={(e) => setDistrict(e.target.value)}
+            placeholder="District"
+            className="rounded-lg border border-input p-3"
+          />
+          <input
+            value={locality}
+            onChange={(e) => setLocality(e.target.value)}
+            placeholder="Locality"
+            className="rounded-lg border border-input p-3"
+          />
+        </div>
+        <input
+          value={contact}
+          onChange={(e) => setContact(e.target.value)}
+          placeholder="Contact email"
+          className="rounded-lg border border-input p-3"
+        />
+        <input
+          value={expertise}
+          onChange={(e) => setExpertise(e.target.value)}
+          placeholder="Areas of expertise (comma separated)"
+          className="rounded-lg border border-input p-3"
+        />
+        <input
+          value={capabilities}
+          onChange={(e) => setCapabilities(e.target.value)}
+          placeholder="Resources and capabilities (comma separated)"
+          className="rounded-lg border border-input p-3"
+        />
+        <button
+          disabled={!name || busy}
+          onClick={() => void submit()}
+          className="rounded-lg bg-primary px-5 py-3 font-bold text-primary-foreground disabled:opacity-50"
+        >
+          {busy ? "Saving…" : "Save and open coordinator dashboard"}
+        </button>
+      </div>
+    </section>
+  );
 }
 
-type OrganizationTaskStatus = "Pending" | "Accepted" | "Students Assigned" | "Work in Progress" | "Solved" | "Couldn't Solve — Reassigned";
-type OrganizationTask = { id: string; title: string; description: string; category: string; location: string; coordinates: string; reported: string; priority: "High" | "Medium" | "Low"; status: OrganizationTaskStatus; students: string[]; remarks?: string };
+type OrganizationTaskStatus =
+  | "Pending"
+  | "Accepted"
+  | "Students Assigned"
+  | "Work in Progress"
+  | "Solved"
+  | "Couldn't Solve — Reassigned";
+type OrganizationTask = {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  location: string;
+  coordinates: string;
+  reported: string;
+  priority: "High" | "Medium" | "Low";
+  status: OrganizationTaskStatus;
+  students: string[];
+  remarks?: string;
+};
 
-function OrganizationDashboard({ user, flash }: { user: User | null; flash: (x: string) => void }) {
+function OrganizationDashboardLegacy({
+  user,
+  flash,
+}: {
+  user: User | null;
+  flash: (x: string) => void;
+}) {
   const [section, setSection] = useState("Dashboard");
   const [showInstitute, setShowInstitute] = useState(false);
   const [showAssign, setShowAssign] = useState(false);
@@ -965,51 +1611,1786 @@ function OrganizationDashboard({ user, flash }: { user: User | null; flash: (x: 
   const [newCount, setNewCount] = useState("20");
   const [reason, setReason] = useState("Insufficient skilled participants");
   const [remarks, setRemarks] = useState("");
-  const [institutes, setInstitutes] = useState([{ name: "ABC University", count: 20, history: ["20 participants · Today"] }, { name: "XYZ Institute", count: 15, history: ["15 participants · Today"] }]);
+  const [institutes, setInstitutes] = useState([
+    { name: "ABC University", count: 20, history: ["20 participants · Today"] },
+    { name: "XYZ Institute", count: 15, history: ["15 participants · Today"] },
+  ]);
   const [tasks, setTasks] = useState<OrganizationTask[]>([
-    { id: "SS-1024", title: "Damaged street light on main road", description: "A street-light pole near the Duvvada junction is damaged and has been non-functional for three nights, creating a safety concern for residents.", category: "Electricity & Energy", location: "Duvvada, Ward 12", coordinates: "17.7231, 83.3014", reported: "Today, 09:42 AM", priority: "High", status: "Pending", students: [] },
-    { id: "SS-1021", title: "Unsafe drinking-water supply", description: "Residents reported discoloured water and need field testing and a documented response.", category: "Water & Sanitation", location: "MVP Colony, Sector 4", coordinates: "17.7416, 83.3230", reported: "Yesterday, 03:18 PM", priority: "Medium", status: "Accepted", students: ["Aditi Kumari"] },
-    { id: "SS-1018", title: "Drainage blockage after rainfall", description: "Storm-water drainage is blocked along the school boundary.", category: "Roads & Infrastructure", location: "Madhurawada", coordinates: "17.8194, 83.3502", reported: "28 Aug, 11:06 AM", priority: "Low", status: "Work in Progress", students: ["Ravi Singh", "Sai Teja"] },
+    {
+      id: "SS-1024",
+      title: "Damaged street light on main road",
+      description:
+        "A street-light pole near the Duvvada junction is damaged and has been non-functional for three nights, creating a safety concern for residents.",
+      category: "Electricity & Energy",
+      location: "Duvvada, Ward 12",
+      coordinates: "17.7231, 83.3014",
+      reported: "Today, 09:42 AM",
+      priority: "High",
+      status: "Pending",
+      students: [],
+    },
+    {
+      id: "SS-1021",
+      title: "Unsafe drinking-water supply",
+      description:
+        "Residents reported discoloured water and need field testing and a documented response.",
+      category: "Water & Sanitation",
+      location: "MVP Colony, Sector 4",
+      coordinates: "17.7416, 83.3230",
+      reported: "Yesterday, 03:18 PM",
+      priority: "Medium",
+      status: "Accepted",
+      students: ["Aditi Kumari"],
+    },
+    {
+      id: "SS-1018",
+      title: "Drainage blockage after rainfall",
+      description: "Storm-water drainage is blocked along the school boundary.",
+      category: "Roads & Infrastructure",
+      location: "Madhurawada",
+      coordinates: "17.8194, 83.3502",
+      reported: "28 Aug, 11:06 AM",
+      priority: "Low",
+      status: "Work in Progress",
+      students: ["Ravi Singh", "Sai Teja"],
+    },
   ]);
   const task = tasks.find((item) => item.id === selectedTask) ?? tasks[0];
   if (!user) return <Forbidden />;
-  const statusTone: Record<OrganizationTaskStatus, string> = { "Pending": "bg-amber-100 text-amber-800", "Accepted": "bg-sky-100 text-sky-800", "Students Assigned": "bg-violet-100 text-violet-800", "Work in Progress": "bg-orange-100 text-orange-800", "Solved": "bg-emerald-100 text-emerald-800", "Couldn't Solve — Reassigned": "bg-rose-100 text-rose-800" };
-  const updateTask = (id: string, patch: Partial<OrganizationTask>) => setTasks((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item));
+  const statusTone: Record<OrganizationTaskStatus, string> = {
+    Pending: "bg-amber-100 text-amber-800",
+    Accepted: "bg-sky-100 text-sky-800",
+    "Students Assigned": "bg-violet-100 text-violet-800",
+    "Work in Progress": "bg-orange-100 text-orange-800",
+    Solved: "bg-emerald-100 text-emerald-800",
+    "Couldn't Solve — Reassigned": "bg-rose-100 text-rose-800",
+  };
+  const updateTask = (id: string, patch: Partial<OrganizationTask>) =>
+    setTasks((items) => items.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   const saveInstitute = () => {
     const count = Number(newCount || 0);
     setInstitutes((items) => {
-      const found = items.find((item) => item.name.toLowerCase() === instituteName.trim().toLowerCase());
-      if (found) return items.map((item) => item === found ? { ...item, count, history: [`${count} participants · ${new Date().toLocaleString()}`, ...item.history] } : item);
-      return [...items, { name: instituteName.trim() || "New Institute", count, history: [`${count} participants · ${new Date().toLocaleString()}`] }];
+      const found = items.find(
+        (item) => item.name.toLowerCase() === instituteName.trim().toLowerCase(),
+      );
+      if (found)
+        return items.map((item) =>
+          item === found
+            ? {
+                ...item,
+                count,
+                history: [
+                  `${count} participants · ${new Date().toLocaleString()}`,
+                  ...item.history,
+                ],
+              }
+            : item,
+        );
+      return [
+        ...items,
+        {
+          name: instituteName.trim() || "New Institute",
+          count,
+          history: [`${count} participants · ${new Date().toLocaleString()}`],
+        },
+      ];
     });
-    setShowInstitute(false); flash("Skilled participant availability updated.");
+    setShowInstitute(false);
+    flash("Skilled participant availability updated.");
   };
   const downloadReport = () => {
-    const rows = [["Task ID", "Problem Title", "Problem Location", "Organization Name", "University / Institute", "Student Full Name", "Student Roll Number", "Student Skill / Expertise", "Assignment Date", "Task Status", "Remarks"], ...task.students.map((student, i) => [task.id, task.title, task.location, "SamajSetu Partner Organization", i ? "XYZ Institute" : "ABC University", student, `21A01A00${i + 1}`, i ? "Civil" : "Electrical", new Date().toLocaleDateString(), task.status, task.remarks ?? ""])];
-    const blob = new Blob([rows.map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\n")], { type: "text/csv" });
-    const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `${task.id}-student-report.csv`; link.click(); URL.revokeObjectURL(link.href); flash("Excel-compatible task report downloaded.");
+    const rows = [
+      [
+        "Task ID",
+        "Problem Title",
+        "Problem Location",
+        "Organization Name",
+        "University / Institute",
+        "Student Full Name",
+        "Student Roll Number",
+        "Student Skill / Expertise",
+        "Assignment Date",
+        "Task Status",
+        "Remarks",
+      ],
+      ...task.students.map((student, i) => [
+        task.id,
+        task.title,
+        task.location,
+        "SamajSetu Partner Organization",
+        i ? "XYZ Institute" : "ABC University",
+        student,
+        `21A01A00${i + 1}`,
+        i ? "Civil" : "Electrical",
+        new Date().toLocaleDateString(),
+        task.status,
+        task.remarks ?? "",
+      ]),
+    ];
+    const blob = new Blob(
+      [
+        rows
+          .map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(","))
+          .join("\n"),
+      ],
+      { type: "text/csv" },
+    );
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `${task.id}-student-report.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    flash("Excel-compatible task report downloaded.");
   };
-  const nav = ["Dashboard", "Institutes / Universities", "Skilled Participants", "Assigned Tasks", "Active Tasks", "Completed Tasks", "Could Not Solve", "Task Tracking", "Reports / Excel Upload", "Profile"];
-  const visibleTasks = section === "Active Tasks" ? tasks.filter((item) => ["Accepted", "Students Assigned", "Work in Progress"].includes(item.status)) : section === "Completed Tasks" ? tasks.filter((item) => item.status === "Solved") : section === "Could Not Solve" ? tasks.filter((item) => item.status.includes("Couldn't")) : tasks;
-  return <div className="min-h-screen bg-surface"><div className="mx-auto flex max-w-[1600px]"><aside className="sticky top-0 hidden h-screen w-68 shrink-0 border-r border-border bg-card p-5 lg:block"><div className="flex items-center gap-3 px-2"><div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground"><Building2 size={20}/></div><div><b>SamajSetu</b><p className="text-xs text-muted-foreground">Organization portal</p></div></div><nav className="mt-8 space-y-1">{nav.map((item) => <button key={item} onClick={() => setSection(item)} className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-semibold ${section === item ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-surface hover:text-foreground"}`}>{item === "Dashboard" ? <LayoutDashboard size={17}/> : item.includes("Institute") ? <Building2 size={17}/> : item.includes("Participant") ? <Users size={17}/> : item.includes("Tracking") ? <ListChecks size={17}/> : item.includes("Report") ? <FileSpreadsheet size={17}/> : <ClipboardCheck size={17}/>} {item}</button>)}</nav><button onClick={() => flash("Signed out successfully.")} className="mt-7 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-semibold text-muted-foreground hover:bg-surface"><LogOut size={17}/> Logout</button></aside><main className="min-w-0 flex-1 p-4 sm:p-7"><header className="flex flex-wrap items-center justify-between gap-4"><div><p className="text-sm font-medium text-primary">ORGANIZATION WORKSPACE</p><h1 className="mt-1 text-2xl font-bold sm:text-3xl">Welcome, SamajSetu Partner Organization</h1><p className="mt-1 text-sm text-muted-foreground">Manage skilled participants, assignments, and outcomes in one place.</p></div><button onClick={() => setShowInstitute(true)} className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground"><Plus size={17}/> Add / Update Skilled Participants</button></header>
-  {section === "Dashboard" && <><div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-6"><DashboardStat label="Total Skilled Participants" value={institutes.reduce((sum, item) => sum + item.count, 0)} icon={<Users size={18}/>}/><DashboardStat label="Available Participants" value={institutes.reduce((sum, item) => sum + item.count, 0) - 8} icon={<BadgeCheck size={18}/>}/><DashboardStat label="Active Tasks" value={tasks.filter((item) => ["Accepted", "Students Assigned", "Work in Progress"].includes(item.status)).length} icon={<Activity size={18}/>}/><DashboardStat label="Completed Tasks" value={tasks.filter((item) => item.status === "Solved").length + 18} icon={<CheckCircle2 size={18}/>}/><DashboardStat label="Pending Tasks" value={tasks.filter((item) => item.status === "Pending").length} icon={<Clock3 size={18}/>}/><DashboardStat label="Reassigned Tasks" value={tasks.filter((item) => item.status.includes("Couldn't")).length + 2} icon={<Repeat2 size={18}/>}/></div><section className="mt-7"><div className="flex items-center justify-between"><div><h2 className="text-xl font-bold">Recent Assigned Tasks</h2><p className="text-sm text-muted-foreground">New citizen-reported problems assigned to your organization.</p></div><button onClick={() => setSection("Assigned Tasks")} className="text-sm font-bold text-primary">View all</button></div><TaskTable tasks={tasks} statusTone={statusTone} onOpen={(id) => { setSelectedTask(id); setSection("Task Tracking"); }} onAccept={(id) => { updateTask(id, { status: "Accepted" }); flash("Task accepted. You can now assign skilled participants."); }}/></section><section className="mt-7"><div className="flex items-center justify-between"><div><h2 className="text-xl font-bold">Skilled Participants Availability</h2><p className="text-sm text-muted-foreground">Live availability by institute or university.</p></div><button onClick={() => setShowInstitute(true)} className="text-sm font-bold text-primary">Modify count</button></div><InstituteTable institutes={institutes} onEdit={(item) => { setInstituteName(item.name); setNewCount(String(item.count)); setShowInstitute(true); }}/></section></>}
-  {(section === "Institutes / Universities" || section === "Skilled Participants") && <section className="mt-7"><h2 className="text-2xl font-bold">Skilled Participants Availability</h2><p className="mt-2 text-muted-foreground">Update the available skilled-participant count as it changes. Every update is retained in its history.</p><InstituteTable institutes={institutes} onEdit={(item) => { setInstituteName(item.name); setNewCount(String(item.count)); setShowInstitute(true); }}/></section>}
-  {["Assigned Tasks", "Active Tasks", "Completed Tasks", "Could Not Solve"].includes(section) && <section className="mt-7"><h2 className="text-2xl font-bold">{section}</h2><p className="mt-2 text-muted-foreground">Open a task to see full citizen-provided information and manage its delivery.</p><TaskTable tasks={visibleTasks} statusTone={statusTone} onOpen={(id) => { setSelectedTask(id); setSection("Task Tracking"); }} onAccept={(id) => { updateTask(id, { status: "Accepted" }); flash("Task accepted."); }}/></section>}
-  {section === "Task Tracking" && <section className="mt-7"><button onClick={() => setSection("Assigned Tasks")} className="text-sm font-bold text-primary">← Back to assigned tasks</button><div className="mt-3 grid gap-6 xl:grid-cols-[1.2fr_.8fr]"><article className="card-surface p-6"><div className="flex flex-wrap items-start justify-between gap-3"><div><span className="text-xs font-bold text-primary">{task.id} · {task.category.toUpperCase()}</span><h2 className="mt-2 text-2xl font-bold">{task.title}</h2></div><span className={`rounded-full px-3 py-1 text-xs font-bold ${statusTone[task.status]}`}>{task.status}</span></div><p className="mt-4 leading-7 text-muted-foreground">{task.description}</p><div className="mt-5 grid gap-3 sm:grid-cols-2"><Info label="Location" value={task.location} icon={<MapPin size={16}/>}/><Info label="GPS location" value={task.coordinates} icon={<Navigation size={16}/>}/><Info label="Reported" value={task.reported} icon={<CalendarDays size={16}/>}/><Info label="Priority" value={task.priority} icon={<BadgeCheck size={16}/>}/></div><div className="mt-6 rounded-xl border border-border bg-surface p-4"><p className="text-xs font-bold text-muted-foreground">CITIZEN-PROVIDED INFORMATION</p><p className="mt-2 text-sm">Attachments and original report media will appear here when connected to the reporting backend.</p><div className="mt-3 flex gap-2"><span className="rounded-lg bg-card px-3 py-2 text-xs font-semibold"><ImageIcon className="mr-1 inline text-primary" size={14}/> Photo evidence</span><span className="rounded-lg bg-card px-3 py-2 text-xs font-semibold"><Paperclip className="mr-1 inline text-primary" size={14}/> Report details</span></div></div><div className="mt-6 flex flex-wrap gap-3">{task.status === "Pending" && <button onClick={() => { updateTask(task.id, { status: "Accepted" }); flash("Task accepted successfully."); }} className="rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground">Accept Task</button>}{task.status !== "Pending" && task.status !== "Solved" && !task.status.includes("Couldn't") && <><button onClick={() => setShowAssign(true)} className="rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground">Assign Students</button><button onClick={() => updateTask(task.id, { status: "Work in Progress" })} className="rounded-lg border border-primary px-4 py-2.5 text-sm font-bold text-primary">Mark work in progress</button><button onClick={() => setShowClose("solved")} className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white">✓ Solved</button><button onClick={() => setShowClose("failed")} className="rounded-lg border border-destructive px-4 py-2.5 text-sm font-bold text-destructive">✕ Couldn't Solve</button></>}<button onClick={downloadReport} className="rounded-lg border border-input px-4 py-2.5 text-sm font-bold"><Download className="mr-1 inline" size={16}/> Generate Excel Report</button></div></article><aside className="space-y-5"><div className="card-surface p-5"><h3 className="font-bold">Task progress</h3>{["Task Assigned", "Task Accepted", "Students Assigned", "Work in Progress", "Solved / Could Not Solve"].map((step, index) => { const active = index === 0 || (index === 1 && task.status !== "Pending") || (index === 2 && task.students.length > 0) || (index === 3 && task.status === "Work in Progress") || (index === 4 && (task.status === "Solved" || task.status.includes("Couldn't"))); return <div key={step} className="mt-4 flex gap-3"><div className={`grid size-6 shrink-0 place-items-center rounded-full text-xs font-bold ${active ? "bg-primary text-primary-foreground" : "bg-surface text-muted-foreground"}`}>{active ? "✓" : index + 1}</div><div><p className="text-sm font-semibold">{step}</p>{active && <p className="text-xs text-muted-foreground">Updated in this workspace</p>}</div></div>; })}</div><div className="card-surface p-5"><h3 className="font-bold">Assigned students</h3>{task.students.length ? task.students.map((student, i) => <div className="mt-3 flex items-center gap-3" key={student}><div className="grid size-9 place-items-center rounded-full bg-primary-soft text-xs font-bold text-primary">{student.split(" ").map((part) => part[0]).join("")}</div><div><p className="text-sm font-semibold">{student}</p><p className="text-xs text-muted-foreground">{i ? "Civil Engineering" : "Electrical Engineering"} · Available</p></div></div>) : <p className="mt-3 text-sm text-muted-foreground">No students assigned yet.</p>}</div><div className="card-surface p-5"><h3 className="font-bold">Reassignment history</h3><p className="mt-3 text-sm text-muted-foreground">If this organization cannot solve the task, the system records the reason and routes it to the nearest suitable partner based on location, expertise, and availability.</p></div></aside></div></section>}
-  {section === "Reports / Excel Upload" && <section className="mt-7 card-surface p-7"><FileSpreadsheet className="text-primary" size={28}/><h2 className="mt-4 text-2xl font-bold">Reports & Excel Upload</h2><p className="mt-2 max-w-2xl text-muted-foreground">Download a structured, Excel-compatible student assignment record for any task or upload the final verified report when a task is completed.</p><div className="mt-6 flex flex-wrap gap-3"><button onClick={downloadReport} className="rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground"><Download className="mr-1 inline" size={16}/> Generate Excel Report</button><label className="cursor-pointer rounded-lg border border-input px-4 py-2.5 text-sm font-bold"><Upload className="mr-1 inline" size={16}/> Upload final Excel<input onChange={() => flash("Excel report uploaded successfully.")} type="file" accept=".xlsx,.xls,.csv" className="hidden"/></label></div></section>}
-  {section === "Profile" && <section className="mt-7 card-surface max-w-2xl p-7"><UserRound className="text-primary"/><h2 className="mt-4 text-2xl font-bold">Organization profile</h2><p className="mt-2 text-muted-foreground">Keep organization details, expertise, and location current to improve future matching and reassignment.</p><button onClick={() => flash("Open the registration profile to update organization details.")} className="mt-5 rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground">Edit organization profile</button></section>}
-  </main></div>
-  {showInstitute && <Modal title="Add / Update Skilled Participants" close={() => setShowInstitute(false)}><label className="block text-sm font-semibold">University / Institute Name<input value={instituteName} onChange={(event) => setInstituteName(event.target.value)} className="mt-1.5 w-full rounded-lg border border-input p-3 font-normal"/></label><div className="mt-4 grid gap-4 sm:grid-cols-2"><label className="text-sm font-semibold">Current count<input value={String(institutes.find((item) => item.name === instituteName)?.count ?? 0)} readOnly className="mt-1.5 w-full rounded-lg border border-input bg-surface p-3 font-normal"/></label><label className="text-sm font-semibold">New count<input type="number" min="0" value={newCount} onChange={(event) => setNewCount(event.target.value)} className="mt-1.5 w-full rounded-lg border border-input p-3 font-normal"/></label></div><label className="mt-4 block text-sm font-semibold">Date / time of update<input value={new Date().toLocaleString()} readOnly className="mt-1.5 w-full rounded-lg border border-input bg-surface p-3 font-normal"/></label><button onClick={saveInstitute} className="mt-5 w-full rounded-lg bg-primary py-3 font-bold text-primary-foreground">Update Count</button></Modal>}
-  {showAssign && <Modal title={`Assign students · ${task.id}`} close={() => setShowAssign(false)}><p className="text-sm text-muted-foreground">Select available students from your university/institute pool.</p>{["Aditi Kumari", "Ravi Singh", "Sai Teja"].map((student, index) => <label className="mt-3 flex cursor-pointer items-center gap-3 rounded-lg border border-border p-3" key={student}><input type="checkbox" defaultChecked={task.students.includes(student)} value={student}/><div className="flex-1"><b className="text-sm">{student}</b><p className="text-xs text-muted-foreground">21A01A00{index + 1} · {index === 1 ? "Civil" : index === 2 ? "IT" : "Electrical"} · {index === 2 ? "XYZ Institute" : "ABC University"}</p></div><span className="text-xs font-bold text-emerald-700">Available</span></label>)}<button onClick={() => { const checks = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:checked')).map((input) => input.value).filter((value) => ["Aditi Kumari", "Ravi Singh", "Sai Teja"].includes(value)); updateTask(task.id, { students: checks, status: checks.length ? "Students Assigned" : task.status }); setShowAssign(false); flash(`${checks.length} skilled participants assigned.`); }} className="mt-5 w-full rounded-lg bg-primary py-3 font-bold text-primary-foreground">Assign Selected Students</button></Modal>}
-  {showClose && <Modal title={showClose === "solved" ? "Submit completed task" : "Couldn't solve this task"} close={() => setShowClose(null)}>{showClose === "solved" ? <><label className="block text-sm font-semibold">Completion date<input type="date" className="mt-1.5 w-full rounded-lg border border-input p-3 font-normal"/></label><label className="mt-4 block text-sm font-semibold">Work completion remarks<textarea value={remarks} onChange={(event) => setRemarks(event.target.value)} className="mt-1.5 min-h-24 w-full rounded-lg border border-input p-3 font-normal" placeholder="Describe completed work and proof provided."/></label><label className="mt-4 block cursor-pointer rounded-lg border border-dashed border-input p-4 text-center text-sm font-semibold"><Upload className="mr-1 inline" size={16}/> Upload proof / final Excel<input type="file" className="hidden"/></label><button onClick={() => { updateTask(task.id, { status: "Solved", remarks }); setShowClose(null); flash("Completed task submitted. Excel Report: Uploaded ✓"); }} className="mt-5 w-full rounded-lg bg-emerald-600 py-3 font-bold text-white">Submit Completed Task</button></> : <><label className="block text-sm font-semibold">Reason<select value={reason} onChange={(event) => setReason(event.target.value)} className="mt-1.5 w-full rounded-lg border border-input bg-background p-3 font-normal">{["Insufficient skilled participants", "Required resources unavailable", "Technical difficulty", "Location/accessibility problem", "Time constraint", "Equipment unavailable", "Safety issue", "Other"].map((option) => <option key={option}>{option}</option>)}</select></label><label className="mt-4 block text-sm font-semibold">Additional remarks<textarea value={remarks} onChange={(event) => setRemarks(event.target.value)} className="mt-1.5 min-h-24 w-full rounded-lg border border-input p-3 font-normal"/></label><button onClick={() => { updateTask(task.id, { status: "Couldn't Solve — Reassigned", remarks: `${reason}. ${remarks}` }); setShowClose(null); flash("Task could not be completed. A nearby suitable organization is being notified for reassignment."); }} className="mt-5 w-full rounded-lg bg-destructive py-3 font-bold text-destructive-foreground">Confirm & Reassign Task</button></>}</Modal>}
-  </div>;
+  const nav = [
+    "Dashboard",
+    "Institutes / Universities",
+    "Skilled Participants",
+    "Assigned Tasks",
+    "Active Tasks",
+    "Completed Tasks",
+    "Could Not Solve",
+    "Task Tracking",
+    "Reports / Excel Upload",
+    "Profile",
+  ];
+  const visibleTasks =
+    section === "Active Tasks"
+      ? tasks.filter((item) =>
+          ["Accepted", "Students Assigned", "Work in Progress"].includes(item.status),
+        )
+      : section === "Completed Tasks"
+        ? tasks.filter((item) => item.status === "Solved")
+        : section === "Could Not Solve"
+          ? tasks.filter((item) => item.status.includes("Couldn't"))
+          : tasks;
+  return (
+    <div className="min-h-screen bg-surface">
+      <div className="mx-auto flex max-w-[1600px]">
+        <aside className="sticky top-0 hidden h-screen w-68 shrink-0 border-r border-border bg-card p-5 lg:block">
+          <div className="flex items-center gap-3 px-2">
+            <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground">
+              <Building2 size={20} />
+            </div>
+            <div>
+              <b>SamajSetu</b>
+              <p className="text-xs text-muted-foreground">Organization portal</p>
+            </div>
+          </div>
+          <nav className="mt-8 space-y-1">
+            {nav.map((item) => (
+              <button
+                key={item}
+                onClick={() => setSection(item)}
+                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-semibold ${section === item ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-surface hover:text-foreground"}`}
+              >
+                {item === "Dashboard" ? (
+                  <LayoutDashboard size={17} />
+                ) : item.includes("Institute") ? (
+                  <Building2 size={17} />
+                ) : item.includes("Participant") ? (
+                  <Users size={17} />
+                ) : item.includes("Tracking") ? (
+                  <ListChecks size={17} />
+                ) : item.includes("Report") ? (
+                  <FileSpreadsheet size={17} />
+                ) : (
+                  <ClipboardCheck size={17} />
+                )}{" "}
+                {item}
+              </button>
+            ))}
+          </nav>
+          <button
+            onClick={() => flash("Signed out successfully.")}
+            className="mt-7 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-semibold text-muted-foreground hover:bg-surface"
+          >
+            <LogOut size={17} /> Logout
+          </button>
+        </aside>
+        <main className="min-w-0 flex-1 p-4 sm:p-7">
+          <header className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-primary">ORGANIZATION WORKSPACE</p>
+              <h1 className="mt-1 text-2xl font-bold sm:text-3xl">
+                Welcome, SamajSetu Partner Organization
+              </h1>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Manage skilled participants, assignments, and outcomes in one place.
+              </p>
+            </div>
+            <button
+              onClick={() => setShowInstitute(true)}
+              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground"
+            >
+              <Plus size={17} /> Add / Update Skilled Participants
+            </button>
+          </header>
+          {section === "Dashboard" && (
+            <>
+              <div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+                <DashboardStat
+                  label="Total Skilled Participants"
+                  value={institutes.reduce((sum, item) => sum + item.count, 0)}
+                  icon={<Users size={18} />}
+                />
+                <DashboardStat
+                  label="Available Participants"
+                  value={institutes.reduce((sum, item) => sum + item.count, 0) - 8}
+                  icon={<BadgeCheck size={18} />}
+                />
+                <DashboardStat
+                  label="Active Tasks"
+                  value={
+                    tasks.filter((item) =>
+                      ["Accepted", "Students Assigned", "Work in Progress"].includes(item.status),
+                    ).length
+                  }
+                  icon={<Activity size={18} />}
+                />
+                <DashboardStat
+                  label="Completed Tasks"
+                  value={tasks.filter((item) => item.status === "Solved").length + 18}
+                  icon={<CheckCircle2 size={18} />}
+                />
+                <DashboardStat
+                  label="Pending Tasks"
+                  value={tasks.filter((item) => item.status === "Pending").length}
+                  icon={<Clock3 size={18} />}
+                />
+                <DashboardStat
+                  label="Reassigned Tasks"
+                  value={tasks.filter((item) => item.status.includes("Couldn't")).length + 2}
+                  icon={<Repeat2 size={18} />}
+                />
+              </div>
+              <section className="mt-7">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-xl font-bold">Recent Assigned Tasks</h2>
+                    <p className="text-sm text-muted-foreground">
+                      New citizen-reported problems assigned to your organization.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setSection("Assigned Tasks")}
+                    className="text-sm font-bold text-primary"
+                  >
+                    View all
+                  </button>
+                </div>
+                <TaskTable
+                  tasks={tasks}
+                  statusTone={statusTone}
+                  onOpen={(id) => {
+                    setSelectedTask(id);
+                    setSection("Task Tracking");
+                  }}
+                  onAccept={(id) => {
+                    updateTask(id, { status: "Accepted" });
+                    flash("Task accepted. You can now assign skilled participants.");
+                  }}
+                />
+              </section>
+              <section className="mt-7">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-xl font-bold">Skilled Participants Availability</h2>
+                    <p className="text-sm text-muted-foreground">
+                      Live availability by institute or university.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setShowInstitute(true)}
+                    className="text-sm font-bold text-primary"
+                  >
+                    Modify count
+                  </button>
+                </div>
+                <InstituteTable
+                  institutes={institutes}
+                  onEdit={(item) => {
+                    setInstituteName(item.name);
+                    setNewCount(String(item.count));
+                    setShowInstitute(true);
+                  }}
+                />
+              </section>
+            </>
+          )}
+          {(section === "Institutes / Universities" || section === "Skilled Participants") && (
+            <section className="mt-7">
+              <h2 className="text-2xl font-bold">Skilled Participants Availability</h2>
+              <p className="mt-2 text-muted-foreground">
+                Update the available skilled-participant count as it changes. Every update is
+                retained in its history.
+              </p>
+              <InstituteTable
+                institutes={institutes}
+                onEdit={(item) => {
+                  setInstituteName(item.name);
+                  setNewCount(String(item.count));
+                  setShowInstitute(true);
+                }}
+              />
+            </section>
+          )}
+          {["Assigned Tasks", "Active Tasks", "Completed Tasks", "Could Not Solve"].includes(
+            section,
+          ) && (
+            <section className="mt-7">
+              <h2 className="text-2xl font-bold">{section}</h2>
+              <p className="mt-2 text-muted-foreground">
+                Open a task to see full citizen-provided information and manage its delivery.
+              </p>
+              <TaskTable
+                tasks={visibleTasks}
+                statusTone={statusTone}
+                onOpen={(id) => {
+                  setSelectedTask(id);
+                  setSection("Task Tracking");
+                }}
+                onAccept={(id) => {
+                  updateTask(id, { status: "Accepted" });
+                  flash("Task accepted.");
+                }}
+              />
+            </section>
+          )}
+          {section === "Task Tracking" && (
+            <section className="mt-7">
+              <button
+                onClick={() => setSection("Assigned Tasks")}
+                className="text-sm font-bold text-primary"
+              >
+                ← Back to assigned tasks
+              </button>
+              <div className="mt-3 grid gap-6 xl:grid-cols-[1.2fr_.8fr]">
+                <article className="card-surface p-6">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <span className="text-xs font-bold text-primary">
+                        {task.id} · {task.category.toUpperCase()}
+                      </span>
+                      <h2 className="mt-2 text-2xl font-bold">{task.title}</h2>
+                    </div>
+                    <span
+                      className={`rounded-full px-3 py-1 text-xs font-bold ${statusTone[task.status]}`}
+                    >
+                      {task.status}
+                    </span>
+                  </div>
+                  <p className="mt-4 leading-7 text-muted-foreground">{task.description}</p>
+                  <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                    <Info label="Location" value={task.location} icon={<MapPin size={16} />} />
+                    <Info
+                      label="GPS location"
+                      value={task.coordinates}
+                      icon={<Navigation size={16} />}
+                    />
+                    <Info
+                      label="Reported"
+                      value={task.reported}
+                      icon={<CalendarDays size={16} />}
+                    />
+                    <Info label="Priority" value={task.priority} icon={<BadgeCheck size={16} />} />
+                  </div>
+                  <div className="mt-6 rounded-xl border border-border bg-surface p-4">
+                    <p className="text-xs font-bold text-muted-foreground">
+                      CITIZEN-PROVIDED INFORMATION
+                    </p>
+                    <p className="mt-2 text-sm">
+                      Attachments and original report media will appear here when connected to the
+                      reporting backend.
+                    </p>
+                    <div className="mt-3 flex gap-2">
+                      <span className="rounded-lg bg-card px-3 py-2 text-xs font-semibold">
+                        <ImageIcon className="mr-1 inline text-primary" size={14} /> Photo evidence
+                      </span>
+                      <span className="rounded-lg bg-card px-3 py-2 text-xs font-semibold">
+                        <Paperclip className="mr-1 inline text-primary" size={14} /> Report details
+                      </span>
+                    </div>
+                  </div>
+                  <div className="mt-6 flex flex-wrap gap-3">
+                    {task.status === "Pending" && (
+                      <button
+                        onClick={() => {
+                          updateTask(task.id, { status: "Accepted" });
+                          flash("Task accepted successfully.");
+                        }}
+                        className="rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground"
+                      >
+                        Accept Task
+                      </button>
+                    )}
+                    {task.status !== "Pending" &&
+                      task.status !== "Solved" &&
+                      !task.status.includes("Couldn't") && (
+                        <>
+                          <button
+                            onClick={() => setShowAssign(true)}
+                            className="rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground"
+                          >
+                            Assign Students
+                          </button>
+                          <button
+                            onClick={() => updateTask(task.id, { status: "Work in Progress" })}
+                            className="rounded-lg border border-primary px-4 py-2.5 text-sm font-bold text-primary"
+                          >
+                            Mark work in progress
+                          </button>
+                          <button
+                            onClick={() => setShowClose("solved")}
+                            className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white"
+                          >
+                            ✓ Solved
+                          </button>
+                          <button
+                            onClick={() => setShowClose("failed")}
+                            className="rounded-lg border border-destructive px-4 py-2.5 text-sm font-bold text-destructive"
+                          >
+                            ✕ Couldn't Solve
+                          </button>
+                        </>
+                      )}
+                    <button
+                      onClick={downloadReport}
+                      className="rounded-lg border border-input px-4 py-2.5 text-sm font-bold"
+                    >
+                      <Download className="mr-1 inline" size={16} /> Generate Excel Report
+                    </button>
+                  </div>
+                </article>
+                <aside className="space-y-5">
+                  <div className="card-surface p-5">
+                    <h3 className="font-bold">Task progress</h3>
+                    {[
+                      "Task Assigned",
+                      "Task Accepted",
+                      "Students Assigned",
+                      "Work in Progress",
+                      "Solved / Could Not Solve",
+                    ].map((step, index) => {
+                      const active =
+                        index === 0 ||
+                        (index === 1 && task.status !== "Pending") ||
+                        (index === 2 && task.students.length > 0) ||
+                        (index === 3 && task.status === "Work in Progress") ||
+                        (index === 4 &&
+                          (task.status === "Solved" || task.status.includes("Couldn't")));
+                      return (
+                        <div key={step} className="mt-4 flex gap-3">
+                          <div
+                            className={`grid size-6 shrink-0 place-items-center rounded-full text-xs font-bold ${active ? "bg-primary text-primary-foreground" : "bg-surface text-muted-foreground"}`}
+                          >
+                            {active ? "✓" : index + 1}
+                          </div>
+                          <div>
+                            <p className="text-sm font-semibold">{step}</p>
+                            {active && (
+                              <p className="text-xs text-muted-foreground">
+                                Updated in this workspace
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="card-surface p-5">
+                    <h3 className="font-bold">Assigned students</h3>
+                    {task.students.length ? (
+                      task.students.map((student, i) => (
+                        <div className="mt-3 flex items-center gap-3" key={student}>
+                          <div className="grid size-9 place-items-center rounded-full bg-primary-soft text-xs font-bold text-primary">
+                            {student
+                              .split(" ")
+                              .map((part) => part[0])
+                              .join("")}
+                          </div>
+                          <div>
+                            <p className="text-sm font-semibold">{student}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {i ? "Civil Engineering" : "Electrical Engineering"} · Available
+                            </p>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="mt-3 text-sm text-muted-foreground">
+                        No students assigned yet.
+                      </p>
+                    )}
+                  </div>
+                  <div className="card-surface p-5">
+                    <h3 className="font-bold">Reassignment history</h3>
+                    <p className="mt-3 text-sm text-muted-foreground">
+                      If this organization cannot solve the task, the system records the reason and
+                      routes it to the nearest suitable partner based on location, expertise, and
+                      availability.
+                    </p>
+                  </div>
+                </aside>
+              </div>
+            </section>
+          )}
+          {section === "Reports / Excel Upload" && (
+            <section className="mt-7 card-surface p-7">
+              <FileSpreadsheet className="text-primary" size={28} />
+              <h2 className="mt-4 text-2xl font-bold">Reports & Excel Upload</h2>
+              <p className="mt-2 max-w-2xl text-muted-foreground">
+                Download a structured, Excel-compatible student assignment record for any task or
+                upload the final verified report when a task is completed.
+              </p>
+              <div className="mt-6 flex flex-wrap gap-3">
+                <button
+                  onClick={downloadReport}
+                  className="rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground"
+                >
+                  <Download className="mr-1 inline" size={16} /> Generate Excel Report
+                </button>
+                <label className="cursor-pointer rounded-lg border border-input px-4 py-2.5 text-sm font-bold">
+                  <Upload className="mr-1 inline" size={16} /> Upload final Excel
+                  <input
+                    onChange={() => flash("Excel report uploaded successfully.")}
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    className="hidden"
+                  />
+                </label>
+              </div>
+            </section>
+          )}
+          {section === "Profile" && (
+            <section className="mt-7 card-surface max-w-2xl p-7">
+              <UserRound className="text-primary" />
+              <h2 className="mt-4 text-2xl font-bold">Organization profile</h2>
+              <p className="mt-2 text-muted-foreground">
+                Keep organization details, expertise, and location current to improve future
+                matching and reassignment.
+              </p>
+              <button
+                onClick={() =>
+                  flash("Open the registration profile to update organization details.")
+                }
+                className="mt-5 rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground"
+              >
+                Edit organization profile
+              </button>
+            </section>
+          )}
+        </main>
+      </div>
+      {showInstitute && (
+        <Modal title="Add / Update Skilled Participants" close={() => setShowInstitute(false)}>
+          <label className="block text-sm font-semibold">
+            University / Institute Name
+            <input
+              value={instituteName}
+              onChange={(event) => setInstituteName(event.target.value)}
+              className="mt-1.5 w-full rounded-lg border border-input p-3 font-normal"
+            />
+          </label>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <label className="text-sm font-semibold">
+              Current count
+              <input
+                value={String(institutes.find((item) => item.name === instituteName)?.count ?? 0)}
+                readOnly
+                className="mt-1.5 w-full rounded-lg border border-input bg-surface p-3 font-normal"
+              />
+            </label>
+            <label className="text-sm font-semibold">
+              New count
+              <input
+                type="number"
+                min="0"
+                value={newCount}
+                onChange={(event) => setNewCount(event.target.value)}
+                className="mt-1.5 w-full rounded-lg border border-input p-3 font-normal"
+              />
+            </label>
+          </div>
+          <label className="mt-4 block text-sm font-semibold">
+            Date / time of update
+            <input
+              value={new Date().toLocaleString()}
+              readOnly
+              className="mt-1.5 w-full rounded-lg border border-input bg-surface p-3 font-normal"
+            />
+          </label>
+          <button
+            onClick={saveInstitute}
+            className="mt-5 w-full rounded-lg bg-primary py-3 font-bold text-primary-foreground"
+          >
+            Update Count
+          </button>
+        </Modal>
+      )}
+      {showAssign && (
+        <Modal title={`Assign students · ${task.id}`} close={() => setShowAssign(false)}>
+          <p className="text-sm text-muted-foreground">
+            Select available students from your university/institute pool.
+          </p>
+          {["Aditi Kumari", "Ravi Singh", "Sai Teja"].map((student, index) => (
+            <label
+              className="mt-3 flex cursor-pointer items-center gap-3 rounded-lg border border-border p-3"
+              key={student}
+            >
+              <input
+                type="checkbox"
+                defaultChecked={task.students.includes(student)}
+                value={student}
+              />
+              <div className="flex-1">
+                <b className="text-sm">{student}</b>
+                <p className="text-xs text-muted-foreground">
+                  21A01A00{index + 1} · {index === 1 ? "Civil" : index === 2 ? "IT" : "Electrical"}{" "}
+                  · {index === 2 ? "XYZ Institute" : "ABC University"}
+                </p>
+              </div>
+              <span className="text-xs font-bold text-emerald-700">Available</span>
+            </label>
+          ))}
+          <button
+            onClick={() => {
+              const checks = Array.from(
+                document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:checked'),
+              )
+                .map((input) => input.value)
+                .filter((value) => ["Aditi Kumari", "Ravi Singh", "Sai Teja"].includes(value));
+              updateTask(task.id, {
+                students: checks,
+                status: checks.length ? "Students Assigned" : task.status,
+              });
+              setShowAssign(false);
+              flash(`${checks.length} skilled participants assigned.`);
+            }}
+            className="mt-5 w-full rounded-lg bg-primary py-3 font-bold text-primary-foreground"
+          >
+            Assign Selected Students
+          </button>
+        </Modal>
+      )}
+      {showClose && (
+        <Modal
+          title={showClose === "solved" ? "Submit completed task" : "Couldn't solve this task"}
+          close={() => setShowClose(null)}
+        >
+          {showClose === "solved" ? (
+            <>
+              <label className="block text-sm font-semibold">
+                Completion date
+                <input
+                  type="date"
+                  className="mt-1.5 w-full rounded-lg border border-input p-3 font-normal"
+                />
+              </label>
+              <label className="mt-4 block text-sm font-semibold">
+                Work completion remarks
+                <textarea
+                  value={remarks}
+                  onChange={(event) => setRemarks(event.target.value)}
+                  className="mt-1.5 min-h-24 w-full rounded-lg border border-input p-3 font-normal"
+                  placeholder="Describe completed work and proof provided."
+                />
+              </label>
+              <label className="mt-4 block cursor-pointer rounded-lg border border-dashed border-input p-4 text-center text-sm font-semibold">
+                <Upload className="mr-1 inline" size={16} /> Upload proof / final Excel
+                <input type="file" className="hidden" />
+              </label>
+              <button
+                onClick={() => {
+                  updateTask(task.id, { status: "Solved", remarks });
+                  setShowClose(null);
+                  flash("Completed task submitted. Excel Report: Uploaded ✓");
+                }}
+                className="mt-5 w-full rounded-lg bg-emerald-600 py-3 font-bold text-white"
+              >
+                Submit Completed Task
+              </button>
+            </>
+          ) : (
+            <>
+              <label className="block text-sm font-semibold">
+                Reason
+                <select
+                  value={reason}
+                  onChange={(event) => setReason(event.target.value)}
+                  className="mt-1.5 w-full rounded-lg border border-input bg-background p-3 font-normal"
+                >
+                  {[
+                    "Insufficient skilled participants",
+                    "Required resources unavailable",
+                    "Technical difficulty",
+                    "Location/accessibility problem",
+                    "Time constraint",
+                    "Equipment unavailable",
+                    "Safety issue",
+                    "Other",
+                  ].map((option) => (
+                    <option key={option}>{option}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="mt-4 block text-sm font-semibold">
+                Additional remarks
+                <textarea
+                  value={remarks}
+                  onChange={(event) => setRemarks(event.target.value)}
+                  className="mt-1.5 min-h-24 w-full rounded-lg border border-input p-3 font-normal"
+                />
+              </label>
+              <button
+                onClick={() => {
+                  updateTask(task.id, {
+                    status: "Couldn't Solve — Reassigned",
+                    remarks: `${reason}. ${remarks}`,
+                  });
+                  setShowClose(null);
+                  flash(
+                    "Task could not be completed. A nearby suitable organization is being notified for reassignment.",
+                  );
+                }}
+                className="mt-5 w-full rounded-lg bg-destructive py-3 font-bold text-destructive-foreground"
+              >
+                Confirm & Reassign Task
+              </button>
+            </>
+          )}
+        </Modal>
+      )}
+    </div>
+  );
 }
 
-function DashboardStat({ label, value, icon }: { label: string; value: number; icon: React.ReactNode }) { return <div className="card-surface p-4"><div className="flex items-center justify-between text-primary">{icon}<span className="text-2xl font-bold text-foreground">{value}</span></div><p className="mt-3 text-xs font-semibold text-muted-foreground">{label}</p></div>; }
-function Info({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) { return <div className="flex gap-3 rounded-lg bg-surface p-3"><span className="text-primary">{icon}</span><div><p className="text-xs font-semibold text-muted-foreground">{label}</p><p className="mt-0.5 text-sm font-semibold">{value}</p></div></div>; }
-function InstituteTable({ institutes, onEdit }: { institutes: { name: string; count: number; history: string[] }[]; onEdit: (item: { name: string; count: number }) => void }) { return <div className="card-surface mt-5 overflow-x-auto"><table className="w-full min-w-150 text-left text-sm"><thead className="border-b border-border bg-surface text-xs text-muted-foreground"><tr><th className="px-5 py-3">UNIVERSITY / INSTITUTE</th><th className="px-5 py-3">SKILLED PARTICIPANTS</th><th className="px-5 py-3">STATUS</th><th className="px-5 py-3">LAST UPDATE</th><th className="px-5 py-3"></th></tr></thead><tbody>{institutes.map((item) => <tr className="border-b border-border last:border-0" key={item.name}><td className="px-5 py-4 font-semibold">{item.name}</td><td className="px-5 py-4">{item.count}</td><td className="px-5 py-4"><span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-bold text-emerald-800">Available</span></td><td className="px-5 py-4 text-xs text-muted-foreground">{item.history[0]}</td><td className="px-5 py-4"><button onClick={() => onEdit(item)} className="font-bold text-primary">Modify</button></td></tr>)}</tbody></table></div>; }
-function TaskTable({ tasks, statusTone, onOpen, onAccept }: { tasks: OrganizationTask[]; statusTone: Record<OrganizationTaskStatus, string>; onOpen: (id: string) => void; onAccept: (id: string) => void }) { return <div className="card-surface mt-5 overflow-x-auto"><table className="w-full min-w-200 text-left text-sm"><thead className="border-b border-border bg-surface text-xs text-muted-foreground"><tr><th className="px-5 py-3">TASK ID</th><th className="px-5 py-3">PROBLEM</th><th className="px-5 py-3">LOCATION</th><th className="px-5 py-3">PRIORITY</th><th className="px-5 py-3">STATUS</th><th className="px-5 py-3">ACTION</th></tr></thead><tbody>{tasks.length ? tasks.map((item) => <tr className="border-b border-border last:border-0" key={item.id}><td className="px-5 py-4 font-bold text-primary">#{item.id.replace("SS-", "")}</td><td className="max-w-72 px-5 py-4"><p className="font-semibold">{item.title}</p><p className="mt-1 line-clamp-1 text-xs text-muted-foreground">{item.category}</p></td><td className="px-5 py-4">{item.location}</td><td className="px-5 py-4"><span className={`font-bold ${item.priority === "High" ? "text-destructive" : item.priority === "Medium" ? "text-warn" : "text-primary"}`}>{item.priority}</span></td><td className="px-5 py-4"><span className={`whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-bold ${statusTone[item.status]}`}>{item.status}</span></td><td className="px-5 py-4"><div className="flex gap-2">{item.status === "Pending" && <button onClick={() => onAccept(item.id)} className="whitespace-nowrap rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground">Accept Task</button>}<button onClick={() => onOpen(item.id)} className="whitespace-nowrap rounded-lg border border-input px-3 py-2 text-xs font-bold">{item.status === "Pending" ? "View task" : "Track progress"}</button></div></td></tr>) : <tr><td colSpan={6} className="px-5 py-10 text-center text-muted-foreground">No tasks in this category yet.</td></tr>}</tbody></table></div>; }
-function Modal({ title, close, children }: { title: string; close: () => void; children: React.ReactNode }) { return <div className="fixed inset-0 z-50 grid place-items-center bg-ink/45 p-4"><div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-card p-6 shadow-lift"><div className="flex items-center justify-between gap-4"><h2 className="text-xl font-bold">{title}</h2><button onClick={close} className="rounded-lg p-1 text-muted-foreground"><XCircle size={21}/></button></div>{children}</div></div>; }
+function DashboardStat({
+  label,
+  value,
+  icon,
+}: {
+  label: string;
+  value: number;
+  icon: React.ReactNode;
+}) {
+  return (
+    <div className="card-surface p-4">
+      <div className="flex items-center justify-between text-primary">
+        {icon}
+        <span className="text-2xl font-bold text-foreground">{value}</span>
+      </div>
+      <p className="mt-3 text-xs font-semibold text-muted-foreground">{label}</p>
+    </div>
+  );
+}
+function Info({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
+  return (
+    <div className="flex gap-3 rounded-lg bg-surface p-3">
+      <span className="text-primary">{icon}</span>
+      <div>
+        <p className="text-xs font-semibold text-muted-foreground">{label}</p>
+        <p className="mt-0.5 text-sm font-semibold">{value}</p>
+      </div>
+    </div>
+  );
+}
+function InstituteTable({
+  institutes,
+  onEdit,
+}: {
+  institutes: { name: string; count: number; history: string[] }[];
+  onEdit: (item: { name: string; count: number }) => void;
+}) {
+  return (
+    <div className="card-surface mt-5 overflow-x-auto">
+      <table className="w-full min-w-150 text-left text-sm">
+        <thead className="border-b border-border bg-surface text-xs text-muted-foreground">
+          <tr>
+            <th className="px-5 py-3">UNIVERSITY / INSTITUTE</th>
+            <th className="px-5 py-3">SKILLED PARTICIPANTS</th>
+            <th className="px-5 py-3">STATUS</th>
+            <th className="px-5 py-3">LAST UPDATE</th>
+            <th className="px-5 py-3"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {institutes.map((item) => (
+            <tr className="border-b border-border last:border-0" key={item.name}>
+              <td className="px-5 py-4 font-semibold">{item.name}</td>
+              <td className="px-5 py-4">{item.count}</td>
+              <td className="px-5 py-4">
+                <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-bold text-emerald-800">
+                  Available
+                </span>
+              </td>
+              <td className="px-5 py-4 text-xs text-muted-foreground">{item.history[0]}</td>
+              <td className="px-5 py-4">
+                <button onClick={() => onEdit(item)} className="font-bold text-primary">
+                  Modify
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+function TaskTable({
+  tasks,
+  statusTone,
+  onOpen,
+  onAccept,
+}: {
+  tasks: OrganizationTask[];
+  statusTone: Record<OrganizationTaskStatus, string>;
+  onOpen: (id: string) => void;
+  onAccept: (id: string) => void;
+}) {
+  return (
+    <div className="card-surface mt-5 overflow-x-auto">
+      <table className="w-full min-w-200 text-left text-sm">
+        <thead className="border-b border-border bg-surface text-xs text-muted-foreground">
+          <tr>
+            <th className="px-5 py-3">TASK ID</th>
+            <th className="px-5 py-3">PROBLEM</th>
+            <th className="px-5 py-3">LOCATION</th>
+            <th className="px-5 py-3">PRIORITY</th>
+            <th className="px-5 py-3">STATUS</th>
+            <th className="px-5 py-3">ACTION</th>
+          </tr>
+        </thead>
+        <tbody>
+          {tasks.length ? (
+            tasks.map((item) => (
+              <tr className="border-b border-border last:border-0" key={item.id}>
+                <td className="px-5 py-4 font-bold text-primary">#{item.id.replace("SS-", "")}</td>
+                <td className="max-w-72 px-5 py-4">
+                  <p className="font-semibold">{item.title}</p>
+                  <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">{item.category}</p>
+                </td>
+                <td className="px-5 py-4">{item.location}</td>
+                <td className="px-5 py-4">
+                  <span
+                    className={`font-bold ${item.priority === "High" ? "text-destructive" : item.priority === "Medium" ? "text-warn" : "text-primary"}`}
+                  >
+                    {item.priority}
+                  </span>
+                </td>
+                <td className="px-5 py-4">
+                  <span
+                    className={`whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-bold ${statusTone[item.status]}`}
+                  >
+                    {item.status}
+                  </span>
+                </td>
+                <td className="px-5 py-4">
+                  <div className="flex gap-2">
+                    {item.status === "Pending" && (
+                      <button
+                        onClick={() => onAccept(item.id)}
+                        className="whitespace-nowrap rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground"
+                      >
+                        Accept Task
+                      </button>
+                    )}
+                    <button
+                      onClick={() => onOpen(item.id)}
+                      className="whitespace-nowrap rounded-lg border border-input px-3 py-2 text-xs font-bold"
+                    >
+                      {item.status === "Pending" ? "View task" : "Track progress"}
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))
+          ) : (
+            <tr>
+              <td colSpan={6} className="px-5 py-10 text-center text-muted-foreground">
+                No tasks in this category yet.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+function Modal({
+  title,
+  close,
+  children,
+}: {
+  title: string;
+  close: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-ink/45 p-4">
+      <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-card p-6 shadow-lift">
+        <div className="flex items-center justify-between gap-4">
+          <h2 className="text-xl font-bold">{title}</h2>
+          <button onClick={close} className="rounded-lg p-1 text-muted-foreground">
+            <XCircle size={21} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+type PartnerMember = {
+  id: string;
+  name: string;
+  identifier: string;
+  skill: string;
+  available: boolean;
+};
+type PartnerTaskStatus =
+  | "Pending"
+  | "Accepted"
+  | "People Assigned"
+  | "Work in Progress"
+  | "Solved"
+  | "Couldn't Solve — Reassigned";
+type PartnerTask = {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  location: string;
+  coordinates: string;
+  reported: string;
+  priority: "High" | "Medium" | "Low";
+  status: PartnerTaskStatus;
+  people: string[];
+  remarks?: string;
+};
+
+function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: string) => void }) {
+  const isNgo = user?.user_metadata?.["organization_type"] === "NGO";
+  const partnerName = String(
+    user?.user_metadata?.["display_name"] || (isNgo ? "Community NGO" : "Partner Organization"),
+  );
+  const singular = isNgo ? "Volunteer" : "Skilled Participant",
+    plural = `${singular}s`;
+  const [section, setSection] = useState("Dashboard"),
+    [selectedId, setSelectedId] = useState("SS-1024"),
+    [available, setAvailable] = useState(20),
+    [countModal, setCountModal] = useState(false),
+    [peopleModal, setPeopleModal] = useState(false),
+    [editingMemberId, setEditingMemberId] = useState<string | null>(null),
+    [memberName, setMemberName] = useState(""),
+    [memberIdentifier, setMemberIdentifier] = useState(""),
+    [memberSkill, setMemberSkill] = useState(""),
+    [assignModal, setAssignModal] = useState(false),
+    [finishModal, setFinishModal] = useState<"solved" | "failed" | null>(null),
+    [remarks, setRemarks] = useState(""),
+    [reason, setReason] = useState("Required resources unavailable"),
+    [chosen, setChosen] = useState<string[]>([]);
+  const [members, setMembers] = useState<PartnerMember[]>([
+    {
+      id: "p1",
+      name: "Rahul Kumar",
+      identifier: isNgo ? "VOL-104" : "21A01",
+      skill: "Electrical",
+      available: true,
+    },
+    {
+      id: "p2",
+      name: "Suresh Kumar",
+      identifier: isNgo ? "VOL-126" : "21A02",
+      skill: "Civil",
+      available: true,
+    },
+    {
+      id: "p3",
+      name: "Priya Sharma",
+      identifier: isNgo ? "VOL-132" : "21A03",
+      skill: "IT & GIS",
+      available: true,
+    },
+  ]);
+  const [tasks, setTasks] = useState<PartnerTask[]>([
+    {
+      id: "SS-1024",
+      title: "Damaged street light on main road",
+      description:
+        "A street-light pole near Duvvada junction has been non-functional for three nights, creating a safety concern for residents.",
+      category: "Electricity & Energy",
+      location: "Duvvada, Ward 12",
+      coordinates: "17.7231, 83.3014",
+      reported: "Today, 09:42 AM",
+      priority: "High",
+      status: "Pending",
+      people: [],
+    },
+    {
+      id: "SS-1021",
+      title: "Unsafe drinking-water supply",
+      description:
+        "Residents reported discoloured water and need field testing and a documented response.",
+      category: "Water & Sanitation",
+      location: "MVP Colony, Sector 4",
+      coordinates: "17.7416, 83.3230",
+      reported: "Yesterday, 03:18 PM",
+      priority: "Medium",
+      status: "Accepted",
+      people: ["Rahul Kumar"],
+    },
+    {
+      id: "SS-1018",
+      title: "Drainage blockage after rainfall",
+      description: "Storm-water drainage is blocked along the school boundary.",
+      category: "Roads & Infrastructure",
+      location: "Madhurawada",
+      coordinates: "17.8194, 83.3502",
+      reported: "28 Aug, 11:06 AM",
+      priority: "Low",
+      status: "Work in Progress",
+      people: ["Suresh Kumar"],
+    },
+  ]);
+  useEffect(() => {
+    if (!user || !supabase) return;
+    const metadata = user.user_metadata;
+    const latitude = Number(metadata["latitude"]);
+    const longitude = Number(metadata["longitude"]);
+    void supabase
+      .from("organization_accounts")
+      .upsert(
+        {
+          owner_id: user.id,
+          name: partnerName,
+          organization_type: isNgo ? "NGO" : "Organization",
+          contact_email: user.email ?? null,
+          latitude: Number.isFinite(latitude) ? latitude : null,
+          longitude: Number.isFinite(longitude) ? longitude : null,
+          expertise: String(metadata["expertise"] || "")
+            .split(",")
+            .map((item) => item.trim())
+            .filter(Boolean),
+          capabilities: String(metadata["resources"] || "")
+            .split(",")
+            .map((item) => item.trim())
+            .filter(Boolean),
+        },
+        { onConflict: "owner_id" },
+      )
+      .then(({ error }) => {
+        if (error) flash(`Could not sync this ${isNgo ? "NGO" : "organization"}: ${error.message}`);
+      });
+  }, [user, isNgo, partnerName]);
+  if (!user) return <Forbidden />;
+  const task = tasks.find((item) => item.id === selectedId) ?? tasks[0];
+  const update = (id: string, patch: Partial<PartnerTask>) =>
+    setTasks((items) => items.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  const open = (id: string) => {
+    setSelectedId(id);
+    setSection("Task Details");
+  };
+  const openMemberForm = (member?: PartnerMember) => {
+    setEditingMemberId(member?.id ?? null);
+    setMemberName(member?.name ?? "");
+    setMemberIdentifier(member?.identifier ?? "");
+    setMemberSkill(member?.skill ?? "");
+    setPeopleModal(true);
+  };
+  const saveMember = () => {
+    if (!memberName.trim() || !memberIdentifier.trim() || !memberSkill.trim()) {
+      flash(`Enter the ${singular.toLowerCase()}'s name, ID, and skill.`);
+      return;
+    }
+    if (editingMemberId) {
+      setMembers((items) =>
+        items.map((item) =>
+          item.id === editingMemberId
+            ? {
+                ...item,
+                name: memberName.trim(),
+                identifier: memberIdentifier.trim(),
+                skill: memberSkill.trim(),
+              }
+            : item,
+        ),
+      );
+      flash(`${singular} updated.`);
+    } else {
+      setMembers((items) => [
+        ...items,
+        {
+          id: crypto.randomUUID(),
+          name: memberName.trim(),
+          identifier: memberIdentifier.trim(),
+          skill: memberSkill.trim(),
+          available: true,
+        },
+      ]);
+      flash(`${singular} added.`);
+    }
+    setPeopleModal(false);
+  };
+  const tone = (s: PartnerTaskStatus) =>
+    s === "Solved"
+      ? "bg-emerald-100 text-emerald-800"
+      : s.includes("Couldn't")
+        ? "bg-rose-100 text-rose-800"
+        : s === "Pending"
+          ? "bg-amber-100 text-amber-800"
+          : "bg-sky-100 text-sky-800";
+  const filtered =
+    section === "Active Tasks"
+      ? tasks.filter((t) => ["Accepted", "People Assigned", "Work in Progress"].includes(t.status))
+      : section === "Completed Tasks"
+        ? tasks.filter((t) => t.status === "Solved")
+        : section === "Couldn't Solve"
+          ? tasks.filter((t) => t.status.includes("Couldn't"))
+          : tasks;
+  const excel = () => {
+    const rows = [
+      [
+        "Task ID",
+        "Problem title",
+        "Problem location",
+        "Organization name",
+        "Student full name",
+        "Roll number",
+        "Skill",
+        "Assignment date",
+        "Task status",
+        "Remarks",
+      ],
+      ...task.people.map((name) => {
+        const p = members.find((m) => m.name === name);
+        return [
+          task.id,
+          task.title,
+          task.location,
+          partnerName,
+          name,
+          p?.identifier ?? "",
+          p?.skill ?? "",
+          new Date().toLocaleDateString(),
+          task.status,
+          task.remarks ?? "",
+        ];
+      }),
+    ];
+    const blob = new Blob(
+      [
+        rows
+          .map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(","))
+          .join("\n"),
+      ],
+      { type: "text/csv" },
+    );
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `${task.id}-participant-report.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    flash("Excel-compatible participant report downloaded.");
+  };
+  const nav = [
+    "Dashboard",
+    plural,
+    "Assigned Tasks",
+    "Active Tasks",
+    "Completed Tasks",
+    "Couldn't Solve",
+  ];
+  return (
+    <div className="min-h-screen bg-surface">
+      <div className="mx-auto flex max-w-[1600px]">
+        <aside className="sticky top-0 hidden h-screen w-68 shrink-0 border-r border-border bg-card p-5 lg:block">
+          <div className="flex items-center gap-3 px-2">
+            <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground">
+              <Building2 size={20} />
+            </div>
+            <div>
+              <b>SamajSetu</b>
+              <p className="text-xs text-muted-foreground">
+                {isNgo ? "NGO portal" : "Organization portal"}
+              </p>
+            </div>
+          </div>
+          <nav className="mt-8 space-y-1">
+            {nav.map((item) => (
+              <button
+                key={item}
+                onClick={() => setSection(item === plural ? "People" : item)}
+                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-semibold ${section === (item === plural ? "People" : item) ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-surface"}`}
+              >
+                {item === "Dashboard" ? (
+                  <LayoutDashboard size={17} />
+                ) : item === plural ? (
+                  <Users size={17} />
+                ) : (
+                  <ClipboardCheck size={17} />
+                )}{" "}
+                {item}
+              </button>
+            ))}
+          </nav>
+        </aside>
+        <main className="min-w-0 flex-1 p-4 sm:p-7">
+          <header className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-primary">
+                {isNgo ? "NGO" : "ORGANIZATION"} WORKSPACE
+              </p>
+              <h1 className="mt-1 text-2xl font-bold sm:text-3xl">Welcome, {partnerName}</h1>
+              <p className="mt-1 text-sm text-muted-foreground">Logged in as: {partnerName}</p>
+            </div>
+            <button
+              onClick={() => setCountModal(true)}
+              className="rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground"
+            >
+              Update {isNgo ? "Volunteer" : "Participant"} Count
+            </button>
+          </header>
+          {section === "Dashboard" && (
+            <>
+              <div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
+                <DashboardStat
+                  label={`Total ${plural}`}
+                  value={members.length}
+                  icon={<Users size={18} />}
+                />
+                <DashboardStat
+                  label={`Currently Available ${plural}`}
+                  value={available}
+                  icon={<BadgeCheck size={18} />}
+                />
+                <DashboardStat
+                  label="Active Tasks"
+                  value={
+                    tasks.filter((t) =>
+                      ["Accepted", "People Assigned", "Work in Progress"].includes(t.status),
+                    ).length
+                  }
+                  icon={<Activity size={18} />}
+                />
+                <DashboardStat
+                  label="Pending Tasks"
+                  value={tasks.filter((t) => t.status === "Pending").length}
+                  icon={<Clock3 size={18} />}
+                />
+                <DashboardStat
+                  label="Completed Tasks"
+                  value={tasks.filter((t) => t.status === "Solved").length}
+                  icon={<CheckCircle2 size={18} />}
+                />
+                <DashboardStat
+                  label="Couldn't Solve"
+                  value={tasks.filter((t) => t.status.includes("Couldn't")).length}
+                  icon={<XCircle size={18} />}
+                />
+                <DashboardStat
+                  label="Reassigned Tasks"
+                  value={tasks.filter((t) => t.status.includes("Couldn't")).length}
+                  icon={<Repeat2 size={18} />}
+                />
+              </div>
+              <h2 className="mt-8 text-xl font-bold">Recent Assigned Tasks</h2>
+              <PartnerTaskCards
+                tasks={tasks}
+                tone={tone}
+                open={open}
+                accept={(id) => {
+                  update(id, { status: "Accepted" });
+                  flash("Task accepted. Assign your available team next.");
+                }}
+              />
+            </>
+          )}
+          {section === "People" && (
+            <section className="mt-7">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold">{plural}</h2>
+                  <p className="mt-1 text-muted-foreground">
+                    Only this account's {plural.toLowerCase()} are visible and manageable here.
+                  </p>
+                </div>
+                <button
+                  onClick={() => openMemberForm()}
+                  className="rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground"
+                >
+                  Add {singular}
+                </button>
+              </div>
+              <div className="mt-5 overflow-x-auto card-surface">
+                <table className="w-full min-w-150 text-left text-sm">
+                  <thead className="bg-surface text-xs text-muted-foreground">
+                    <tr>
+                      <th className="p-4">FULL NAME</th>
+                      <th className="p-4">{isNgo ? "VOLUNTEER ID" : "ROLL / PARTICIPANT ID"}</th>
+                      <th className="p-4">SKILL</th>
+                      <th className="p-4">AVAILABILITY</th>
+                      <th className="p-4">ASSIGNMENT STATUS</th>
+                      <th className="p-4">MANAGE</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {members.map((m) => (
+                      <tr key={m.id} className="border-t border-border">
+                        <td className="p-4 font-semibold">{m.name}</td>
+                        <td className="p-4">{m.identifier}</td>
+                        <td className="p-4">{m.skill}</td>
+                        <td className="p-4">
+                          <button
+                            onClick={() =>
+                              setMembers((all) =>
+                                all.map((x) =>
+                                  x.id === m.id ? { ...x, available: !x.available } : x,
+                                ),
+                              )
+                            }
+                            className={`rounded-full px-2.5 py-1 text-xs font-bold ${m.available ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-700"}`}
+                          >
+                            {m.available ? "Available" : "Unavailable"}
+                          </button>
+                        </td>
+                        <td className="p-4 text-muted-foreground">
+                          {tasks.some((t) => t.people.includes(m.name))
+                            ? "Assigned"
+                            : "Not assigned"}
+                        </td>
+                        <td className="p-4">
+                          <div className="flex gap-3 text-xs font-bold">
+                            <button onClick={() => openMemberForm(m)} className="text-primary">
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => {
+                                setMembers((all) => all.filter((item) => item.id !== m.id));
+                                flash(`${singular} removed.`);
+                              }}
+                              className="text-destructive"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+          {["Assigned Tasks", "Active Tasks", "Completed Tasks", "Couldn't Solve"].includes(
+            section,
+          ) && (
+            <section className="mt-7">
+              <h2 className="text-2xl font-bold">{section}</h2>
+              <p className="mt-2 text-muted-foreground">
+                Every task includes the complete report, priority, location, GPS coordinates, and
+                submitted attachments.
+              </p>
+              <PartnerTaskCards
+                tasks={filtered}
+                tone={tone}
+                open={open}
+                accept={(id) => {
+                  update(id, { status: "Accepted" });
+                  flash("Task accepted.");
+                }}
+              />
+            </section>
+          )}
+          {section === "Task Details" && (
+            <section className="mt-7">
+              <button
+                onClick={() => setSection("Assigned Tasks")}
+                className="text-sm font-bold text-primary"
+              >
+                ← Back to assigned tasks
+              </button>
+              <div className="mt-4 grid gap-6 xl:grid-cols-[1.2fr_.8fr]">
+                <article className="card-surface p-6">
+                  <div className="flex flex-wrap justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-bold text-primary">
+                        {task.id} · {task.category.toUpperCase()}
+                      </p>
+                      <h2 className="mt-2 text-2xl font-bold">{task.title}</h2>
+                    </div>
+                    <span
+                      className={`h-fit rounded-full px-3 py-1 text-xs font-bold ${tone(task.status)}`}
+                    >
+                      {task.status}
+                    </span>
+                  </div>
+                  <h3 className="mt-7 font-bold">Problem Information</h3>
+                  <p className="mt-2 leading-7 text-muted-foreground">{task.description}</p>
+                  <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                    <Info
+                      label="Problem location"
+                      value={task.location}
+                      icon={<MapPin size={16} />}
+                    />
+                    <Info
+                      label="Latitude / Longitude / GPS"
+                      value={task.coordinates}
+                      icon={<Navigation size={16} />}
+                    />
+                    <Info
+                      label="Date / time reported"
+                      value={task.reported}
+                      icon={<CalendarDays size={16} />}
+                    />
+                    <Info label="Priority" value={task.priority} icon={<BadgeCheck size={16} />} />
+                  </div>
+                  <div className="mt-5 rounded-xl bg-surface p-4">
+                    <b className="text-sm">Attachments & additional information</b>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Photo, video, document evidence and all reporter-provided information are
+                      retained with this task.
+                    </p>
+                  </div>
+                  <div className="mt-6 flex flex-wrap gap-3">
+                    {task.status === "Pending" && (
+                      <button
+                        onClick={() => update(task.id, { status: "Accepted" })}
+                        className="rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground"
+                      >
+                        Accept Task
+                      </button>
+                    )}
+                    {!["Pending", "Solved"].includes(task.status) &&
+                      !task.status.includes("Couldn't") && (
+                        <>
+                          <button
+                            onClick={() => {
+                              setChosen(task.people);
+                              setAssignModal(true);
+                            }}
+                            className="rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground"
+                          >
+                            Assign {plural}
+                          </button>
+                          <button
+                            onClick={() => update(task.id, { status: "Work in Progress" })}
+                            className="rounded-lg border border-primary px-4 py-2.5 text-sm font-bold text-primary"
+                          >
+                            Work in Progress
+                          </button>
+                          <button
+                            onClick={() => setFinishModal("solved")}
+                            className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white"
+                          >
+                            ✓ Solved
+                          </button>
+                          <button
+                            onClick={() => setFinishModal("failed")}
+                            className="rounded-lg border border-destructive px-4 py-2.5 text-sm font-bold text-destructive"
+                          >
+                            ✕ Couldn't Solve
+                          </button>
+                        </>
+                      )}
+                    {!isNgo && (
+                      <button
+                        onClick={excel}
+                        className="rounded-lg border border-input px-4 py-2.5 text-sm font-bold"
+                      >
+                        <Download className="mr-1 inline" size={16} /> Generate Excel Report
+                      </button>
+                    )}
+                  </div>
+                </article>
+                <aside className="space-y-5">
+                  <div className="card-surface p-5">
+                    <h3 className="font-bold">Progress timeline</h3>
+                    {[
+                      "Task Assigned",
+                      "Task Accepted",
+                      `${plural} Assigned`,
+                      "Work in Progress",
+                      "Solved / Couldn't Solve",
+                    ].map((step, i) => (
+                      <div key={step} className="mt-4 flex gap-3">
+                        <div
+                          className={`grid size-6 place-items-center rounded-full text-xs font-bold ${i === 0 || (i === 1 && task.status !== "Pending") || (i === 2 && task.people.length) || (i === 3 && task.status === "Work in Progress") || (i === 4 && (task.status === "Solved" || task.status.includes("Couldn't"))) ? "bg-primary text-primary-foreground" : "bg-surface"}`}
+                        >
+                          {i + 1}
+                        </div>
+                        <p className="text-sm font-semibold">{step}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="card-surface p-5">
+                    <h3 className="font-bold">Assigned {plural}</h3>
+                    {task.people.length ? (
+                      task.people.map((name) => (
+                        <p
+                          key={name}
+                          className="mt-3 rounded-lg bg-surface p-3 text-sm font-semibold"
+                        >
+                          {name}
+                        </p>
+                      ))
+                    ) : (
+                      <p className="mt-3 text-sm text-muted-foreground">
+                        No {plural.toLowerCase()} assigned yet.
+                      </p>
+                    )}
+                  </div>
+                </aside>
+              </div>
+            </section>
+          )}
+        </main>
+      </div>
+      {countModal && (
+        <Modal
+          title={`Update ${isNgo ? "Volunteer" : "Participant"} Count`}
+          close={() => setCountModal(false)}
+        >
+          <p className="text-sm text-muted-foreground">
+            Set the number currently available. You can increase or decrease it anytime.
+          </p>
+          <input
+            autoFocus
+            type="number"
+            min="0"
+            defaultValue={available}
+            onChange={(e) => setAvailable(Number(e.target.value || 0))}
+            className="mt-4 w-full rounded-lg border border-input p-3"
+          />
+          <button
+            onClick={() => {
+              setCountModal(false);
+              flash(`Available ${isNgo ? "volunteer" : "participant"} count updated.`);
+            }}
+            className="mt-5 w-full rounded-lg bg-primary py-3 font-bold text-primary-foreground"
+          >
+            Update Count
+          </button>
+        </Modal>
+      )}
+      {peopleModal && (
+        <Modal
+          title={`${editingMemberId ? "Edit" : "Add"} ${singular}`}
+          close={() => setPeopleModal(false)}
+        >
+          <p className="text-sm text-muted-foreground">
+            This member will belong only to {partnerName}.
+          </p>
+          <input
+            value={memberName}
+            onChange={(event) => setMemberName(event.target.value)}
+            placeholder="Full name"
+            className="mt-4 w-full rounded-lg border border-input p-3"
+          />
+          <input
+            value={memberIdentifier}
+            onChange={(event) => setMemberIdentifier(event.target.value)}
+            placeholder={isNgo ? "Volunteer ID" : "Roll number / Participant ID"}
+            className="mt-3 w-full rounded-lg border border-input p-3"
+          />
+          <input
+            value={memberSkill}
+            onChange={(event) => setMemberSkill(event.target.value)}
+            placeholder="Area of skill / expertise"
+            className="mt-3 w-full rounded-lg border border-input p-3"
+          />
+          <button
+            onClick={saveMember}
+            className="mt-5 w-full rounded-lg bg-primary py-3 font-bold text-primary-foreground"
+          >
+            {editingMemberId ? `Save ${singular}` : `Add ${singular}`}
+          </button>
+        </Modal>
+      )}
+      {assignModal && (
+        <Modal title={`Assign ${plural} · ${task.id}`} close={() => setAssignModal(false)}>
+          {members
+            .filter((m) => m.available)
+            .map((m) => (
+              <label
+                key={m.id}
+                className="mt-3 flex items-center gap-3 rounded-lg border border-border p-3"
+              >
+                <input
+                  type="checkbox"
+                  checked={chosen.includes(m.name)}
+                  onChange={() =>
+                    setChosen((items) =>
+                      items.includes(m.name)
+                        ? items.filter((x) => x !== m.name)
+                        : [...items, m.name],
+                    )
+                  }
+                />
+                <div>
+                  <b className="text-sm">{m.name}</b>
+                  <p className="text-xs text-muted-foreground">
+                    {m.identifier} · {m.skill} · Available
+                  </p>
+                </div>
+              </label>
+            ))}
+          <button
+            onClick={() => {
+              update(task.id, {
+                people: chosen,
+                status: chosen.length ? "People Assigned" : task.status,
+              });
+              setAssignModal(false);
+              flash(`${chosen.length} ${plural.toLowerCase()} assigned.`);
+            }}
+            className="mt-5 w-full rounded-lg bg-primary py-3 font-bold text-primary-foreground"
+          >
+            Assign Selected {plural}
+          </button>
+        </Modal>
+      )}
+      {finishModal && (
+        <Modal
+          title={
+            finishModal === "solved"
+              ? "Submit completed task"
+              : "Why couldn't this task be completed?"
+          }
+          close={() => setFinishModal(null)}
+        >
+          {finishModal === "solved" ? (
+            <>
+              <input type="date" className="mt-4 w-full rounded-lg border border-input p-3" />
+              <textarea
+                value={remarks}
+                onChange={(e) => setRemarks(e.target.value)}
+                placeholder="Completion remarks"
+                className="mt-4 min-h-24 w-full rounded-lg border border-input p-3"
+              />
+              <label className="mt-4 block rounded-lg border border-dashed border-input p-3 text-sm font-semibold">
+                <Upload className="mr-1 inline" size={16} /> Upload proof / documents
+                {!isNgo && " / Excel report"}
+                <input type="file" className="hidden" />
+              </label>
+              <button
+                onClick={() => {
+                  update(task.id, { status: "Solved", remarks });
+                  setFinishModal(null);
+                  flash("Task marked SOLVED and moved to completed tasks.");
+                }}
+                className="mt-5 w-full rounded-lg bg-emerald-600 py-3 font-bold text-white"
+              >
+                Submit Completed Task
+              </button>
+            </>
+          ) : (
+            <>
+              <select
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                className="mt-4 w-full rounded-lg border border-input p-3"
+              >
+                {[
+                  "Required resources unavailable",
+                  `Insufficient ${plural.toLowerCase()}`,
+                  "Technical difficulty",
+                  "Equipment unavailable",
+                  "Accessibility / location issue",
+                  "Time constraint",
+                  "Other",
+                ].map((option) => (
+                  <option key={option}>{option}</option>
+                ))}
+              </select>
+              <textarea
+                value={remarks}
+                onChange={(e) => setRemarks(e.target.value)}
+                placeholder="Additional remarks"
+                className="mt-4 min-h-24 w-full rounded-lg border border-input p-3"
+              />
+              <button
+                onClick={() => {
+                  update(task.id, {
+                    status: "Couldn't Solve — Reassigned",
+                    remarks: `${reason}. ${remarks}`,
+                  });
+                  setFinishModal(null);
+                  flash(
+                    "Task could not be completed. A suitable nearby partner is being found for reassignment.",
+                  );
+                }}
+                className="mt-5 w-full rounded-lg bg-destructive py-3 font-bold text-destructive-foreground"
+              >
+                Confirm & Reassign Task
+              </button>
+            </>
+          )}
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function PartnerTaskCards({
+  tasks,
+  tone,
+  open,
+  accept,
+}: {
+  tasks: PartnerTask[];
+  tone: (status: PartnerTaskStatus) => string;
+  open: (id: string) => void;
+  accept: (id: string) => void;
+}) {
+  return (
+    <div className="mt-5 space-y-3">
+      {tasks.length ? (
+        tasks.map((task) => (
+          <article
+            key={task.id}
+            className="card-surface flex flex-wrap items-center justify-between gap-4 p-5"
+          >
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-primary">
+                {task.id} · {task.category}
+              </p>
+              <h3 className="mt-1 font-bold">{task.title}</h3>
+              <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{task.description}</p>
+              <p className="mt-2 text-xs text-muted-foreground">
+                <MapPin className="mr-1 inline" size={13} />
+                {task.location} · GPS {task.coordinates} · {task.reported}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${tone(task.status)}`}>
+                {task.status}
+              </span>
+              {task.status === "Pending" && (
+                <button
+                  onClick={() => accept(task.id)}
+                  className="rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground"
+                >
+                  Accept Task
+                </button>
+              )}
+              <button
+                onClick={() => open(task.id)}
+                className="rounded-lg border border-input px-3 py-2 text-xs font-bold"
+              >
+                View details
+              </button>
+            </div>
+          </article>
+        ))
+      ) : (
+        <p className="card-surface p-8 text-center text-muted-foreground">
+          No tasks in this category yet.
+        </p>
+      )}
+    </div>
+  );
+}
 
 function CoordinatorDashboard({ user, flash }: { user: User | null; flash: (x: string) => void }) {
   const [tab, setTab] = useState<"problems" | "people" | "review">("problems");
@@ -1018,30 +3399,496 @@ function CoordinatorDashboard({ user, flash }: { user: User | null; flash: (x: s
   const [taskDescription, setTaskDescription] = useState("");
   const [reason, setReason] = useState("");
   const [escalating, setEscalating] = useState(false);
-  const [tasks, setTasks] = useState([{ id: "task-1", title: "Survey affected households", person: "Aditi Kumari", status: "In Progress", deadline: "12 Sep" }, { id: "task-2", title: "Document water-quality evidence", person: "Ravi Singh", status: "Pending", deadline: "14 Sep" }]);
+  const [tasks, setTasks] = useState([
+    {
+      id: "task-1",
+      title: "Survey affected households",
+      person: "Aditi Kumari",
+      status: "In Progress",
+      deadline: "12 Sep",
+    },
+    {
+      id: "task-2",
+      title: "Document water-quality evidence",
+      person: "Ravi Singh",
+      status: "Pending",
+      deadline: "14 Sep",
+    },
+  ]);
   if (!user) return <Forbidden />;
   const createTask = () => {
     if (!taskDescription.trim()) return;
-    setTasks((items) => [...items, { id: String(Date.now()), title: taskDescription, person: "Select from team", status: "Pending", deadline: deadline || "No deadline" }]);
-    setTaskDescription(""); setDeadline(""); setShowTask(false); flash("Task created and ready to assign.");
+    setTasks((items) => [
+      ...items,
+      {
+        id: String(Date.now()),
+        title: taskDescription,
+        person: "Select from team",
+        status: "Pending",
+        deadline: deadline || "No deadline",
+      },
+    ]);
+    setTaskDescription("");
+    setDeadline("");
+    setShowTask(false);
+    flash("Task created and ready to assign.");
   };
-  return <section className="container-page py-10"><div className="flex flex-wrap items-end justify-between gap-4"><div><span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">SPO / COORDINATOR WORKSPACE</span><h1 className="mt-4 text-3xl font-bold">Community response dashboard</h1><p className="mt-2 text-muted-foreground">Match local problems with your institution's skills, people, and resources.</p></div><button onClick={() => setShowTask(true)} className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-bold text-primary-foreground"><Plus size={17}/> Create task</button></div><div className="mt-7 grid gap-3 sm:grid-cols-4"><Stat n="04" t="Active problems"/><Stat n="12" t="Available volunteers"/><Stat n={tasks.filter(t => t.status === "In Progress").length} t="Work in progress"/><Stat n="08" t="Verified resolutions"/></div><div className="mt-8 flex gap-2 border-b border-border"><button onClick={() => setTab("problems")} className={`px-4 py-3 text-sm font-bold ${tab === "problems" ? "border-b-2 border-primary text-primary" : "text-muted-foreground"}`}>Assigned problems</button><button onClick={() => setTab("people")} className={`px-4 py-3 text-sm font-bold ${tab === "people" ? "border-b-2 border-primary text-primary" : "text-muted-foreground"}`}>Students & volunteers</button><button onClick={() => setTab("review")} className={`px-4 py-3 text-sm font-bold ${tab === "review" ? "border-b-2 border-primary text-primary" : "text-muted-foreground"}`}>Evidence review</button></div>{tab === "problems" && <div className="mt-6 grid gap-6 lg:grid-cols-[1.15fr_.85fr]"><div className="card-surface p-6"><div className="flex justify-between gap-3"><div><span className="text-xs font-bold text-primary">SS-2026-0041 · WATER</span><h2 className="mt-2 text-xl font-bold">Unsafe drinking water near Ward 5</h2><p className="mt-2 text-sm text-muted-foreground"><MapPin className="mr-1 inline" size={14}/> Ranchi · 1.2 km away · 48 residents affected</p></div><span className="h-fit rounded-full bg-warn-soft px-3 py-1 text-xs font-bold text-warn">In progress</span></div><div className="mt-5 rounded-xl bg-surface p-4"><p className="text-xs font-bold text-muted-foreground">REQUIRED SKILLS</p><div className="mt-2 flex flex-wrap gap-2"><span className="rounded-full bg-card px-3 py-1 text-xs font-semibold">Water testing</span><span className="rounded-full bg-card px-3 py-1 text-xs font-semibold">Field survey</span><span className="rounded-full bg-card px-3 py-1 text-xs font-semibold">Documentation</span></div></div><div className="mt-5 space-y-2">{tasks.map(t => <div key={t.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-3"><div><b className="text-sm">{t.title}</b><p className="mt-1 text-xs text-muted-foreground">{t.person} · due {t.deadline}</p></div><span className={`rounded-full px-2 py-1 text-xs font-bold ${t.status === "In Progress" ? "bg-primary-soft text-primary" : "bg-surface text-muted-foreground"}`}>{t.status}</span></div>)}</div></div><aside className="card-surface p-6"><h2 className="font-bold">Escalate if needed</h2><p className="mt-2 text-sm text-muted-foreground">Transfer the complete history and evidence to a better-matched partner.</p>{escalating ? <><textarea value={reason} onChange={e => setReason(e.target.value)} placeholder="Why can your organization not resolve this?" className="mt-4 min-h-24 w-full rounded-lg border border-input p-3 text-sm"/><button onClick={() => { setEscalating(false); setReason(""); flash("Suitable organizations recommended; transfer is ready for acceptance."); }} disabled={!reason.trim()} className="mt-3 w-full rounded-lg bg-destructive py-3 text-sm font-bold text-destructive-foreground disabled:opacity-50">Find suitable organization</button></> : <button onClick={() => setEscalating(true)} className="mt-4 inline-flex items-center gap-2 rounded-lg border border-destructive px-3 py-2 text-sm font-bold text-destructive"><XCircle size={16}/> Unable to resolve</button>}<div className="mt-5 rounded-lg bg-accent-soft p-3 text-xs text-accent"><Sparkles className="mr-1 inline" size={14}/> Suggested partner: Jharkhand Water Initiative — field lab and repair team available.</div></aside></div>}{tab === "people" && <div className="mt-6 grid gap-4 md:grid-cols-3"><div className="card-surface p-5"><div className="flex items-center gap-3"><div className="grid size-10 place-items-center rounded-full bg-primary-soft font-bold text-primary">AK</div><div><b>Aditi Kumari</b><p className="text-xs text-muted-foreground">Environmental Engineering</p></div></div><p className="mt-4 text-sm">Water testing · Field survey · Available this week</p></div><div className="card-surface p-5"><div className="flex items-center gap-3"><div className="grid size-10 place-items-center rounded-full bg-accent-soft font-bold text-accent">RS</div><div><b>Ravi Singh</b><p className="text-xs text-muted-foreground">Civil Engineering</p></div></div><p className="mt-4 text-sm">Documentation · GIS mapping · Available weekends</p></div><label className="card-surface grid cursor-pointer place-items-center p-5 text-center"><FileSpreadsheet className="text-primary"/><b className="mt-3">Bulk upload students</b><span className="mt-1 text-xs text-muted-foreground">Upload an Excel (.xlsx or .csv) roster</span><input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={() => flash("Roster selected. Review and import records to complete upload.")}/></label></div>}{tab === "review" && <div className="mt-6 card-surface p-6"><div className="flex flex-wrap items-center justify-between gap-4"><div><span className="text-xs font-bold text-primary">TASK EVIDENCE SUBMITTED</span><h2 className="mt-2 text-xl font-bold">Household survey and water samples</h2><p className="mt-2 text-sm text-muted-foreground">Submitted by Aditi Kumari · Photos, sample sheet, and completion notes attached.</p></div><div className="flex gap-2"><button onClick={() => flash("Changes requested from the assigned volunteer.")} className="rounded-lg border border-input px-3 py-2 text-sm font-bold">Request changes</button><button onClick={() => flash("Evidence verified. The problem has been marked resolved.")} className="rounded-lg bg-accent px-3 py-2 text-sm font-bold text-accent-foreground"><CheckCircle2 className="mr-1 inline" size={16}/> Verify & resolve</button></div></div><div className="mt-5 flex flex-wrap gap-2"><span className="rounded-lg bg-surface px-3 py-2 text-sm"><ImageIcon className="mr-1 inline text-primary" size={15}/> 4 field photos</span><span className="rounded-lg bg-surface px-3 py-2 text-sm"><Paperclip className="mr-1 inline text-primary" size={15}/> water-sample.pdf</span><span className="rounded-lg bg-surface px-3 py-2 text-sm"><BadgeCheck className="mr-1 inline text-primary" size={15}/> Completion notes</span></div></div>}{showTask && <div className="fixed inset-0 z-50 grid place-items-center bg-ink/40 p-4"><div className="w-full max-w-lg rounded-2xl bg-card p-6 shadow-lift"><div className="flex items-center justify-between"><h2 className="text-xl font-bold">Create and assign task</h2><button onClick={() => setShowTask(false)}><XCircle className="text-muted-foreground"/></button></div><textarea value={taskDescription} onChange={e => setTaskDescription(e.target.value)} placeholder="Task description" className="mt-5 min-h-28 w-full rounded-lg border border-input p-3"/><div className="mt-3 grid gap-3 sm:grid-cols-2"><select className="rounded-lg border border-input p-3"><option>Assign to: Aditi Kumari</option><option>Assign to: Ravi Singh</option></select><input value={deadline} onChange={e => setDeadline(e.target.value)} type="date" className="rounded-lg border border-input p-3"/></div><button onClick={createTask} disabled={!taskDescription.trim()} className="mt-5 w-full rounded-lg bg-primary py-3 font-bold text-primary-foreground disabled:opacity-50">Create task</button></div></div>}</section>;
+  return (
+    <section className="container-page py-10">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
+            SPO / COORDINATOR WORKSPACE
+          </span>
+          <h1 className="mt-4 text-3xl font-bold">Community response dashboard</h1>
+          <p className="mt-2 text-muted-foreground">
+            Match local problems with your institution's skills, people, and resources.
+          </p>
+        </div>
+        <button
+          onClick={() => setShowTask(true)}
+          className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-bold text-primary-foreground"
+        >
+          <Plus size={17} /> Create task
+        </button>
+      </div>
+      <div className="mt-7 grid gap-3 sm:grid-cols-4">
+        <Stat n="04" t="Active problems" />
+        <Stat n="12" t="Available volunteers" />
+        <Stat n={tasks.filter((t) => t.status === "In Progress").length} t="Work in progress" />
+        <Stat n="08" t="Verified resolutions" />
+      </div>
+      <div className="mt-8 flex gap-2 border-b border-border">
+        <button
+          onClick={() => setTab("problems")}
+          className={`px-4 py-3 text-sm font-bold ${tab === "problems" ? "border-b-2 border-primary text-primary" : "text-muted-foreground"}`}
+        >
+          Assigned problems
+        </button>
+        <button
+          onClick={() => setTab("people")}
+          className={`px-4 py-3 text-sm font-bold ${tab === "people" ? "border-b-2 border-primary text-primary" : "text-muted-foreground"}`}
+        >
+          Students & volunteers
+        </button>
+        <button
+          onClick={() => setTab("review")}
+          className={`px-4 py-3 text-sm font-bold ${tab === "review" ? "border-b-2 border-primary text-primary" : "text-muted-foreground"}`}
+        >
+          Evidence review
+        </button>
+      </div>
+      {tab === "problems" && (
+        <div className="mt-6 grid gap-6 lg:grid-cols-[1.15fr_.85fr]">
+          <div className="card-surface p-6">
+            <div className="flex justify-between gap-3">
+              <div>
+                <span className="text-xs font-bold text-primary">SS-2026-0041 · WATER</span>
+                <h2 className="mt-2 text-xl font-bold">Unsafe drinking water near Ward 5</h2>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  <MapPin className="mr-1 inline" size={14} /> Ranchi · 1.2 km away · 48 residents
+                  affected
+                </p>
+              </div>
+              <span className="h-fit rounded-full bg-warn-soft px-3 py-1 text-xs font-bold text-warn">
+                In progress
+              </span>
+            </div>
+            <div className="mt-5 rounded-xl bg-surface p-4">
+              <p className="text-xs font-bold text-muted-foreground">REQUIRED SKILLS</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <span className="rounded-full bg-card px-3 py-1 text-xs font-semibold">
+                  Water testing
+                </span>
+                <span className="rounded-full bg-card px-3 py-1 text-xs font-semibold">
+                  Field survey
+                </span>
+                <span className="rounded-full bg-card px-3 py-1 text-xs font-semibold">
+                  Documentation
+                </span>
+              </div>
+            </div>
+            <div className="mt-5 space-y-2">
+              {tasks.map((t) => (
+                <div
+                  key={t.id}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-3"
+                >
+                  <div>
+                    <b className="text-sm">{t.title}</b>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {t.person} · due {t.deadline}
+                    </p>
+                  </div>
+                  <span
+                    className={`rounded-full px-2 py-1 text-xs font-bold ${t.status === "In Progress" ? "bg-primary-soft text-primary" : "bg-surface text-muted-foreground"}`}
+                  >
+                    {t.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <aside className="card-surface p-6">
+            <h2 className="font-bold">Escalate if needed</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Transfer the complete history and evidence to a better-matched partner.
+            </p>
+            {escalating ? (
+              <>
+                <textarea
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  placeholder="Why can your organization not resolve this?"
+                  className="mt-4 min-h-24 w-full rounded-lg border border-input p-3 text-sm"
+                />
+                <button
+                  onClick={() => {
+                    setEscalating(false);
+                    setReason("");
+                    flash("Suitable organizations recommended; transfer is ready for acceptance.");
+                  }}
+                  disabled={!reason.trim()}
+                  className="mt-3 w-full rounded-lg bg-destructive py-3 text-sm font-bold text-destructive-foreground disabled:opacity-50"
+                >
+                  Find suitable organization
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => setEscalating(true)}
+                className="mt-4 inline-flex items-center gap-2 rounded-lg border border-destructive px-3 py-2 text-sm font-bold text-destructive"
+              >
+                <XCircle size={16} /> Unable to resolve
+              </button>
+            )}
+            <div className="mt-5 rounded-lg bg-accent-soft p-3 text-xs text-accent">
+              <Sparkles className="mr-1 inline" size={14} /> Suggested partner: Jharkhand Water
+              Initiative — field lab and repair team available.
+            </div>
+          </aside>
+        </div>
+      )}
+      {tab === "people" && (
+        <div className="mt-6 grid gap-4 md:grid-cols-3">
+          <div className="card-surface p-5">
+            <div className="flex items-center gap-3">
+              <div className="grid size-10 place-items-center rounded-full bg-primary-soft font-bold text-primary">
+                AK
+              </div>
+              <div>
+                <b>Aditi Kumari</b>
+                <p className="text-xs text-muted-foreground">Environmental Engineering</p>
+              </div>
+            </div>
+            <p className="mt-4 text-sm">Water testing · Field survey · Available this week</p>
+          </div>
+          <div className="card-surface p-5">
+            <div className="flex items-center gap-3">
+              <div className="grid size-10 place-items-center rounded-full bg-accent-soft font-bold text-accent">
+                RS
+              </div>
+              <div>
+                <b>Ravi Singh</b>
+                <p className="text-xs text-muted-foreground">Civil Engineering</p>
+              </div>
+            </div>
+            <p className="mt-4 text-sm">Documentation · GIS mapping · Available weekends</p>
+          </div>
+          <label className="card-surface grid cursor-pointer place-items-center p-5 text-center">
+            <FileSpreadsheet className="text-primary" />
+            <b className="mt-3">Bulk upload students</b>
+            <span className="mt-1 text-xs text-muted-foreground">
+              Upload an Excel (.xlsx or .csv) roster
+            </span>
+            <input
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              className="hidden"
+              onChange={() =>
+                flash("Roster selected. Review and import records to complete upload.")
+              }
+            />
+          </label>
+        </div>
+      )}
+      {tab === "review" && (
+        <div className="mt-6 card-surface p-6">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <span className="text-xs font-bold text-primary">TASK EVIDENCE SUBMITTED</span>
+              <h2 className="mt-2 text-xl font-bold">Household survey and water samples</h2>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Submitted by Aditi Kumari · Photos, sample sheet, and completion notes attached.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => flash("Changes requested from the assigned volunteer.")}
+                className="rounded-lg border border-input px-3 py-2 text-sm font-bold"
+              >
+                Request changes
+              </button>
+              <button
+                onClick={() => flash("Evidence verified. The problem has been marked resolved.")}
+                className="rounded-lg bg-accent px-3 py-2 text-sm font-bold text-accent-foreground"
+              >
+                <CheckCircle2 className="mr-1 inline" size={16} /> Verify & resolve
+              </button>
+            </div>
+          </div>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <span className="rounded-lg bg-surface px-3 py-2 text-sm">
+              <ImageIcon className="mr-1 inline text-primary" size={15} /> 4 field photos
+            </span>
+            <span className="rounded-lg bg-surface px-3 py-2 text-sm">
+              <Paperclip className="mr-1 inline text-primary" size={15} /> water-sample.pdf
+            </span>
+            <span className="rounded-lg bg-surface px-3 py-2 text-sm">
+              <BadgeCheck className="mr-1 inline text-primary" size={15} /> Completion notes
+            </span>
+          </div>
+        </div>
+      )}
+      {showTask && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-ink/40 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-card p-6 shadow-lift">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-bold">Create and assign task</h2>
+              <button onClick={() => setShowTask(false)}>
+                <XCircle className="text-muted-foreground" />
+              </button>
+            </div>
+            <textarea
+              value={taskDescription}
+              onChange={(e) => setTaskDescription(e.target.value)}
+              placeholder="Task description"
+              className="mt-5 min-h-28 w-full rounded-lg border border-input p-3"
+            />
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <select className="rounded-lg border border-input p-3">
+                <option>Assign to: Aditi Kumari</option>
+                <option>Assign to: Ravi Singh</option>
+              </select>
+              <input
+                value={deadline}
+                onChange={(e) => setDeadline(e.target.value)}
+                type="date"
+                className="rounded-lg border border-input p-3"
+              />
+            </div>
+            <button
+              onClick={createTask}
+              disabled={!taskDescription.trim()}
+              className="mt-5 w-full rounded-lg bg-primary py-3 font-bold text-primary-foreground disabled:opacity-50"
+            >
+              Create task
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
 }
 
-function CoordinatorDashboardLegacy({ user, flash }: { user: User | null; flash: (x: string) => void }) {
-  const [org, setOrg] = useState<{ id: string; name: string } | null>(null), [people, setPeople] = useState<{ id: string; name: string; skills: string[] }[]>([]), [challenges, setChallenges] = useState<Challenge[]>([]), [name, setName] = useState(""), [skills, setSkills] = useState(""), [task, setTask] = useState(""), [selectedChallenge, setSelectedChallenge] = useState(""), [selectedPerson, setSelectedPerson] = useState("");
-  const load = async () => { if (!user || !supabase) return; const [{ data: organization }, { data: challengeData }] = await Promise.all([supabase.from("organization_accounts").select("id,name").eq("owner_id", user.id).maybeSingle(), supabase.rpc("search_challenges", { search_text: "" })]); setOrg(organization); setChallenges((challengeData ?? []) as Challenge[]); if (organization) { const { data } = await supabase.from("volunteers").select("id,name,skills").eq("organization_id", organization.id); setPeople(data ?? []); } };
-  useEffect(() => { void load(); }, [user]);
+function CoordinatorDashboardLegacy({
+  user,
+  flash,
+}: {
+  user: User | null;
+  flash: (x: string) => void;
+}) {
+  const [org, setOrg] = useState<{ id: string; name: string } | null>(null),
+    [people, setPeople] = useState<{ id: string; name: string; skills: string[] }[]>([]),
+    [challenges, setChallenges] = useState<Challenge[]>([]),
+    [name, setName] = useState(""),
+    [skills, setSkills] = useState(""),
+    [task, setTask] = useState(""),
+    [selectedChallenge, setSelectedChallenge] = useState(""),
+    [selectedPerson, setSelectedPerson] = useState("");
+  const load = async () => {
+    if (!user || !supabase) return;
+    const [{ data: organization }, { data: challengeData }] = await Promise.all([
+      supabase
+        .from("organization_accounts")
+        .select("id,name")
+        .eq("owner_id", user.id)
+        .maybeSingle(),
+      supabase.rpc("search_challenges", { search_text: "" }),
+    ]);
+    setOrg(organization);
+    setChallenges((challengeData ?? []) as Challenge[]);
+    if (organization) {
+      const { data } = await supabase
+        .from("volunteers")
+        .select("id,name,skills")
+        .eq("organization_id", organization.id);
+      setPeople(data ?? []);
+    }
+  };
+  useEffect(() => {
+    void load();
+  }, [user]);
   if (!user) return <Forbidden />;
-  if (!org) return <section className="container-page py-12"><h1 className="text-3xl font-bold">Coordinator dashboard</h1><p className="mt-3 text-muted-foreground">Register your institution or NGO before managing work.</p></section>;
-  const addPerson = async () => { const { error } = await supabase!.from("volunteers").insert({ organization_id: org.id, name, skills: skills.split(",").map((x) => x.trim()).filter(Boolean) }); if (error) flash(error.message); else { setName(""); setSkills(""); void load(); } };
-  const assign = async () => { const { data: assignment, error } = await supabase!.from("problem_assignments").insert({ challenge_id: selectedChallenge, organization_id: org.id, assigned_by: user.id, status: "in_progress" }).select("id").single(); if (error || !assignment) { flash(error?.message ?? "Could not assign problem."); return; } const { error: taskError } = await supabase!.from("problem_tasks").insert({ assignment_id: assignment.id, volunteer_id: selectedPerson || null, description: task, status: "pending" }); if (taskError) flash(taskError.message); else { setTask(""); flash("Task assigned."); } };
-  return <section className="container-page py-12"><h1 className="text-3xl font-bold">{org.name} coordinator dashboard</h1><div className="mt-6 grid gap-6 lg:grid-cols-2"><div className="card-surface p-5"><h2 className="font-bold">Students & volunteers</h2><div className="mt-3 grid gap-2"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" className="rounded border border-input p-2" /><input value={skills} onChange={(e) => setSkills(e.target.value)} placeholder="Skills (comma separated)" className="rounded border border-input p-2" /><button onClick={() => void addPerson()} className="rounded bg-primary p-2 font-bold text-primary-foreground">Add person</button></div><div className="mt-4 space-y-2">{people.map((person) => <p key={person.id} className="rounded bg-surface p-2"><b>{person.name}</b> · {person.skills.join(", ")}</p>)}</div></div><div className="card-surface p-5"><h2 className="font-bold">Assign a community problem</h2><div className="mt-3 grid gap-2"><select value={selectedChallenge} onChange={(e) => setSelectedChallenge(e.target.value)} className="rounded border border-input p-2"><option value="">Choose a problem</option>{challenges.map((c) => <option key={c.id} value={c.id}>{c.public_id} — {c.title}</option>)}</select><select value={selectedPerson} onChange={(e) => setSelectedPerson(e.target.value)} className="rounded border border-input p-2"><option value="">Choose a person</option>{people.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select><textarea value={task} onChange={(e) => setTask(e.target.value)} placeholder="Task description" className="rounded border border-input p-2" /><button disabled={!selectedChallenge || !task} onClick={() => void assign()} className="rounded bg-primary p-2 font-bold text-primary-foreground disabled:opacity-50">Create assignment</button></div></div></div></section>;
+  if (!org)
+    return (
+      <section className="container-page py-12">
+        <h1 className="text-3xl font-bold">Coordinator dashboard</h1>
+        <p className="mt-3 text-muted-foreground">
+          Register your institution or NGO before managing work.
+        </p>
+      </section>
+    );
+  const addPerson = async () => {
+    const { error } = await supabase!.from("volunteers").insert({
+      organization_id: org.id,
+      name,
+      skills: skills
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean),
+    });
+    if (error) flash(error.message);
+    else {
+      setName("");
+      setSkills("");
+      void load();
+    }
+  };
+  const assign = async () => {
+    const { data: assignment, error } = await supabase!
+      .from("problem_assignments")
+      .insert({
+        challenge_id: selectedChallenge,
+        organization_id: org.id,
+        assigned_by: user.id,
+        status: "in_progress",
+      })
+      .select("id")
+      .single();
+    if (error || !assignment) {
+      flash(error?.message ?? "Could not assign problem.");
+      return;
+    }
+    const { error: taskError } = await supabase!.from("problem_tasks").insert({
+      assignment_id: assignment.id,
+      volunteer_id: selectedPerson || null,
+      description: task,
+      status: "pending",
+    });
+    if (taskError) flash(taskError.message);
+    else {
+      setTask("");
+      flash("Task assigned.");
+    }
+  };
+  return (
+    <section className="container-page py-12">
+      <h1 className="text-3xl font-bold">{org.name} coordinator dashboard</h1>
+      <div className="mt-6 grid gap-6 lg:grid-cols-2">
+        <div className="card-surface p-5">
+          <h2 className="font-bold">Students & volunteers</h2>
+          <div className="mt-3 grid gap-2">
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Name"
+              className="rounded border border-input p-2"
+            />
+            <input
+              value={skills}
+              onChange={(e) => setSkills(e.target.value)}
+              placeholder="Skills (comma separated)"
+              className="rounded border border-input p-2"
+            />
+            <button
+              onClick={() => void addPerson()}
+              className="rounded bg-primary p-2 font-bold text-primary-foreground"
+            >
+              Add person
+            </button>
+          </div>
+          <div className="mt-4 space-y-2">
+            {people.map((person) => (
+              <p key={person.id} className="rounded bg-surface p-2">
+                <b>{person.name}</b> · {person.skills.join(", ")}
+              </p>
+            ))}
+          </div>
+        </div>
+        <div className="card-surface p-5">
+          <h2 className="font-bold">Assign a community problem</h2>
+          <div className="mt-3 grid gap-2">
+            <select
+              value={selectedChallenge}
+              onChange={(e) => setSelectedChallenge(e.target.value)}
+              className="rounded border border-input p-2"
+            >
+              <option value="">Choose a problem</option>
+              {challenges.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.public_id} — {c.title}
+                </option>
+              ))}
+            </select>
+            <select
+              value={selectedPerson}
+              onChange={(e) => setSelectedPerson(e.target.value)}
+              className="rounded border border-input p-2"
+            >
+              <option value="">Choose a person</option>
+              {people.map((person) => (
+                <option key={person.id} value={person.id}>
+                  {person.name}
+                </option>
+              ))}
+            </select>
+            <textarea
+              value={task}
+              onChange={(e) => setTask(e.target.value)}
+              placeholder="Task description"
+              className="rounded border border-input p-2"
+            />
+            <button
+              disabled={!selectedChallenge || !task}
+              onClick={() => void assign()}
+              className="rounded bg-primary p-2 font-bold text-primary-foreground disabled:opacity-50"
+            >
+              Create assignment
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function VolunteerDashboard({ user }: { user: User | null }) {
   if (!user) return <Forbidden />;
-  return <section className="container-page py-12"><h1 className="text-3xl font-bold">Volunteer workspace</h1><p className="mt-3 text-muted-foreground">Discover challenges, join a response team, and track your contribution.</p><div className="mt-6 grid gap-4 sm:grid-cols-3"><div className="card-surface p-5"><b>Find challenges</b><p className="mt-2 text-sm text-muted-foreground">Explore verified community problems.</p></div><div className="card-surface p-5"><b>My assignments</b><p className="mt-2 text-sm text-muted-foreground">Assignments from partner organizations will appear here.</p></div><div className="card-surface p-5"><b>Impact</b><p className="mt-2 text-sm text-muted-foreground">Track outcomes you help deliver.</p></div></div></section>;
+  return (
+    <section className="container-page py-12">
+      <h1 className="text-3xl font-bold">Volunteer workspace</h1>
+      <p className="mt-3 text-muted-foreground">
+        Discover challenges, join a response team, and track your contribution.
+      </p>
+      <div className="mt-6 grid gap-4 sm:grid-cols-3">
+        <div className="card-surface p-5">
+          <b>Find challenges</b>
+          <p className="mt-2 text-sm text-muted-foreground">Explore verified community problems.</p>
+        </div>
+        <div className="card-surface p-5">
+          <b>My assignments</b>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Assignments from partner organizations will appear here.
+          </p>
+        </div>
+        <div className="card-surface p-5">
+          <b>Impact</b>
+          <p className="mt-2 text-sm text-muted-foreground">Track outcomes you help deliver.</p>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function MyReports({ user, go }: { user: User | null; go: (x: Screen) => void }) {
@@ -1108,6 +3955,931 @@ function MyReports({ user, go }: { user: User | null; go: (x: Screen) => void })
     </section>
   );
 }
+
+type AdminPartner = {
+  id: string;
+  name: string;
+  organization_type: "Organization" | "NGO";
+  contact_email: string | null;
+  district: string | null;
+  locality: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  expertise: string[];
+  capabilities: string[];
+  account_status?: string;
+  created_at: string;
+};
+type AdminMember = {
+  id: string;
+  organization_id: string;
+  name: string;
+  skills: string[];
+  availability: string | null;
+  contact_details: string | null;
+  created_at: string;
+};
+type AdminAssignment = {
+  id: string;
+  challenge_id: string;
+  organization_id: string;
+  status: string;
+  unable_reason: string | null;
+  created_at: string;
+  accepted_at: string | null;
+  resolved_at: string | null;
+};
+type AdminTransfer = {
+  id: string;
+  assignment_id: string;
+  to_organization_id: string;
+  reason: string;
+  created_at: string;
+};
+
+function AdminLogin({ complete }: { complete: () => void }) {
+  const [email, setEmail] = useState(""),
+    [password, setPassword] = useState(""),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false);
+  const signIn = async () => {
+    if (!supabase) return;
+    setBusy(true);
+    setError("");
+    const { data, error: signInError } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+    if (signInError || !data.user) {
+      setError(signInError?.message ?? "Unable to sign in.");
+      setBusy(false);
+      return;
+    }
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("role")
+      .eq("id", data.user.id)
+      .maybeSingle();
+    if (profile?.role !== "admin") {
+      await supabase.auth.signOut();
+      setError("This account is not authorized for the control center.");
+      setBusy(false);
+      return;
+    }
+    setBusy(false);
+    complete();
+  };
+  return (
+    <section className="container-page grid min-h-[70vh] max-w-md place-items-center py-12">
+      <div className="card-surface w-full p-7">
+        <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
+          RESTRICTED ACCESS
+        </span>
+        <h1 className="mt-4 text-3xl font-bold">Admin Login</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Sign in with an authorized administrator account to access the Admin Control Center.
+        </p>
+        <input
+          value={email}
+          onChange={(event) => setEmail(event.target.value)}
+          type="email"
+          placeholder="Admin email"
+          className="mt-6 w-full rounded-lg border border-input p-3"
+        />
+        <input
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+          type="password"
+          placeholder="Password"
+          className="mt-3 w-full rounded-lg border border-input p-3"
+        />
+        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+        <button
+          disabled={busy || !email || !password}
+          onClick={() => void signIn()}
+          className="mt-5 w-full rounded-lg bg-primary py-3 font-bold text-primary-foreground disabled:opacity-50"
+        >
+          {busy ? "Checking access…" : "Sign in securely"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function AdminRedirect({ user, go }: { user: User | null; go: (x: Screen) => void }) {
+  useEffect(() => {
+    const redirect = setTimeout(() => go(user ? "coordinator" : "admin-login"), 250);
+    return () => clearTimeout(redirect);
+  }, [go, user]);
+  return (
+    <section className="container-page py-20 text-center text-sm text-muted-foreground">
+      Redirecting…
+    </section>
+  );
+}
+
+function AdminControlCenter({
+  flash,
+  refresh,
+}: {
+  flash: (x: string) => void;
+  refresh: (q?: string) => void;
+}) {
+  const [section, setSection] = useState("Dashboard"),
+    [query, setQuery] = useState(""),
+    [partners, setPartners] = useState<AdminPartner[]>([]),
+    [tasks, setTasks] = useState<Challenge[]>([]),
+    [members, setMembers] = useState<AdminMember[]>([]),
+    [assignments, setAssignments] = useState<AdminAssignment[]>([]),
+    [transfers, setTransfers] = useState<AdminTransfer[]>([]),
+    [selected, setSelected] = useState<AdminPartner | null>(null),
+    [status, setStatus] = useState("All");
+  const load = async () => {
+    if (!supabase) return;
+    const partnerFields =
+      "id,name,organization_type,contact_email,district,locality,latitude,longitude,expertise,capabilities,account_status,created_at";
+    let { data: orgs, error: organizationError } = await supabase
+      .from("organization_accounts")
+      .select(partnerFields);
+    // Existing deployments may not have run the account-status migration yet.
+    // Keep the directory readable while the migration is being applied.
+    if (organizationError?.code === "42703" || organizationError?.code === "PGRST204") {
+      const fallback = await supabase
+        .from("organization_accounts")
+        .select(
+          "id,name,organization_type,contact_email,district,locality,latitude,longitude,expertise,capabilities,created_at",
+        );
+      orgs = fallback.data;
+      organizationError = fallback.error;
+    }
+    const [
+      { data: challenges, error: challengesError },
+      { data: memberData },
+      { data: assignmentData },
+      { data: transferData },
+    ] = await Promise.all([
+      supabase.rpc("search_challenges", { search_text: "" }),
+      supabase
+        .from("volunteers")
+        .select("id,organization_id,name,skills,availability,contact_details,created_at"),
+      supabase
+        .from("problem_assignments")
+        .select(
+          "id,challenge_id,organization_id,status,unable_reason,created_at,accepted_at,resolved_at",
+        ),
+      supabase
+        .from("problem_transfers")
+        .select("id,assignment_id,to_organization_id,reason,created_at"),
+    ]);
+    if (organizationError) flash(`Could not load partners: ${organizationError.message}`);
+    if (challengesError) flash(`Could not load tasks: ${challengesError.message}`);
+    setPartners((orgs ?? []) as AdminPartner[]);
+    setTasks((challenges ?? []) as Challenge[]);
+    setMembers((memberData ?? []) as AdminMember[]);
+    setAssignments((assignmentData ?? []) as AdminAssignment[]);
+    setTransfers((transferData ?? []) as AdminTransfer[]);
+  };
+  useEffect(() => {
+    void load();
+  }, []);
+  const organizations = partners.filter((partner) => partner.organization_type !== "NGO"),
+    ngos = partners.filter((partner) => partner.organization_type === "NGO");
+  const activeTasks = tasks.filter(
+    (task) => !["impact", "completed", "solved"].includes(task.stage),
+  ).length;
+  const nav = [
+    "Dashboard",
+    "Organizations",
+    "NGOs",
+    "All Tasks",
+    "Task Tracking",
+    "Reassignments",
+    "Skilled Participants",
+    "Volunteers",
+    "Expertise & Resources",
+    "Reports",
+    "Analytics",
+    "Account Management",
+  ];
+  const shownPartners = (section === "NGOs" ? ngos : organizations).filter(
+    (partner) =>
+      `${partner.name} ${partner.contact_email ?? ""} ${partner.district ?? ""} ${partner.expertise.join(" ")}`
+        .toLowerCase()
+        .includes(query.toLowerCase()) &&
+      (status === "All" || (partner.account_status ?? "Active") === status),
+  );
+  const updateStatus = async (partner: AdminPartner, account_status: string) => {
+    const { error } = await supabase!
+      .from("organization_accounts")
+      .update({ account_status })
+      .eq("id", partner.id);
+    if (error) flash(error.message);
+    else {
+      setPartners((all) =>
+        all.map((item) => (item.id === partner.id ? { ...item, account_status } : item)),
+      );
+      flash(`${partner.name} is now ${account_status.toLowerCase()}.`);
+    }
+  };
+  const cards = [
+    ["Organizations", organizations.length],
+    ["NGOs", ngos.length],
+    [
+      "Active organizations",
+      organizations.filter((item) => (item.account_status ?? "Active") === "Active").length,
+    ],
+    ["Active NGOs", ngos.filter((item) => (item.account_status ?? "Active") === "Active").length],
+    [
+      "Total skilled participants",
+      members.filter((member) =>
+        organizations.some((partner) => partner.id === member.organization_id),
+      ).length,
+    ],
+    [
+      "Total volunteers",
+      members.filter((member) => ngos.some((partner) => partner.id === member.organization_id))
+        .length,
+    ],
+    ["Active tasks", activeTasks],
+    ["Completed tasks", tasks.filter((task) => task.stage === "impact").length],
+    ["Pending tasks", tasks.filter((task) => task.stage === "reported").length],
+    ["Reassigned tasks", transfers.length],
+  ] as const;
+  return (
+    <div className="min-h-screen bg-surface">
+      <div className="mx-auto flex max-w-[1700px]">
+        <aside className="sticky top-0 hidden h-screen w-68 shrink-0 border-r border-border bg-card p-5 lg:block">
+          <div className="flex items-center gap-3 px-2">
+            <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground">
+              <ShieldCheck size={20} />
+            </div>
+            <div>
+              <b>SamajSetu</b>
+              <p className="text-xs text-muted-foreground">Admin Control Center</p>
+            </div>
+          </div>
+          <nav className="mt-7 space-y-1">
+            {nav.map((item) => (
+              <button
+                key={item}
+                onClick={() => {
+                  setSection(item);
+                  setSelected(null);
+                }}
+                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-semibold ${section === item ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-surface hover:text-foreground"}`}
+              >
+                {item === "Dashboard" ? (
+                  <LayoutDashboard size={16} />
+                ) : item === "Organizations" || item === "NGOs" ? (
+                  <Building2 size={16} />
+                ) : item.includes("Task") ? (
+                  <ClipboardCheck size={16} />
+                ) : (
+                  <Users size={16} />
+                )}{" "}
+                {item}
+              </button>
+            ))}
+          </nav>
+        </aside>
+        <main className="min-w-0 flex-1 p-4 sm:p-7">
+          <header className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-primary">PLATFORM ADMINISTRATION</p>
+              <h1 className="mt-1 text-2xl font-bold sm:text-3xl">Admin Control Center</h1>
+            </div>
+            <div className="flex w-full max-w-md items-center gap-2 rounded-lg border border-input bg-card px-3">
+              <Search size={16} className="text-muted-foreground" />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search organizations, tasks, people…"
+                className="w-full bg-transparent py-2.5 text-sm outline-none"
+              />
+            </div>
+          </header>
+          {section === "Dashboard" && (
+            <>
+              <div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                {cards.map(([label, value]) => (
+                  <DashboardStat
+                    key={label}
+                    label={label}
+                    value={value}
+                    icon={<Activity size={18} />}
+                  />
+                ))}
+              </div>
+              <div className="mt-7 grid gap-5 xl:grid-cols-2">
+                <section className="card-surface p-6">
+                  <h2 className="text-lg font-bold">Platform activity</h2>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Monitor registered partners, reported challenges, and response activity from one
+                    place.
+                  </p>
+                  <div className="mt-6 space-y-3">
+                    {tasks.slice(0, 5).map((task) => (
+                      <button
+                        key={task.id}
+                        onClick={() => setSection("All Tasks")}
+                        className="flex w-full items-center justify-between rounded-lg bg-surface p-3 text-left"
+                      >
+                        <span>
+                          <b className="block text-sm">{task.title}</b>
+                          <span className="text-xs text-muted-foreground">
+                            {task.public_id} · {task.district}
+                          </span>
+                        </span>
+                        <span className="text-xs font-bold text-primary">{task.stage}</span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+                <section className="card-surface p-6">
+                  <h2 className="text-lg font-bold">Capability coverage</h2>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Expertise and resources reported by all registered organizations and NGOs.
+                  </p>
+                  <div className="mt-5 flex flex-wrap gap-2">
+                    {Array.from(new Set(partners.flatMap((partner) => partner.expertise))).map(
+                      (expertise) => (
+                        <span
+                          key={expertise}
+                          className="rounded-full bg-primary-soft px-3 py-1.5 text-xs font-bold text-primary"
+                        >
+                          {expertise}
+                        </span>
+                      ),
+                    )}
+                  </div>
+                </section>
+              </div>
+            </>
+          )}
+          {(section === "Organizations" ||
+            section === "NGOs" ||
+            section === "Account Management") &&
+            !selected && (
+              <section className="mt-7">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-2xl font-bold">
+                      {section === "Account Management" ? "Partner account management" : section}
+                    </h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Search, filter, review details, and manage account status.
+                    </p>
+                  </div>
+                  <select
+                    value={status}
+                    onChange={(event) => setStatus(event.target.value)}
+                    className="rounded-lg border border-input bg-card p-2 text-sm"
+                  >
+                    <option>All</option>
+                    <option>Active</option>
+                    <option>Suspended</option>
+                    <option>Deactivated</option>
+                  </select>
+                </div>
+                <div className="mt-5 overflow-x-auto card-surface">
+                  <table className="w-full min-w-220 text-left text-sm">
+                    <thead className="bg-surface text-xs text-muted-foreground">
+                      <tr>
+                        <th className="p-4">PARTNER</th>
+                        <th className="p-4">EMAIL</th>
+                        <th className="p-4">LOCATION / GPS</th>
+                        <th className="p-4">EXPERTISE</th>
+                        <th className="p-4">RESOURCES</th>
+                        <th className="p-4">STATUS</th>
+                        <th className="p-4"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {shownPartners.map((partner) => (
+                        <tr key={partner.id} className="border-t border-border">
+                          <td className="p-4 font-semibold">{partner.name}</td>
+                          <td className="p-4">{partner.contact_email ?? "—"}</td>
+                          <td className="p-4 text-xs">
+                            {partner.locality || partner.district || "—"}
+                            <br />
+                            {partner.latitude != null
+                              ? `${partner.latitude}, ${partner.longitude}`
+                              : "GPS unavailable"}
+                          </td>
+                          <td className="p-4">{partner.expertise.join(", ") || "—"}</td>
+                          <td className="p-4">{partner.capabilities.join(", ") || "—"}</td>
+                          <td className="p-4">
+                            <span className="rounded-full bg-primary-soft px-2.5 py-1 text-xs font-bold text-primary">
+                              {partner.account_status ?? "Active"}
+                            </span>
+                          </td>
+                          <td className="p-4">
+                            <button
+                              onClick={() => setSelected(partner)}
+                              className="font-bold text-primary"
+                            >
+                              View details
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {shownPartners.length === 0 && (
+                    <p className="p-8 text-center text-sm text-muted-foreground">
+                      No matching partners found.
+                    </p>
+                  )}
+                </div>
+              </section>
+            )}
+          {selected && (
+            <section className="mt-7">
+              <button onClick={() => setSelected(null)} className="text-sm font-bold text-primary">
+                ← Back to partners
+              </button>
+              <div className="mt-4 grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
+                <article className="card-surface p-6">
+                  <div className="flex flex-wrap justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-bold text-primary">
+                        {selected.organization_type.toUpperCase()}
+                      </p>
+                      <h2 className="mt-1 text-2xl font-bold">{selected.name}</h2>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {selected.contact_email ?? "No email recorded"}
+                      </p>
+                    </div>
+                    <span className="h-fit rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
+                      {selected.account_status ?? "Active"}
+                    </span>
+                  </div>
+                  <h3 className="mt-7 font-bold">Basic information</h3>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <Info
+                      label="Registration date"
+                      value={new Date(selected.created_at).toLocaleDateString()}
+                      icon={<CalendarDays size={16} />}
+                    />
+                    <Info
+                      label="GPS location"
+                      value={
+                        selected.latitude != null
+                          ? `${selected.latitude}, ${selected.longitude}`
+                          : "Not provided"
+                      }
+                      icon={<MapPin size={16} />}
+                    />
+                  </div>
+                  <h3 className="mt-7 font-bold">Expertise & resources</h3>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {[...selected.expertise, ...selected.capabilities].map((item) => (
+                      <span
+                        key={item}
+                        className="rounded-full bg-surface px-3 py-1 text-xs font-semibold"
+                      >
+                        {item}
+                      </span>
+                    ))}
+                  </div>
+                  <h3 className="mt-7 font-bold">Task history</h3>
+                  <div className="mt-3 space-y-2">
+                    {assignments
+                      .filter((assignment) => assignment.organization_id === selected.id)
+                      .map((assignment) => {
+                        const challenge = tasks.find((task) => task.id === assignment.challenge_id);
+                        return (
+                          <div key={assignment.id} className="rounded-lg bg-surface p-3 text-sm">
+                            <b>
+                              {challenge?.public_id ?? "Task"} ·{" "}
+                              {challenge?.title ?? "Assigned task"}
+                            </b>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {assignment.status.replaceAll("_", " ")} ·{" "}
+                              {new Date(assignment.created_at).toLocaleDateString()}
+                            </p>
+                          </div>
+                        );
+                      })}
+                    {!assignments.some(
+                      (assignment) => assignment.organization_id === selected.id,
+                    ) && (
+                      <p className="text-sm text-muted-foreground">
+                        No task assignments have been recorded yet.
+                      </p>
+                    )}
+                  </div>
+                  <h3 className="mt-7 font-bold">
+                    {selected.organization_type === "NGO" ? "Volunteers" : "Skilled participants"}
+                  </h3>
+                  <div className="mt-3 space-y-2">
+                    {members
+                      .filter((member) => member.organization_id === selected.id)
+                      .map((member) => (
+                        <div key={member.id} className="rounded-lg bg-surface p-3 text-sm">
+                          <b>{member.name}</b>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {member.skills.join(", ") || "General"} ·{" "}
+                            {member.availability || "Availability not set"}
+                          </p>
+                        </div>
+                      ))}
+                    {!members.some((member) => member.organization_id === selected.id) && (
+                      <p className="text-sm text-muted-foreground">
+                        No {selected.organization_type === "NGO" ? "volunteers" : "participants"}{" "}
+                        have been recorded yet.
+                      </p>
+                    )}
+                  </div>
+                </article>
+                <aside className="card-surface p-6">
+                  <h3 className="font-bold">Account controls</h3>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Changes immediately restrict the partner's workspace access.
+                  </p>
+                  <div className="mt-5 grid gap-2">
+                    <button
+                      onClick={() => void updateStatus(selected, "Active")}
+                      className="rounded-lg bg-primary py-2.5 text-sm font-bold text-primary-foreground"
+                    >
+                      Activate
+                    </button>
+                    <button
+                      onClick={() => void updateStatus(selected, "Suspended")}
+                      className="rounded-lg border border-destructive py-2.5 text-sm font-bold text-destructive"
+                    >
+                      Suspend
+                    </button>
+                    <button
+                      onClick={() => void updateStatus(selected, "Deactivated")}
+                      className="rounded-lg border border-input py-2.5 text-sm font-bold"
+                    >
+                      Deactivate
+                    </button>
+                  </div>
+                </aside>
+              </div>
+            </section>
+          )}
+          {section === "All Tasks" && (
+            <section className="mt-7">
+              <h2 className="text-2xl font-bold">All Tasks</h2>
+              <div className="mt-5 space-y-3">
+                {tasks
+                  .filter((task) =>
+                    `${task.public_id} ${task.title} ${task.domain} ${task.district} ${task.stage}`
+                      .toLowerCase()
+                      .includes(query.toLowerCase()),
+                  )
+                  .map((task) => (
+                    <article
+                      key={task.id}
+                      className="card-surface flex flex-wrap items-center justify-between gap-4 p-5"
+                    >
+                      <div>
+                        <p className="text-xs font-bold text-primary">
+                          {task.public_id} · {task.domain}
+                        </p>
+                        <h3 className="mt-1 font-bold">{task.title}</h3>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          {task.district} · Reported{" "}
+                          {new Date(task.created_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <span className="rounded-full bg-surface px-3 py-1 text-xs font-bold">
+                        {task.stage}
+                      </span>
+                    </article>
+                  ))}
+              </div>
+            </section>
+          )}
+          {[
+            "Task Tracking",
+            "Reassignments",
+            "Skilled Participants",
+            "Volunteers",
+            "Expertise & Resources",
+            "Reports",
+            "Analytics",
+          ].includes(section) && (
+            <AdminDataSection
+              section={section}
+              query={query}
+              partners={partners}
+              tasks={tasks}
+              members={members}
+              assignments={assignments}
+              transfers={transfers}
+            />
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+function AdminDataSection({
+  section,
+  query,
+  partners,
+  tasks,
+  members,
+  assignments,
+  transfers,
+}: {
+  section: string;
+  query: string;
+  partners: AdminPartner[];
+  tasks: Challenge[];
+  members: AdminMember[];
+  assignments: AdminAssignment[];
+  transfers: AdminTransfer[];
+}) {
+  const matches = (value: string) => value.toLowerCase().includes(query.toLowerCase());
+  const partner = (id: string) => partners.find((item) => item.id === id);
+  const challenge = (id: string) => tasks.find((item) => item.id === id);
+  const isVolunteerView = section === "Volunteers";
+  if (section === "Skilled Participants" || section === "Volunteers") {
+    const rows = members.filter((member) => {
+      const owner = partner(member.organization_id);
+      return (
+        (isVolunteerView
+          ? owner?.organization_type === "NGO"
+          : owner?.organization_type !== "NGO") &&
+        matches(`${member.name} ${member.skills.join(" ")} ${owner?.name ?? ""}`)
+      );
+    });
+    return (
+      <section className="mt-7">
+        <h2 className="text-2xl font-bold">{section}</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Platform-wide private member directory. Only administrators can view these records.
+        </p>
+        <div className="mt-5 overflow-x-auto card-surface">
+          <table className="w-full min-w-180 text-left text-sm">
+            <thead className="bg-surface text-xs text-muted-foreground">
+              <tr>
+                <th className="p-4">NAME</th>
+                <th className="p-4">{isVolunteerView ? "NGO" : "ORGANIZATION"}</th>
+                <th className="p-4">SKILL / EXPERTISE</th>
+                <th className="p-4">AVAILABILITY</th>
+                <th className="p-4">CURRENT TASK</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((member) => {
+                const assignment = assignments.find(
+                  (item) =>
+                    item.organization_id === member.organization_id &&
+                    !["completed", "unable_to_resolve"].includes(item.status),
+                );
+                return (
+                  <tr key={member.id} className="border-t border-border">
+                    <td className="p-4 font-semibold">{member.name}</td>
+                    <td className="p-4">{partner(member.organization_id)?.name ?? "—"}</td>
+                    <td className="p-4">{member.skills.join(", ") || "—"}</td>
+                    <td className="p-4">{member.availability || "Not set"}</td>
+                    <td className="p-4">
+                      {assignment
+                        ? (challenge(assignment.challenge_id)?.public_id ?? "Assigned")
+                        : "Not assigned"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {!rows.length && (
+            <p className="p-8 text-center text-sm text-muted-foreground">
+              No matching records found.
+            </p>
+          )}
+        </div>
+      </section>
+    );
+  }
+  if (section === "Task Tracking")
+    return (
+      <section className="mt-7">
+        <h2 className="text-2xl font-bold">Task Tracking</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Monitor the full assignment lifecycle across all partners.
+        </p>
+        <div className="mt-5 space-y-3">
+          {assignments
+            .filter((item) =>
+              matches(
+                `${challenge(item.challenge_id)?.title ?? ""} ${partner(item.organization_id)?.name ?? ""} ${item.status}`,
+              ),
+            )
+            .map((item) => (
+              <article
+                key={item.id}
+                className="card-surface flex flex-wrap items-center justify-between gap-4 p-5"
+              >
+                <div>
+                  <p className="text-xs font-bold text-primary">
+                    {challenge(item.challenge_id)?.public_id ?? "TASK"} ·{" "}
+                    {partner(item.organization_id)?.name ?? "Unassigned partner"}
+                  </p>
+                  <h3 className="mt-1 font-bold">
+                    {challenge(item.challenge_id)?.title ?? "Task record"}
+                  </h3>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Assigned {new Date(item.created_at).toLocaleString()}{" "}
+                    {item.accepted_at
+                      ? `· Accepted ${new Date(item.accepted_at).toLocaleString()}`
+                      : "· Awaiting acceptance"}
+                  </p>
+                </div>
+                <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
+                  {item.status.replaceAll("_", " ")}
+                </span>
+              </article>
+            ))}
+          {!assignments.length && (
+            <p className="card-surface p-8 text-center text-sm text-muted-foreground">
+              No assignment lifecycle records yet.
+            </p>
+          )}
+        </div>
+      </section>
+    );
+  if (section === "Reassignments")
+    return (
+      <section className="mt-7">
+        <h2 className="text-2xl font-bold">Reassignment Management</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Review why a task moved and where it was routed next.
+        </p>
+        <div className="mt-5 overflow-x-auto card-surface">
+          <table className="w-full min-w-200 text-left text-sm">
+            <thead className="bg-surface text-xs text-muted-foreground">
+              <tr>
+                <th className="p-4">TASK</th>
+                <th className="p-4">ORIGINAL PARTNER</th>
+                <th className="p-4">FAILURE REASON</th>
+                <th className="p-4">NEW PARTNER</th>
+                <th className="p-4">REASSIGNED</th>
+                <th className="p-4">CURRENT STATUS</th>
+              </tr>
+            </thead>
+            <tbody>
+              {transfers.map((transfer) => {
+                const assignment = assignments.find((item) => item.id === transfer.assignment_id);
+                return (
+                  <tr key={transfer.id} className="border-t border-border">
+                    <td className="p-4 font-semibold">
+                      {assignment
+                        ? (challenge(assignment.challenge_id)?.public_id ?? "Task")
+                        : "Task"}
+                    </td>
+                    <td className="p-4">
+                      {assignment ? (partner(assignment.organization_id)?.name ?? "—") : "—"}
+                    </td>
+                    <td className="p-4">{transfer.reason}</td>
+                    <td className="p-4">{partner(transfer.to_organization_id)?.name ?? "—"}</td>
+                    <td className="p-4">{new Date(transfer.created_at).toLocaleString()}</td>
+                    <td className="p-4">
+                      {assignment?.status.replaceAll("_", " ") ?? "Reassigned"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {!transfers.length && (
+            <p className="p-8 text-center text-sm text-muted-foreground">
+              No reassigned tasks have been recorded.
+            </p>
+          )}
+        </div>
+      </section>
+    );
+  if (section === "Expertise & Resources")
+    return (
+      <section className="mt-7">
+        <h2 className="text-2xl font-bold">Expertise & Resources</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          A platform capability map for allocation and reassignment decisions.
+        </p>
+        <div className="mt-5 grid gap-4 lg:grid-cols-2">
+          {partners
+            .filter((item) =>
+              matches(`${item.name} ${item.expertise.join(" ")} ${item.capabilities.join(" ")}`),
+            )
+            .map((item) => (
+              <article key={item.id} className="card-surface p-5">
+                <div className="flex justify-between gap-3">
+                  <div>
+                    <h3 className="font-bold">{item.name}</h3>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {item.organization_type} ·{" "}
+                      {item.locality || item.district || "Location not set"}
+                    </p>
+                  </div>
+                  <MapPin size={18} className="text-primary" />
+                </div>
+                <p className="mt-4 text-xs font-bold text-muted-foreground">EXPERTISE</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {item.expertise.map((value) => (
+                    <span
+                      key={value}
+                      className="rounded-full bg-primary-soft px-2.5 py-1 text-xs font-bold text-primary"
+                    >
+                      {value}
+                    </span>
+                  ))}
+                </div>
+                <p className="mt-4 text-xs font-bold text-muted-foreground">RESOURCES</p>
+                <p className="mt-2 text-sm">
+                  {item.capabilities.join(", ") || "No resources listed"}
+                </p>
+              </article>
+            ))}
+        </div>
+      </section>
+    );
+  if (section === "Reports")
+    return (
+      <section className="mt-7">
+        <h2 className="text-2xl font-bold">Admin Reports</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Export-ready reporting overview for performance, outcomes, and response health.
+        </p>
+        <div className="mt-5 grid gap-3 sm:grid-cols-3">
+          <DashboardStat
+            label="Reported tasks"
+            value={tasks.length}
+            icon={<FileSpreadsheet size={18} />}
+          />
+          <DashboardStat
+            label="Resolved / impact"
+            value={tasks.filter((item) => item.stage === "impact").length}
+            icon={<CheckCircle2 size={18} />}
+          />
+          <DashboardStat label="Reassigned" value={transfers.length} icon={<Repeat2 size={18} />} />
+        </div>
+        <button
+          onClick={() => {
+            const rows = [
+              ["Task ID", "Title", "Location", "Status"],
+              ...tasks.map((item) => [item.public_id, item.title, item.district, item.stage]),
+            ];
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(
+              new Blob([rows.map((row) => row.join(",")).join("\n")], { type: "text/csv" }),
+            );
+            link.download = "samajsetu-admin-report.csv";
+            link.click();
+            URL.revokeObjectURL(link.href);
+          }}
+          className="mt-5 rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground"
+        >
+          <Download className="mr-1 inline" size={16} /> Export task report
+        </button>
+      </section>
+    );
+  return (
+    <section className="mt-7">
+      <h2 className="text-2xl font-bold">Analytics</h2>
+      <p className="mt-2 text-sm text-muted-foreground">Live platform-wide operating metrics.</p>
+      <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <DashboardStat label="Partners" value={partners.length} icon={<Building2 size={18} />} />
+        <DashboardStat label="Members" value={members.length} icon={<Users size={18} />} />
+        <DashboardStat
+          label="Assignments"
+          value={assignments.length}
+          icon={<ClipboardCheck size={18} />}
+        />
+        <DashboardStat
+          label="Average priority"
+          value={
+            tasks.length
+              ? Math.round(tasks.reduce((sum, item) => sum + item.priority_score, 0) / tasks.length)
+              : 0
+          }
+          icon={<Activity size={18} />}
+        />
+      </div>
+      <div className="mt-5 card-surface p-6">
+        <h3 className="font-bold">Task status distribution</h3>
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          {["reported", "validated", "impact"].map((stage) => (
+            <div key={stage} className="rounded-lg bg-surface p-4">
+              <b className="text-xl text-primary">
+                {tasks.filter((item) => item.stage === stage).length}
+              </b>
+              <p className="mt-1 text-sm capitalize text-muted-foreground">{stage}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function Admin({ flash, refresh }: { flash: (x: string) => void; refresh: (q?: string) => void }) {
   const [items, setItems] = useState<Challenge[]>([]),
     [loading, setLoading] = useState(true);
