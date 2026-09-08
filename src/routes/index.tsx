@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { createElement, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Activity,
   Building2,
@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { MediaUpload } from "@/components/MediaUpload";
+import { LanguageSelector, voiceLocale } from "@/components/LanguageSelector";
 import type { User } from "@supabase/supabase-js";
 
 export const Route = createFileRoute("/")({ component: SamajSetu });
@@ -69,6 +70,7 @@ type Challenge = {
   media: { path: string; type: string }[] | null;
   comments: { id: string; note: string; created_at: string }[] | null;
 };
+type SupportListing = { id: string; title: string; support_type: string; eligibility: string | null; required_documents: string | null; official_url: string | null; contact_information: string | null };
 type Report = {
   id: string;
   description: string;
@@ -85,7 +87,9 @@ function SamajSetu() {
     [user, setUser] = useState<User | null>(null),
     [profile, setProfile] = useState<Profile | null>(null),
     [challenges, setChallenges] = useState<Challenge[]>([]),
+    [supportListings, setSupportListings] = useState<SupportListing[]>([]),
     [supportedIds, setSupportedIds] = useState<string[]>([]),
+    [language, setLanguage] = useState("en"),
     [notice, setNotice] = useState("");
   const loadChallenges = async (q = "") => {
     if (!supabase) return;
@@ -156,6 +160,12 @@ function SamajSetu() {
       )
       .subscribe();
     void loadChallenges();
+    void supabase
+      .from("support_information")
+      .select("id,title,support_type,eligibility,required_documents,official_url,contact_information")
+      .eq("verification_status", "verified")
+      .order("created_at", { ascending: false })
+      .then(({ data }) => setSupportListings((data ?? []) as SupportListing[]));
     return () => {
       subscription.unsubscribe();
       void supabase!.removeChannel(channel);
@@ -203,12 +213,13 @@ function SamajSetu() {
         user={user}
         profile={profile}
         go={go}
+        setLanguage={setLanguage}
         logout={async () => {
           await supabase!.auth.signOut();
           go("home");
         }}
       />
-      {screen === "home" && <Home go={go} count={challenges.length} user={user} />}{" "}
+      {screen === "home" && <Home go={go} count={challenges.length} user={user} supportListings={supportListings} />}{" "}
       {screen === "auth" && (
         <Auth
           complete={(accountType) => {
@@ -230,6 +241,7 @@ function SamajSetu() {
           challenges={challenges}
           supportedIds={supportedIds}
           repost={repost}
+          speechLanguage={voiceLocale(language)}
           complete={() => {
             flash("Report submitted for verification.");
             void loadChallenges();
@@ -270,11 +282,13 @@ function Header({
   user,
   profile,
   go,
+  setLanguage,
   logout,
 }: {
   user: User | null;
   profile: Profile | null;
   go: (x: Screen) => void;
+  setLanguage: (language: string) => void;
   logout: () => void;
 }) {
   const isOrganizationUser = user?.user_metadata?.["account_type"] === "organization";
@@ -286,6 +300,7 @@ function Header({
           SamajSetu
         </button>
         <nav className="flex items-center gap-3 text-sm font-bold">
+          <LanguageSelector onLanguageChange={setLanguage} />
           <button onClick={() => go("explore")} className="hidden sm:block">
             Challenges
           </button>
@@ -363,20 +378,13 @@ function Setup() {
     </main>
   );
 }
-function Home({ go, count, user }: { go: (x: Screen) => void; count: number; user: User | null }) {
-  const stages = [
-    [BrainCircuit, "Understand"],
-    [ShieldCheck, "Validate"],
-    [Users, "Match"],
-    [ClipboardCheck, "Build"],
-    [Activity, "Impact"],
-  ] as const;
+function Home({ go, count, user, supportListings }: { go: (x: Screen) => void; count: number; user: User | null; supportListings: SupportListing[] }) {
   return (
     <>
       <section className="grid-bg">
         <div className="container-page py-24">
           <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
-            JHARKHAND COMMUNITY INNOVATION
+            COMMUNITY INNOVATION
           </span>
           <h1 className="mt-6 max-w-3xl text-5xl font-bold leading-tight">
             From community problems to <span className="text-primary">measurable impact.</span>
@@ -411,19 +419,11 @@ function Home({ go, count, user }: { go: (x: Screen) => void; count: number; use
         <Stat n="Realtime" t="Database updates" />
         <Stat n="Human-led" t="Verification" />
       </section>
-      <section className="container-page py-18">
-        <h2 className="text-3xl font-bold">One shared journey</h2>
-        <div className="mt-8 grid gap-3 md:grid-cols-5">
-          {stages.map(([I, t]) => (
-            <div key={t} className="card-surface p-5">
-              {createElement(I, { className: "text-primary", size: 20 })}
-              <h3 className="mt-4 font-bold">{t}</h3>
-              <p className="mt-2 text-sm text-muted-foreground">
-                Transparent, accountable progress.
-              </p>
-            </div>
-          ))}
-        </div>
+      <section className="container-page py-14">
+        <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">VERIFIED SUPPORT</span>
+        <h2 className="mt-4 text-3xl font-bold">Schemes, funding & support</h2>
+        <p className="mt-2 max-w-2xl text-muted-foreground">Officially verified government schemes, CSR opportunities, NGO programs, departments, and emergency resources.</p>
+        {supportListings.length ? <div className="mt-7 grid gap-4 md:grid-cols-2">{supportListings.map((item) => <article key={item.id} className="card-surface p-5"><p className="text-xs font-bold text-primary">{item.support_type.replaceAll("_", " ").toUpperCase()}</p><h3 className="mt-2 text-lg font-bold">{item.title}</h3>{item.eligibility && <p className="mt-3 text-sm"><b>Eligibility:</b> {item.eligibility}</p>}{item.required_documents && <p className="mt-2 text-sm"><b>Documents:</b> {item.required_documents}</p>}{item.contact_information && <p className="mt-2 text-sm"><b>Contact:</b> {item.contact_information}</p>}{item.official_url && <a href={item.official_url} target="_blank" rel="noreferrer" className="mt-4 inline-block text-sm font-bold text-primary">Official application link →</a>}</article>)}</div> : <p className="mt-7 rounded-xl border border-dashed border-border p-6 text-sm text-muted-foreground">Verified scheme and support information added by the administrator will appear here.</p>}
       </section>
     </>
   );
@@ -895,6 +895,7 @@ function Report({
   challenges,
   supportedIds,
   repost,
+  speechLanguage,
 }: {
   user: User | null;
   go: (x: Screen) => void;
@@ -902,6 +903,7 @@ function Report({
   challenges: Challenge[];
   supportedIds: string[];
   repost: (challenge: Challenge, note?: string) => Promise<void>;
+  speechLanguage: string;
 }) {
   const [title, setTitle] = useState(""),
     [description, setDescription] = useState(""),
@@ -909,6 +911,7 @@ function Report({
     [nearProblem, setNearProblem] = useState<"yes" | "no" | "">(""),
     [voiceTranscript, setVoiceTranscript] = useState(""),
     [voiceRecording, setVoiceRecording] = useState(false),
+    [voiceError, setVoiceError] = useState(""),
     [reviewing, setReviewing] = useState(false),
     [district, setDistrict] = useState(""),
     [block, setBlock] = useState(""),
@@ -920,9 +923,16 @@ function Report({
     [publicId, setPublicId] = useState<string | null>(null),
     [latitude, setLatitude] = useState<number | null>(null),
     [longitude, setLongitude] = useState<number | null>(null),
+    [duplicateMatches, setDuplicateMatches] = useState<
+      { challenge_id: string; public_id: string; title: string; duplicate_score: number }[]
+    >([]),
+    [supportSuggestions, setSupportSuggestions] = useState<
+      { id: string; title: string; support_type: string; official_url: string | null; contact_information: string | null }[]
+    >([]),
     [locationLabel, setLocationLabel] = useState(""),
     [showNearby, setShowNearby] = useState(false),
     [mediaError, setMediaError] = useState("");
+  const speechRecognition = useRef<any>(null);
 
   const nearby = challenges.slice(0, 3).map((challenge, index) => ({
     challenge,
@@ -942,28 +952,59 @@ function Report({
       { enableHighAccuracy: true, timeout: 12000 },
     );
   };
-  const startVoiceTranscription = () => {
+  const startVoiceTranscription = async () => {
+    setVoiceError("");
+    setError("");
     const Recognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!Recognition) return setError("Voice transcription is not supported in this browser. You can type your report instead.");
+    if (!Recognition) {
+      setVoiceError("Speech-to-text is unavailable in this browser. Use the latest Chrome or Edge over HTTPS, then allow microphone access.");
+      return;
+    }
+    if (!window.isSecureContext) {
+      setVoiceError("Microphone access requires a secure (HTTPS) connection. Open the deployed HTTPS site or use localhost.");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+    } catch (cause: any) {
+      setVoiceError(cause?.name === "NotAllowedError" ? "Microphone permission was blocked. Allow it in your browser site settings, then try again." : "We could not access a microphone on this device. Check that it is connected and available.");
+      return;
+    }
     const recognition = new Recognition();
+    speechRecognition.current = recognition;
     recognition.continuous = false;
     recognition.interimResults = true;
-    recognition.lang = "en-IN";
+    recognition.lang = speechLanguage;
     recognition.onresult = (event: any) => {
-      const transcript = Array.from(event.results as any).map((result: any) => result[0].transcript).join(" ");
+      const transcript = Array.from(event.results as any).map((result: any) => result[0].transcript).join(" ").trim();
       setVoiceTranscript(transcript);
-      if (!description.trim()) setDescription(transcript);
+      setDescription((current) => current.trim() ? `${current} ${transcript}`.trim() : transcript);
     };
-    recognition.onerror = () => setError("Voice transcription could not be completed. Please edit or type your report.");
-    recognition.onend = () => setVoiceRecording(false);
+    recognition.onerror = (event: any) => {
+      const messages: Record<string, string> = {
+        "not-allowed": "Microphone permission was blocked. Allow it in browser site settings, then try again.",
+        "no-speech": "No speech was detected. Speak after pressing record, then try again.",
+        "audio-capture": "No microphone was detected. Connect or enable a microphone and retry.",
+        network: "Speech recognition needs an internet connection. Check your connection and retry.",
+      };
+      setVoiceError(messages[event.error] ?? "Voice transcription could not be completed. Please try again or type your report.");
+    };
+    recognition.onend = () => { setVoiceRecording(false); speechRecognition.current = null; };
     setVoiceRecording(true);
-    recognition.start();
+    try { recognition.start(); } catch { setVoiceRecording(false); setVoiceError("Speech recognition is already starting. Please wait a moment and try again."); }
   };
-  const review = () => {
+  const stopVoiceTranscription = () => speechRecognition.current?.stop();
+  const review = async () => {
     setError("");
     if (!nearProblem) return setError("Please select whether you are currently near the problem location.");
     if (!title.trim() || description.trim().length < 10) return setError("Enter a problem title and a description of at least 10 characters.");
     if (!district.trim() || !block.trim() || !locality.trim()) return setError("District, Block / Mandal, and Village / City are required.");
+    if (supabase) {
+      const domain = /water|handpump|well|tap/i.test(description) ? "Water" : "Public Services";
+      const { data } = await supabase.rpc("find_possible_duplicates", { problem_title: title.trim(), problem_description: description.trim(), problem_domain: domain, problem_lat: latitude, problem_lng: longitude });
+      setDuplicateMatches(((data ?? []) as { challenge_id: string; public_id: string; title: string; duplicate_score: number }[]).filter((item) => item.duplicate_score >= 75));
+    }
     setReviewing(true);
   };
 
@@ -1015,6 +1056,7 @@ function Report({
         locality,
         latitude,
         longitude,
+        voice_transcript: voiceTranscript.trim() || null,
       })
       .select("id")
       .single();
@@ -1026,6 +1068,13 @@ function Report({
     setReportId(r.id);
     setChallengeId(c.id);
     setPublicId(c.public_id);
+    const { data: support } = await supabase
+      .from("support_information")
+      .select("id,title,support_type,official_url,contact_information")
+      .eq("verification_status", "verified")
+      .or(`categories.cs.{${domain}},districts.cs.{${district}}`)
+      .limit(4);
+    setSupportSuggestions((support ?? []) as typeof supportSuggestions);
   };
 
   if (reportId) {
@@ -1062,6 +1111,7 @@ function Report({
           Attach photos, videos, or audio recordings to strengthen your report and help verify the
           problem.
         </p>
+        {supportSuggestions.length > 0 && <section className="card-surface mt-5 p-5"><h2 className="font-bold">Verified support that may help</h2><p className="mt-1 text-sm text-muted-foreground">Matched to this report’s category or district. Confirm eligibility and documents with the provider.</p><div className="mt-3 space-y-2">{supportSuggestions.map((item) => <div key={item.id} className="rounded-lg bg-surface p-3 text-sm"><b>{item.title}</b><p className="mt-1 text-xs text-muted-foreground">{item.support_type.replaceAll("_", " ")}</p>{item.official_url && <a href={item.official_url} target="_blank" rel="noreferrer" className="mt-1 inline-block font-bold text-primary">Official application link</a>}{item.contact_information && <p className="mt-1">{item.contact_information}</p>}</div>)}</div></section>}
         <div className="card-surface mt-7 p-6">
           <MediaUpload
             reportId={reportId}
@@ -1125,6 +1175,8 @@ function Report({
         </div>
         <div className="mt-4 rounded-xl border border-border p-4">
           <p className="font-bold">Describe by voice (optional)</p><p className="mt-1 text-xs text-muted-foreground">Speak, then review and edit the converted text.</p>
+          {voiceRecording && <><p className="mt-3 text-sm font-medium text-primary">Listening now — speak clearly, then press Stop below.</p><button type="button" onClick={stopVoiceTranscription} className="mt-2 rounded-lg border border-input px-3 py-2 text-sm font-bold">Stop recording</button></>}
+          {voiceError && <p className="mt-3 rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{voiceError}</p>}
           <button type="button" onClick={startVoiceTranscription} disabled={voiceRecording} className="mt-3 rounded-lg border border-primary px-3 py-2 text-sm font-bold text-primary disabled:opacity-50"><Mic className="mr-1 inline" size={16} /> {voiceRecording ? "Listening…" : "Record and convert to text"}</button>
           {voiceTranscript && <textarea value={voiceTranscript} onChange={(event) => setVoiceTranscript(event.target.value)} className="mt-3 min-h-20 w-full rounded-lg border border-input p-3 text-sm" aria-label="Editable voice transcription" />}
         </div>
@@ -1214,6 +1266,7 @@ function Report({
               <p><b>Problem location:</b> {district}, {block}, {locality}</p>
               {supportingInfo && <p><b>Supporting information:</b> {supportingInfo}</p>}
             </div>
+            {duplicateMatches.length > 0 && <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm"><b>Possible duplicate reports</b><p className="mt-1">These stay separate unless an admin merges them. You can still continue and add evidence.</p>{duplicateMatches.map((item) => <p key={item.challenge_id} className="mt-2"><b>{item.public_id}</b> · {item.title} ({Math.round(item.duplicate_score)}% match)</p>)}</div>}
             <button onClick={() => void submit()} disabled={busy} className="mt-5 rounded-lg bg-primary px-5 py-3 font-bold text-primary-foreground disabled:opacity-50">{busy ? "Submitting…" : "Submit Report"}</button>
             <button onClick={() => setReviewing(false)} className="ml-3 text-sm font-bold text-primary">Edit report</button>
           </div>
@@ -2629,7 +2682,18 @@ type PartnerTask = {
   status: PartnerTaskStatus;
   people: string[];
   remarks?: string;
+  acceptanceDeadline?: string | null;
 };
+
+function AcceptanceCountdown({ deadline }: { deadline: string | null | undefined }) {
+  const [, tick] = useState(0);
+  useEffect(() => { const timer = window.setInterval(() => tick((value) => value + 1), 1000); return () => window.clearInterval(timer); }, []);
+  if (!deadline) return null;
+  const remaining = new Date(deadline).getTime() - Date.now();
+  if (remaining <= 0) return <span className="text-xs font-bold text-destructive">Acceptance deadline reached — reassignment is pending.</span>;
+  const hours = Math.floor(remaining / 3_600_000), minutes = Math.floor((remaining % 3_600_000) / 60_000), seconds = Math.floor((remaining % 60_000) / 1000);
+  return <span className="text-xs font-bold text-amber-700"><Clock3 className="mr-1 inline" size={13} />Accept within {hours}h {minutes}m {seconds}s</span>;
+}
 
 function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: string) => void }) {
   const isNgo = user?.user_metadata?.["organization_type"] === "NGO";
@@ -2728,7 +2792,7 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
       const { data, error } = await database
         .from("problem_assignments")
         .select(
-          "id,status,unable_reason,created_at,challenges(public_id,title,summary,domain,district,locality,public_latitude,public_longitude,priority_score)",
+          "id,status,unable_reason,created_at,acceptance_deadline,challenges(public_id,title,summary,domain,district,locality,public_latitude,public_longitude,priority_score)",
         )
         .eq("organization_id", organization.id)
         .order("created_at", { ascending: false });
@@ -2756,6 +2820,8 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
             status: statusFor(assignment.status),
             people: [],
             remarks: assignment.unable_reason ?? undefined,
+            // Supports assignments created before the deadline migration was applied.
+            acceptanceDeadline: assignment.acceptance_deadline ?? new Date(new Date(assignment.created_at).getTime() + 48 * 60 * 60 * 1000).toISOString(),
           };
         }),
       );
@@ -2802,7 +2868,7 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
     const status = patch.status === "Pending" ? "pending" : patch.status === "Solved" ? "completed" : patch.status.includes("Couldn't") ? "unable_to_resolve" : "in_progress";
     void supabase
       .from("problem_assignments")
-      .update({ status, ...(status === "unable_to_resolve" ? { unable_reason: patch.remarks ?? "Unable to resolve" } : {}) })
+      .update({ status, ...(patch.status === "Accepted" ? { accepted_at: new Date().toISOString() } : {}), ...(status === "unable_to_resolve" ? { unable_reason: patch.remarks ?? "Unable to resolve" } : {}) })
       .eq("id", existing.assignmentId)
       .then(({ error }) => error && flash(`Could not sync task update: ${error.message}`));
   };
@@ -3146,6 +3212,7 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
                   </div>
                   <h3 className="mt-7 font-bold">Problem Information</h3>
                   <p className="mt-2 leading-7 text-muted-foreground">{task.description}</p>
+                  {task.status === "Pending" && <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3"><p className="text-sm font-bold">Task acceptance deadline</p><p className="mt-1"><AcceptanceCountdown deadline={task.acceptanceDeadline} /></p></div>}
                   <div className="mt-5 grid gap-3 sm:grid-cols-2">
                     <Info
                       label="Problem location"
@@ -3476,6 +3543,7 @@ function PartnerTaskCards({
               </p>
               <h3 className="mt-1 font-bold">{task.title}</h3>
               <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{task.description}</p>
+              {task.status === "Pending" && <p className="mt-2"><AcceptanceCountdown deadline={task.acceptanceDeadline} /></p>}
               <p className="mt-2 text-xs text-muted-foreground">
                 <MapPin className="mr-1 inline" size={13} />
                 {task.location} · GPS {task.coordinates} · {task.reported}
@@ -4106,6 +4174,7 @@ type AdminAssignment = {
   unable_reason: string | null;
   created_at: string;
   accepted_at: string | null;
+  acceptance_deadline: string | null;
   resolved_at: string | null;
 };
 type AdminTransfer = {
@@ -4271,7 +4340,7 @@ function AdminControlCenter({
       supabase
         .from("problem_assignments")
         .select(
-          "id,challenge_id,organization_id,status,unable_reason,created_at,accepted_at,resolved_at",
+          "id,challenge_id,organization_id,status,unable_reason,created_at,accepted_at,acceptance_deadline,resolved_at",
         ),
       supabase
         .from("problem_transfers")
@@ -4318,6 +4387,7 @@ function AdminControlCenter({
     "Skilled Participants",
     "Volunteers",
     "Expertise & Resources",
+    "Support & Funding",
     "Reports",
     "Analytics",
     "Account Management",
@@ -4419,6 +4489,7 @@ function AdminControlCenter({
               />
             </div>
           </header>
+          {section === "Support & Funding" && <SupportFunding flash={flash} />}
           {section === "Dashboard" && (
             <>
               <div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -4970,6 +5041,7 @@ function AdminDataSection({
                 <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
                   {item.status.replaceAll("_", " ")}
                 </span>
+                {item.status === "pending" && !item.accepted_at && <AcceptanceCountdown deadline={item.acceptance_deadline ?? new Date(new Date(item.created_at).getTime() + 48 * 60 * 60 * 1000).toISOString()} />}
               </article>
             ))}
           {!assignments.length && (
@@ -5152,6 +5224,34 @@ function AdminDataSection({
       </div>
     </section>
   );
+}
+
+function SupportFunding({ flash }: { flash: (message: string) => void }) {
+  const [items, setItems] = useState<any[]>([]);
+  const [title, setTitle] = useState("");
+  const [type, setType] = useState("government_scheme");
+  const [url, setUrl] = useState("");
+  const [contact, setContact] = useState("");
+  const load = async () => {
+    const { data, error } = await supabase!.from("support_information").select("id,title,support_type,official_url,contact_information,verification_status,created_at").order("created_at", { ascending: false });
+    if (error) flash(error.message); else setItems(data ?? []);
+  };
+  useEffect(() => { void load(); }, []);
+  const add = async () => {
+    if (!title.trim()) return flash("Enter a support or funding title.");
+    const { error } = await supabase!.from("support_information").insert({ title: title.trim(), support_type: type, official_url: url.trim() || null, contact_information: contact.trim() || null, verification_status: "pending" });
+    if (error) return flash(error.message);
+    setTitle(""); setUrl(""); setContact(""); await load(); flash("Support information saved as pending verification.");
+  };
+  const updateStatus = async (id: string, verification_status: string) => {
+    const { error } = await supabase!.from("support_information").update({ verification_status }).eq("id", id);
+    if (error) flash(error.message); else { await load(); flash(`Listing marked ${verification_status}.`); }
+  };
+  const remove = async (id: string) => {
+    const { error } = await supabase!.from("support_information").delete().eq("id", id);
+    if (error) flash(error.message); else { await load(); flash("Support listing deleted."); }
+  };
+  return <section className="mt-7"><h2 className="text-2xl font-bold">Support & Funding</h2><p className="mt-1 text-sm text-muted-foreground">Manage government schemes, CSR opportunities, NGO programs, emergency resources, and official contacts. Pending entries are never presented as official schemes.</p><div className="mt-5 grid gap-3 rounded-xl border border-border bg-card p-4 sm:grid-cols-2"><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Program or scheme title" className="rounded-lg border border-input p-2 text-sm" /><select value={type} onChange={(e) => setType(e.target.value)} className="rounded-lg border border-input bg-card p-2 text-sm"><option value="government_scheme">Government scheme</option><option value="government_assistance">Government assistance</option><option value="csr_funding">CSR funding</option><option value="ngo_program">NGO support program</option><option value="department">Relevant department</option><option value="emergency_resource">Emergency resource</option></select><input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Official application link" className="rounded-lg border border-input p-2 text-sm" /><input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Contact information" className="rounded-lg border border-input p-2 text-sm" /><button onClick={() => void add()} className="rounded-lg bg-primary px-4 py-2 text-sm font-bold text-primary-foreground">Add pending listing</button></div><div className="mt-5 space-y-3">{items.map((item) => <article key={item.id} className="card-surface flex flex-wrap items-center justify-between gap-3 p-4"><div><b>{item.title}</b><p className="mt-1 text-xs text-muted-foreground">{item.support_type.replaceAll("_", " ")} · {item.official_url || item.contact_information || "No link/contact supplied"}</p></div><div className="flex items-center gap-2"><span className={`rounded-full px-2 py-1 text-xs font-bold ${item.verification_status === "verified" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{item.verification_status}</span><button onClick={() => void updateStatus(item.id, item.verification_status === "verified" ? "pending" : "verified")} className="text-sm font-bold text-primary">{item.verification_status === "verified" ? "Mark pending" : "Verify"}</button><button onClick={() => void remove(item.id)} className="text-sm font-bold text-destructive">Delete</button></div></article>)}{!items.length && <p className="rounded-lg bg-surface p-5 text-sm text-muted-foreground">No support listings yet.</p>}</div></section>;
 }
 
 function Admin({ flash, refresh }: { flash: (x: string) => void; refresh: (q?: string) => void }) {
