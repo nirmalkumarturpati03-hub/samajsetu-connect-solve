@@ -64,15 +64,20 @@ export function distanceKm(
   a: { lat: number; lng: number },
   b: { lat: number; lng: number },
 ): number {
+  const [lat1, lng1, lat2, lng2] = [Number(a.lat), Number(a.lng), Number(b.lat), Number(b.lng)];
+  if (
+    ![lat1, lng1, lat2, lng2].every(Number.isFinite) ||
+    Math.abs(lat1) > 90 || Math.abs(lat2) > 90 || Math.abs(lng1) > 180 || Math.abs(lng2) > 180
+  ) return Number.POSITIVE_INFINITY;
   const R = 6371;
-  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
-  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
   const s =
     Math.sin(dLat / 2) ** 2 +
-    Math.cos((a.lat * Math.PI) / 180) *
-      Math.cos((b.lat * Math.PI) / 180) *
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
       Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(s));
+  return 2 * R * Math.asin(Math.sqrt(Math.min(1, s)));
 }
 
 export type MediaItem = { path: string; type: string; name: string };

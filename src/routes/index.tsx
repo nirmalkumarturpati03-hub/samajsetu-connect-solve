@@ -5,6 +5,7 @@ import {
   Building2,
   ArrowRight,
   BadgeCheck,
+  Bell,
   BrainCircuit,
   CalendarDays,
   Check,
@@ -38,6 +39,9 @@ import {
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { MediaUpload } from "@/components/MediaUpload";
 import { LanguageSelector, voiceLocale } from "@/components/LanguageSelector";
+import { CursorParticleField } from "@/components/CursorParticleField";
+import { ProblemMap } from "@/components/ProblemMap";
+import { distanceKm } from "@/lib/samaj";
 import type { User } from "@supabase/supabase-js";
 
 export const Route = createFileRoute("/")({ component: SamajSetu });
@@ -47,6 +51,8 @@ type Screen =
   | "report"
   | "explore"
   | "my-reports"
+  | "notifications"
+  | "projects"
   | "admin-login"
   | "admin"
   | "organization"
@@ -69,8 +75,11 @@ type Challenge = {
   preview_image_path: string | null;
   media: { path: string; type: string }[] | null;
   comments: { id: string; note: string; created_at: string }[] | null;
+  public_latitude?: number | null;
+  public_longitude?: number | null;
+  assignment_status?: string | null;
+  participant_count?: number;
 };
-type SupportListing = { id: string; title: string; support_type: string; eligibility: string | null; required_documents: string | null; official_url: string | null; contact_information: string | null };
 type Report = {
   id: string;
   description: string;
@@ -87,7 +96,6 @@ function SamajSetu() {
     [user, setUser] = useState<User | null>(null),
     [profile, setProfile] = useState<Profile | null>(null),
     [challenges, setChallenges] = useState<Challenge[]>([]),
-    [supportListings, setSupportListings] = useState<SupportListing[]>([]),
     [supportedIds, setSupportedIds] = useState<string[]>([]),
     [language, setLanguage] = useState("en"),
     [notice, setNotice] = useState("");
@@ -160,12 +168,6 @@ function SamajSetu() {
       )
       .subscribe();
     void loadChallenges();
-    void supabase
-      .from("support_information")
-      .select("id,title,support_type,eligibility,required_documents,official_url,contact_information")
-      .eq("verification_status", "verified")
-      .order("created_at", { ascending: false })
-      .then(({ data }) => setSupportListings((data ?? []) as SupportListing[]));
     return () => {
       subscription.unsubscribe();
       void supabase!.removeChannel(channel);
@@ -219,7 +221,7 @@ function SamajSetu() {
           go("home");
         }}
       />
-      {screen === "home" && <Home go={go} count={challenges.length} user={user} supportListings={supportListings} />}{" "}
+      {screen === "home" && <Home go={go} count={challenges.length} user={user} profile={profile} flash={flash} />}{" "}
       {screen === "auth" && (
         <Auth
           complete={(accountType) => {
@@ -259,13 +261,15 @@ function SamajSetu() {
         />
       )}{" "}
       {screen === "my-reports" && <MyReports user={user} go={go} />}{" "}
+      {screen === "notifications" && <Notifications user={user} go={go} />}{" "}
+      {screen === "projects" && <ProjectWorkspace user={user} profile={profile} flash={flash} />}{" "}
       {screen === "organization" && <OrganizationRegistration user={user} go={go} flash={flash} />}{" "}
       {screen === "coordinator" && <PartnerDashboard user={user} flash={flash} />}{" "}
       {screen === "volunteer" && <VolunteerDashboard user={user} />}{" "}
       {screen === "admin-login" && <AdminLogin complete={() => go("admin")} />}
       {screen === "admin" &&
         (isAdmin ? (
-          <AdminControlCenter flash={flash} refresh={loadChallenges} />
+          <AdminControlCenter user={user} profile={profile} flash={flash} refresh={loadChallenges} />
         ) : (
           <AdminRedirect user={user} go={go} />
         ))}
@@ -309,6 +313,8 @@ function Header({
               My reports
             </button>
           )}
+          {user && <button onClick={() => go("notifications")} title="Notifications" className="rounded-lg border border-border p-2"><Bell size={16} /></button>}
+          {user && <button onClick={() => go("projects")} className="hidden sm:block">Projects</button>}
           {user && isOrganizationUser && (
             <button onClick={() => go("coordinator")} className="hidden sm:block">
               Partner dashboard
@@ -378,11 +384,12 @@ function Setup() {
     </main>
   );
 }
-function Home({ go, count, user, supportListings }: { go: (x: Screen) => void; count: number; user: User | null; supportListings: SupportListing[] }) {
+function Home({ go, count, user, profile, flash }: { go: (x: Screen) => void; count: number; user: User | null; profile: Profile | null; flash: (message: string) => void }) {
   return (
     <>
-      <section className="grid-bg">
-        <div className="container-page py-24">
+      <section className="grid-bg relative overflow-hidden">
+        <CursorParticleField />
+        <div className="container-page relative z-10 py-24">
           <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
             COMMUNITY INNOVATION
           </span>
@@ -419,12 +426,7 @@ function Home({ go, count, user, supportListings }: { go: (x: Screen) => void; c
         <Stat n="Realtime" t="Database updates" />
         <Stat n="Human-led" t="Verification" />
       </section>
-      <section className="container-page py-14">
-        <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">VERIFIED SUPPORT</span>
-        <h2 className="mt-4 text-3xl font-bold">Schemes, funding & support</h2>
-        <p className="mt-2 max-w-2xl text-muted-foreground">Officially verified government schemes, CSR opportunities, NGO programs, departments, and emergency resources.</p>
-        {supportListings.length ? <div className="mt-7 grid gap-4 md:grid-cols-2">{supportListings.map((item) => <article key={item.id} className="card-surface p-5"><p className="text-xs font-bold text-primary">{item.support_type.replaceAll("_", " ").toUpperCase()}</p><h3 className="mt-2 text-lg font-bold">{item.title}</h3>{item.eligibility && <p className="mt-3 text-sm"><b>Eligibility:</b> {item.eligibility}</p>}{item.required_documents && <p className="mt-2 text-sm"><b>Documents:</b> {item.required_documents}</p>}{item.contact_information && <p className="mt-2 text-sm"><b>Contact:</b> {item.contact_information}</p>}{item.official_url && <a href={item.official_url} target="_blank" rel="noreferrer" className="mt-4 inline-block text-sm font-bold text-primary">Official application link →</a>}</article>)}</div> : <p className="mt-7 rounded-xl border border-dashed border-border p-6 text-sm text-muted-foreground">Verified scheme and support information added by the administrator will appear here.</p>}
-      </section>
+      <FundingTransparency user={user} profile={profile} flash={flash} embedded />
     </>
   );
 }
@@ -907,6 +909,10 @@ function Report({
 }) {
   const [title, setTitle] = useState(""),
     [description, setDescription] = useState(""),
+    [category, setCategory] = useState(""),
+    [severity, setSeverity] = useState("2"),
+    [urgency, setUrgency] = useState("2"),
+    [affectedPopulation, setAffectedPopulation] = useState(""),
     [supportingInfo, setSupportingInfo] = useState(""),
     [nearProblem, setNearProblem] = useState<"yes" | "no" | "">(""),
     [voiceTranscript, setVoiceTranscript] = useState(""),
@@ -931,13 +937,24 @@ function Report({
     >([]),
     [locationLabel, setLocationLabel] = useState(""),
     [showNearby, setShowNearby] = useState(false),
+    [consentLocation, setConsentLocation] = useState(false),
+    [consentMedia, setConsentMedia] = useState(false),
+    [consentAi, setConsentAi] = useState(false),
     [mediaError, setMediaError] = useState("");
   const speechRecognition = useRef<any>(null);
 
-  const nearby = challenges.slice(0, 3).map((challenge, index) => ({
-    challenge,
-    distance: (0.4 + index * 0.7).toFixed(1),
-  }));
+  const nearby = challenges
+    .filter((challenge) => latitude != null && longitude != null && challenge.public_latitude != null && challenge.public_longitude != null)
+    .map((challenge) => ({
+      challenge,
+      distance: distanceKm(
+        { lat: latitude!, lng: longitude! },
+        { lat: challenge.public_latitude!, lng: challenge.public_longitude! },
+      ),
+    }))
+    .filter(({ distance }) => Number.isFinite(distance) && distance <= 5)
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, 3);
 
   const getProblemGps = () => {
     if (!navigator.geolocation) return setError("GPS is not supported on this device. Enter the problem location manually.");
@@ -945,10 +962,13 @@ function Report({
       (position) => {
         setLatitude(position.coords.latitude);
         setLongitude(position.coords.longitude);
-        setLocationLabel("Current GPS location detected. Please review the coordinates below.");
+        setLocationLabel("Current GPS location detected. Manual location entry is not required.");
         setShowNearby(true);
       },
-      () => setError("Location permission was denied. Please enter the problem location manually."),
+      () => {
+        setLocationLabel("");
+        setError("Location permission was denied. Choose ‘No, I am elsewhere’ to enter the problem location manually.");
+      },
       { enableHighAccuracy: true, timeout: 12000 },
     );
   };
@@ -999,9 +1019,12 @@ function Report({
     setError("");
     if (!nearProblem) return setError("Please select whether you are currently near the problem location.");
     if (!title.trim() || description.trim().length < 10) return setError("Enter a problem title and a description of at least 10 characters.");
-    if (!district.trim() || !block.trim() || !locality.trim()) return setError("District, Block / Mandal, and Village / City are required.");
+    if (!category) return setError("Select the category that best describes this problem.");
+    if (nearProblem === "yes" && (latitude == null || longitude == null)) return setError("We need your GPS location. Retry GPS, or choose ‘No, I am elsewhere’ to enter it manually.");
+    if (nearProblem === "no" && (!district.trim() || !block.trim() || !locality.trim())) return setError("District, Block / Mandal, and Village / City are required when entering the location manually.");
+    if (nearProblem === "yes" && !consentLocation) return setError("Confirm consent before sharing your exact GPS location with authorised responders.");
     if (supabase) {
-      const domain = /water|handpump|well|tap/i.test(description) ? "Water" : "Public Services";
+      const domain = category;
       const { data } = await supabase.rpc("find_possible_duplicates", { problem_title: title.trim(), problem_description: description.trim(), problem_domain: domain, problem_lat: latitude, problem_lng: longitude });
       setDuplicateMatches(((data ?? []) as { challenge_id: string; public_id: string; title: string; duplicate_score: number }[]).filter((item) => item.duplicate_score >= 75));
     }
@@ -1021,18 +1044,23 @@ function Report({
         return;
       }
     }
-    const domain = /water|handpump|well|tap/i.test(description) ? "Water" : "Public Services";
+    const domain = category;
+    const population = affectedPopulation.trim() ? Number(affectedPopulation) : null;
+    const savedDistrict = nearProblem === "yes" ? "GPS-detected location" : district.trim();
+    const savedBlock = nearProblem === "yes" ? null : block.trim() || null;
+    const savedLocality = nearProblem === "yes" ? null : locality.trim() || null;
     const { data: c, error: ce } = await supabase
       .from("challenges")
       .insert({
         title: title.trim(),
         summary: `${description}${voiceTranscript ? `\n\nVoice transcription: ${voiceTranscript}` : ""}${supportingInfo ? `\n\nSupporting information: ${supportingInfo}` : ""}`,
         domain,
-        district,
-        block,
-        locality,
-        severity: 2,
-        urgency: 2,
+        district: savedDistrict,
+        block: savedBlock,
+        locality: savedLocality,
+        severity: Number(severity),
+        urgency: Number(urgency),
+        affected_population: Number.isFinite(population) ? population : null,
         evidence_quality: 1,
         created_by: actor.id,
         public_latitude: latitude,
@@ -1051,12 +1079,19 @@ function Report({
         challenge_id: c.id,
         reporter_id: actor.id,
         description: `${description}${voiceTranscript ? `\n\nVoice transcription: ${voiceTranscript}` : ""}`,
-        district,
-        block,
-        locality,
+        district: savedDistrict,
+        block: savedBlock,
+        locality: savedLocality,
         latitude,
         longitude,
         voice_transcript: voiceTranscript.trim() || null,
+        category: domain,
+        severity: Number(severity),
+        urgency: Number(urgency),
+        affected_population: Number.isFinite(population) ? population : null,
+        consent_location: consentLocation,
+        consent_media: consentMedia,
+        consent_ai_processing: consentAi,
       })
       .select("id")
       .single();
@@ -1087,6 +1122,10 @@ function Report({
             setPublicId(null);
             setTitle("");
             setDescription("");
+            setCategory("");
+            setSeverity("2");
+            setUrgency("2");
+            setAffectedPopulation("");
             setSupportingInfo("");
             setDistrict("");
             setBlock("");
@@ -1161,17 +1200,37 @@ function Report({
           placeholder="What is happening? Who is affected?"
           className="mt-3 min-h-36 w-full rounded-lg border border-input p-3"
         />
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <label className="text-sm font-bold">Category
+            <select value={category} onChange={(event) => setCategory(event.target.value)} className="mt-1 w-full rounded-lg border border-input bg-background p-3 font-normal">
+              <option value="">Select category *</option>
+              {["Water", "Healthcare", "Education", "Agriculture", "Sanitation", "Environment", "Accessibility", "Urban Infrastructure", "Public Services", "Rural Livelihoods"].map((item) => <option key={item}>{item}</option>)}
+            </select>
+          </label>
+          <label className="text-sm font-bold">Affected people (optional)
+            <input value={affectedPopulation} onChange={(event) => setAffectedPopulation(event.target.value)} type="number" min="0" placeholder="Estimated number" className="mt-1 w-full rounded-lg border border-input p-3 font-normal" />
+          </label>
+          <label className="text-sm font-bold">Severity
+            <select value={severity} onChange={(event) => setSeverity(event.target.value)} className="mt-1 w-full rounded-lg border border-input bg-background p-3 font-normal"><option value="1">Low</option><option value="2">Moderate</option><option value="3">High</option><option value="4">Critical</option></select>
+          </label>
+          <label className="text-sm font-bold">Urgency
+            <select value={urgency} onChange={(event) => setUrgency(event.target.value)} className="mt-1 w-full rounded-lg border border-input bg-background p-3 font-normal"><option value="1">Low</option><option value="2">Moderate</option><option value="3">High</option><option value="4">Immediate</option></select>
+          </label>
+        </div>
         <div className="mt-4 rounded-xl border border-primary/20 bg-primary-soft/40 p-4">
           <p className="font-bold">Are you currently near the location where the problem exists? <span className="text-destructive">*</span></p>
           <div className="mt-3 flex flex-wrap gap-3">
             {(["yes", "no"] as const).map((value) => (
               <label key={value} className="flex items-center gap-2 rounded-lg bg-card px-3 py-2 text-sm font-semibold">
-                <input type="radio" name="near-problem" checked={nearProblem === value} onChange={() => { setNearProblem(value); setError(""); if (value === "yes") getProblemGps(); else { setLatitude(null); setLongitude(null); setLocationLabel("Describe the problem location below. Your current GPS will not be requested."); } }} />
+                <input type="radio" name="near-problem" checked={nearProblem === value} onChange={() => { setNearProblem(value); setError(""); if (value === "yes") { setDistrict(""); setBlock(""); setLocality(""); getProblemGps(); } else { setLatitude(null); setLongitude(null); setLocationLabel("Enter the problem location manually below. Your current GPS will not be requested."); } }} />
                 {value === "yes" ? "Yes, I am nearby" : "No, I am elsewhere"}
               </label>
             ))}
           </div>
           {nearProblem === "yes" && <div className="mt-3 text-sm"><button type="button" onClick={getProblemGps} className="font-bold text-primary"><LocateFixed className="mr-1 inline" size={16} /> Get / retry GPS location</button>{latitude != null && longitude != null && <p className="mt-2 font-mono text-xs">Latitude: {latitude.toFixed(6)} · Longitude: {longitude.toFixed(6)}</p>}</div>}
+        </div>
+        <div className="mt-3 rounded-lg bg-surface p-3 text-xs text-muted-foreground">
+          <label className="flex items-start gap-2"><input type="checkbox" checked={consentLocation} onChange={(event) => setConsentLocation(event.target.checked)} /> I consent to authorised verifiers and assigned partners using my exact location. Public discovery uses an approximate location only.</label>
         </div>
         <div className="mt-4 rounded-xl border border-border p-4">
           <p className="font-bold">Describe by voice (optional)</p><p className="mt-1 text-xs text-muted-foreground">Speak, then review and edit the converted text.</p>
@@ -1180,9 +1239,9 @@ function Report({
           <button type="button" onClick={startVoiceTranscription} disabled={voiceRecording} className="mt-3 rounded-lg border border-primary px-3 py-2 text-sm font-bold text-primary disabled:opacity-50"><Mic className="mr-1 inline" size={16} /> {voiceRecording ? "Listening…" : "Record and convert to text"}</button>
           {voiceTranscript && <textarea value={voiceTranscript} onChange={(event) => setVoiceTranscript(event.target.value)} className="mt-3 min-h-20 w-full rounded-lg border border-input p-3 text-sm" aria-label="Editable voice transcription" />}
         </div>
-        <div className="mt-5 flex items-center justify-between gap-3">
-          <label className="text-sm font-bold">Location</label>
-          <span className="text-xs text-muted-foreground">GPS or manual entry</span>
+        {nearProblem === "no" && <><div className="mt-5 flex items-center justify-between gap-3">
+          <label className="text-sm font-bold">Problem location</label>
+          <span className="text-xs text-muted-foreground">Manual entry</span>
         </div>
         <div className="mt-2 grid gap-3 sm:grid-cols-3">
           <input
@@ -1203,13 +1262,17 @@ function Report({
             placeholder="Village / city"
             className="rounded-lg border border-input p-3 text-sm"
           />
-        </div>
+        </div></>}
         <textarea
           value={supportingInfo}
           onChange={(e) => setSupportingInfo(e.target.value)}
           placeholder="Supporting information (optional)"
           className="mt-3 min-h-24 w-full rounded-lg border border-input p-3"
         />
+        <div className="mt-4 space-y-2 rounded-lg bg-surface p-3 text-xs text-muted-foreground">
+          <label className="flex items-start gap-2"><input type="checkbox" checked={consentMedia} onChange={(event) => setConsentMedia(event.target.checked)} /> I consent to secure storage and authorised review of any evidence I upload.</label>
+          <label className="flex items-start gap-2"><input type="checkbox" checked={consentAi} onChange={(event) => setConsentAi(event.target.checked)} /> I consent to optional future AI-assisted analysis. It will never replace my original report.</label>
+        </div>
         {locationLabel && (
           <span className="ml-3 text-sm font-medium text-accent">{locationLabel}</span>
         )}
@@ -1234,7 +1297,7 @@ function Report({
                     <b className="text-sm">{challenge.title}</b>
                     <p className="mt-1 text-xs text-muted-foreground">
                       <MapPin className="mr-1 inline" size={12} />
-                      {distance} km away · {challenge.stage.replaceAll("_", " ")}
+                      {distance.toFixed(1)} km away · {challenge.stage.replaceAll("_", " ")}
                     </p>
                   </div>
                   <button
@@ -1260,6 +1323,7 @@ function Report({
             <h2 className="text-lg font-bold">Review Report</h2>
             <div className="mt-3 space-y-2 text-sm">
               <p><b>Problem:</b> {title} — {description}</p>
+              <p><b>Category:</b> {category} · <b>Severity:</b> {severity}/4 · <b>Urgency:</b> {urgency}/4</p>
               {voiceTranscript && <p><b>Voice transcription:</b> {voiceTranscript}</p>}
               <p><b>Near the problem:</b> {nearProblem === "yes" ? "Yes" : "No"}</p>
               {nearProblem === "yes" && latitude != null && <p><b>Reporter GPS:</b> {latitude.toFixed(6)}, {longitude?.toFixed(6)}</p>}
@@ -1283,6 +1347,23 @@ function Report({
     </section>
   );
 }
+function ProblemProgressTimeline({ challenge, compact = false }: { challenge: Challenge; compact?: boolean }) {
+  const status = challenge.assignment_status ?? "";
+  const assigned = Boolean(status) || ["matched", "project", "prototype", "pilot", "impact"].includes(challenge.stage);
+  const accepted = ["accepted", "in_progress", "completed", "verified", "unable_to_resolve"].includes(status);
+  const participants = (challenge.participant_count ?? 0) > 0;
+  const working = ["in_progress", "completed", "verified", "unable_to_resolve"].includes(status);
+  const finished = ["completed", "verified", "unable_to_resolve"].includes(status) || challenge.stage === "impact";
+  const steps = [
+    ["Task Assigned", assigned],
+    ["Task Accepted", accepted],
+    ["Skilled Participants Assigned", participants],
+    ["Work in Progress", working],
+    [status === "unable_to_resolve" ? "Couldn't Solve — reassignment" : "Solved / Resolution", finished],
+  ] as const;
+  return <section className={compact ? "mt-4" : "mt-5 rounded-xl border border-border bg-surface p-4"} aria-label="Problem progress timeline"><p className="text-sm font-bold">Progress timeline</p><ol className={`mt-3 ${compact ? "flex flex-wrap gap-2" : "space-y-3"}`}>{steps.map(([label, complete], index) => <li key={label} className={`flex items-center gap-3 text-sm ${complete ? "text-foreground" : "text-muted-foreground"}`}><span className={`grid size-6 shrink-0 place-items-center rounded-full text-xs font-bold ${complete ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground"}`}>{index + 1}</span><span className={complete ? "font-semibold" : ""}>{label}</span></li>)}</ol>{!assigned && <p className="mt-3 text-xs text-muted-foreground">Awaiting verification and partner assignment.</p>}</section>;
+}
+
 function Explorer({
   challenges,
   load,
@@ -1301,7 +1382,17 @@ function Explorer({
     [mediaIndexes, setMediaIndexes] = useState<Record<string, number>>({}),
     [repostNotes, setRepostNotes] = useState<Record<string, string>>({}),
     [expandedComments, setExpandedComments] = useState<Record<string, boolean>>({}),
-    [located, setLocated] = useState(false);
+    [devicePosition, setDevicePosition] = useState<{ lat: number; lng: number } | null>(null),
+    [locationError, setLocationError] = useState("");
+  const locateDevice = () => {
+    if (!navigator.geolocation) return setLocationError("Location is not supported on this device.");
+    setLocationError("");
+    navigator.geolocation.getCurrentPosition(
+      (position) => setDevicePosition({ lat: position.coords.latitude, lng: position.coords.longitude }),
+      () => setLocationError("Location access was not granted. Problem markers are still available."),
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 },
+    );
+  };
   return (
     <section className="container-page py-12">
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -1312,16 +1403,11 @@ function Explorer({
           <h1 className="mt-4 text-3xl font-bold">Problems near you</h1>
         </div>
         <button
-          onClick={() =>
-            navigator.geolocation?.getCurrentPosition(
-              () => setLocated(true),
-              () => setLocated(true),
-            )
-          }
+          onClick={locateDevice}
           className="inline-flex items-center gap-2 rounded-lg border border-primary px-4 py-2 text-sm font-bold text-primary"
         >
           <LocateFixed size={16} />
-          {located ? "Location shared" : "Use my location"}
+          {devicePosition ? "Location updated" : "Use my location"}
         </button>
       </div>
       <p className="mt-2 text-muted-foreground">
@@ -1329,17 +1415,11 @@ function Explorer({
         once.
       </p>
       <div className="mt-6 grid gap-4 lg:grid-cols-[1.1fr_.9fr]">
-        <div className="relative min-h-64 overflow-hidden rounded-2xl border border-border bg-[radial-gradient(circle_at_20%_30%,oklch(0.9_0.05_268),transparent_2px),radial-gradient(circle_at_75%_60%,oklch(0.9_0.05_155),transparent_2px)] bg-[length:32px_32px]">
-          <div className="absolute inset-0 bg-primary/5" />
-          <div className="absolute left-[22%] top-[34%] grid size-10 place-items-center rounded-full bg-primary text-white shadow-lift">
-            <MapPin size={20} />
-          </div>
-          <div className="absolute left-[62%] top-[52%] grid size-9 place-items-center rounded-full bg-destructive text-white shadow-lift">
-            <MapPin size={18} />
-          </div>
-          <div className="absolute bottom-4 left-4 rounded-lg bg-card/95 px-3 py-2 text-xs font-bold shadow-card">
-            {located ? "Showing results within 5 km" : "Enable location for exact distance"}
-          </div>
+        <div className="overflow-hidden rounded-2xl border border-border bg-card">
+          <ProblemMap problems={challenges} devicePosition={devicePosition} />
+          <p className="border-t border-border px-4 py-3 text-xs text-muted-foreground">
+            {devicePosition ? "Blue marker: your current device location. It is never stored or shared." : "Enable location to show your current device marker."} Problem markers use their approved public map locations.
+          </p>
         </div>
         <div className="card-surface p-5">
           <p className="text-sm font-bold">Your local response network</p>
@@ -1361,6 +1441,7 @@ function Explorer({
           </div>
         </div>
       </div>
+      {locationError && <p className="mt-3 text-sm text-destructive">{locationError}</p>}
       <div className="relative mt-5 max-w-xl">
         <Search className="absolute left-3 top-3 text-muted-foreground" size={18} />
         <input
@@ -1476,6 +1557,7 @@ function Explorer({
                       <Repeat2 className="mr-1 inline" size={12} /> {c.reposts} reposts
                     </span>
                   </div>
+                  <ProblemProgressTimeline challenge={c} />
                   {comments.length > 0 && (
                     <section
                       className="mt-4 border-t border-border pt-3"
@@ -2681,6 +2763,7 @@ type PartnerTask = {
   priority: "High" | "Medium" | "Low";
   status: PartnerTaskStatus;
   people: string[];
+  taskIds?: string[];
   remarks?: string;
   acceptanceDeadline?: string | null;
 };
@@ -2715,30 +2798,9 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
     [finishModal, setFinishModal] = useState<"solved" | "failed" | null>(null),
     [remarks, setRemarks] = useState(""),
     [reason, setReason] = useState("Required resources unavailable"),
+    [completionEvidence, setCompletionEvidence] = useState<File | null>(null),
     [chosen, setChosen] = useState<string[]>([]);
-  const [members, setMembers] = useState<PartnerMember[]>([
-    {
-      id: "p1",
-      name: "Rahul Kumar",
-      identifier: isNgo ? "VOL-104" : "21A01",
-      skill: "Electrical",
-      available: true,
-    },
-    {
-      id: "p2",
-      name: "Suresh Kumar",
-      identifier: isNgo ? "VOL-126" : "21A02",
-      skill: "Civil",
-      available: true,
-    },
-    {
-      id: "p3",
-      name: "Priya Sharma",
-      identifier: isNgo ? "VOL-132" : "21A03",
-      skill: "IT & GIS",
-      available: true,
-    },
-  ]);
+  const [members, setMembers] = useState<PartnerMember[]>([]);
   const [tasks, setTasks] = useState<PartnerTask[]>([]);
   useEffect(() => {
     if (!user || !supabase) return;
@@ -2771,12 +2833,41 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
       });
   }, [user, isNgo, partnerName]);
   useEffect(() => {
+    if (!user || !supabase) return;
+    const loadMembers = async () => {
+      const { data: organization, error: organizationError } = await supabase
+        .from("organization_accounts")
+        .select("id")
+        .eq("owner_id", user.id)
+        .maybeSingle();
+      if (organizationError || !organization) return;
+      const { data, error } = await supabase
+        .from("volunteers")
+        .select("id,name,member_identifier,skills,availability")
+        .eq("organization_id", organization.id)
+        .order("created_at");
+      if (error) return flash(`Could not load ${plural.toLowerCase()}: ${error.message}`);
+      setMembers(
+        ((data ?? []) as Array<any>).map((member) => ({
+          id: member.id,
+          name: member.name,
+          identifier: member.member_identifier ?? "—",
+          skill: (member.skills ?? []).join(", ") || "Not specified",
+          available: !["unavailable", "busy", "inactive", "off"].includes(String(member.availability ?? "available").toLowerCase()),
+        })),
+      );
+    };
+    void loadMembers();
+  }, [user, flash, plural]);
+  useEffect(() => {
     const database = supabase;
     if (!user || !database) return;
     let channel: ReturnType<typeof database.channel> | undefined;
     const statusFor = (status: string): PartnerTaskStatus =>
       status === "pending"
         ? "Pending"
+        : status === "accepted"
+          ? "Accepted"
         : status === "in_progress"
           ? "Work in Progress"
           : status === "completed" || status === "verified"
@@ -2792,7 +2883,7 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
       const { data, error } = await database
         .from("problem_assignments")
         .select(
-          "id,status,unable_reason,created_at,acceptance_deadline,challenges(public_id,title,summary,domain,district,locality,public_latitude,public_longitude,priority_score)",
+          "id,status,unable_reason,completion_note,created_at,acceptance_deadline,challenges(public_id,title,summary,domain,district,locality,public_latitude,public_longitude,priority_score),problem_tasks(id,volunteer_id,volunteers(name))",
         )
         .eq("organization_id", organization.id)
         .order("created_at", { ascending: false });
@@ -2818,8 +2909,9 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
             reported: new Date(assignment.created_at).toLocaleString(),
             priority: priority >= 75 ? "High" : priority >= 45 ? "Medium" : "Low",
             status: statusFor(assignment.status),
-            people: [],
-            remarks: assignment.unable_reason ?? undefined,
+            people: (assignment.problem_tasks ?? []).map((item: any) => item.volunteers?.name).filter(Boolean),
+            taskIds: (assignment.problem_tasks ?? []).map((item: any) => item.id),
+            remarks: assignment.completion_note ?? assignment.unable_reason ?? undefined,
             // Supports assignments created before the deadline migration was applied.
             acceptanceDeadline: assignment.acceptance_deadline ?? new Date(new Date(assignment.created_at).getTime() + 48 * 60 * 60 * 1000).toISOString(),
           };
@@ -2865,11 +2957,9 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
     const existing = tasks.find((item) => item.id === id);
     setTasks((items) => items.map((item) => (item.id === id ? { ...item, ...patch } : item)));
     if (!existing?.assignmentId || !patch.status || !supabase) return;
-    const status = patch.status === "Pending" ? "pending" : patch.status === "Solved" ? "completed" : patch.status.includes("Couldn't") ? "unable_to_resolve" : "in_progress";
+    const status = patch.status === "Pending" ? "pending" : patch.status === "Accepted" ? "accepted" : patch.status === "Solved" ? "completed" : patch.status.includes("Couldn't") ? "unable_to_resolve" : "in_progress";
     void supabase
-      .from("problem_assignments")
-      .update({ status, ...(patch.status === "Accepted" ? { accepted_at: new Date().toISOString() } : {}), ...(status === "unable_to_resolve" ? { unable_reason: patch.remarks ?? "Unable to resolve" } : {}) })
-      .eq("id", existing.assignmentId)
+      .rpc("mark_assignment_progress", { assignment_uuid: existing.assignmentId, next_status: status, progress_note: patch.remarks ?? null })
       .then(({ error }) => error && flash(`Could not sync task update: ${error.message}`));
   };
   const open = (id: string) => {
@@ -2883,36 +2973,34 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
     setMemberSkill(member?.skill ?? "");
     setPeopleModal(true);
   };
-  const saveMember = () => {
+  const saveMember = async () => {
     if (!memberName.trim() || !memberIdentifier.trim() || !memberSkill.trim()) {
       flash(`Enter the ${singular.toLowerCase()}'s name, ID, and skill.`);
       return;
     }
+    if (!user || !supabase) return;
+    const { data: organization, error: organizationError } = await supabase
+      .from("organization_accounts")
+      .select("id")
+      .eq("owner_id", user.id)
+      .maybeSingle();
+    if (organizationError || !organization) return flash("Your organization profile is still being prepared. Please retry.");
+    const record = {
+      name: memberName.trim(),
+      member_identifier: memberIdentifier.trim(),
+      skills: memberSkill.split(",").map((skill) => skill.trim()).filter(Boolean),
+      availability: "available",
+      updated_at: new Date().toISOString(),
+    };
     if (editingMemberId) {
-      setMembers((items) =>
-        items.map((item) =>
-          item.id === editingMemberId
-            ? {
-                ...item,
-                name: memberName.trim(),
-                identifier: memberIdentifier.trim(),
-                skill: memberSkill.trim(),
-              }
-            : item,
-        ),
-      );
+      const { error } = await supabase.from("volunteers").update(record).eq("id", editingMemberId);
+      if (error) return flash(error.message);
+      setMembers((items) => items.map((item) => item.id === editingMemberId ? { ...item, name: record.name, identifier: record.member_identifier, skill: record.skills.join(", ") } : item));
       flash(`${singular} updated.`);
     } else {
-      setMembers((items) => [
-        ...items,
-        {
-          id: crypto.randomUUID(),
-          name: memberName.trim(),
-          identifier: memberIdentifier.trim(),
-          skill: memberSkill.trim(),
-          available: true,
-        },
-      ]);
+      const { data, error } = await supabase.from("volunteers").insert({ ...record, organization_id: organization.id }).select("id").single();
+      if (error || !data) return flash(error?.message ?? `Could not add ${singular.toLowerCase()}.`);
+      setMembers((items) => [...items, { id: data.id, name: record.name, identifier: record.member_identifier, skill: record.skills.join(", "), available: true }]);
       flash(`${singular} added.`);
     }
     setPeopleModal(false);
@@ -3127,13 +3215,10 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
                         <td className="p-4">{m.skill}</td>
                         <td className="p-4">
                           <button
-                            onClick={() =>
-                              setMembers((all) =>
-                                all.map((x) =>
-                                  x.id === m.id ? { ...x, available: !x.available } : x,
-                                ),
-                              )
-                            }
+                            onClick={() => void supabase!.from("volunteers").update({ availability: m.available ? "unavailable" : "available", updated_at: new Date().toISOString() }).eq("id", m.id).then(({ error }) => {
+                              if (error) flash(error.message);
+                              else setMembers((all) => all.map((x) => x.id === m.id ? { ...x, available: !x.available } : x));
+                            })}
                             className={`rounded-full px-2.5 py-1 text-xs font-bold ${m.available ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-700"}`}
                           >
                             {m.available ? "Available" : "Unavailable"}
@@ -3150,10 +3235,10 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
                               Edit
                             </button>
                             <button
-                              onClick={() => {
-                                setMembers((all) => all.filter((item) => item.id !== m.id));
-                                flash(`${singular} removed.`);
-                              }}
+                              onClick={() => void supabase!.from("volunteers").delete().eq("id", m.id).then(({ error }) => {
+                                if (error) flash(error.message);
+                                else { setMembers((all) => all.filter((item) => item.id !== m.id)); flash(`${singular} removed.`); }
+                              })}
                               className="text-destructive"
                             >
                               Remove
@@ -3386,7 +3471,7 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
             className="mt-3 w-full rounded-lg border border-input p-3"
           />
           <button
-            onClick={saveMember}
+            onClick={() => void saveMember()}
             className="mt-5 w-full rounded-lg bg-primary py-3 font-bold text-primary-foreground"
           >
             {editingMemberId ? `Save ${singular}` : `Add ${singular}`}
@@ -3422,14 +3507,15 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
               </label>
             ))}
           <button
-            onClick={() => {
-              update(task.id, {
-                people: chosen,
-                status: chosen.length ? "People Assigned" : task.status,
-              });
+            onClick={() => void (async () => {
+              if (!task.assignmentId || !supabase) return flash("This task is not available for assignment.");
+              const participantIds = members.filter((member) => chosen.includes(member.name)).map((member) => member.id);
+              const { error } = await supabase.rpc("set_assignment_participants", { assignment_uuid: task.assignmentId, volunteer_uuids: participantIds });
+              if (error) return flash(error.message);
+              setTasks((items) => items.map((item) => item.id === task.id ? { ...item, people: chosen, status: chosen.length ? "People Assigned" : item.status } : item));
               setAssignModal(false);
               flash(`${chosen.length} ${plural.toLowerCase()} assigned.`);
-            }}
+            })()}
             className="mt-5 w-full rounded-lg bg-primary py-3 font-bold text-primary-foreground"
           >
             Assign Selected {plural}
@@ -3457,14 +3543,30 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
               <label className="mt-4 block rounded-lg border border-dashed border-input p-3 text-sm font-semibold">
                 <Upload className="mr-1 inline" size={16} /> Upload proof / documents
                 {!isNgo && " / Excel report"}
-                <input type="file" className="hidden" />
+                <input type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,application/pdf" onChange={(event) => setCompletionEvidence(event.target.files?.[0] ?? null)} className="hidden" />
               </label>
+              {completionEvidence && <p className="mt-2 text-xs text-muted-foreground">Ready to upload: {completionEvidence.name}</p>}
               <button
-                onClick={() => {
-                  update(task.id, { status: "Solved", remarks });
+                onClick={() => void (async () => {
+                  if (!task.assignmentId || !supabase || !user) return flash("This task is no longer available.");
+                  if (completionEvidence && completionEvidence.size > 26214400) return flash("Evidence files must be 25 MB or smaller.");
+                  if (completionEvidence && !task.taskIds?.[0]) return flash("Assign at least one participant before uploading task evidence.");
+                  const { error: progressError } = await supabase.rpc("mark_assignment_progress", { assignment_uuid: task.assignmentId, next_status: "completed", progress_note: remarks || null });
+                  if (progressError) return flash(progressError.message);
+                  const taskId = task.taskIds?.[0];
+                  if (completionEvidence && taskId) {
+                    const extension = completionEvidence.name.split(".").pop() || "bin";
+                    const path = `${user.id}/${taskId}/${Date.now()}-completion.${extension}`;
+                    const { error: uploadError } = await supabase.storage.from("task-evidence").upload(path, completionEvidence, { contentType: completionEvidence.type, upsert: false });
+                    if (uploadError) return flash(`Task was completed, but evidence upload failed: ${uploadError.message}`);
+                    const { error: evidenceError } = await supabase.from("task_evidence").insert({ task_id: taskId, storage_path: path, mime_type: completionEvidence.type, note: remarks || null, evidence_kind: "completion", size_bytes: completionEvidence.size, uploaded_by: user.id });
+                    if (evidenceError) return flash(`Task was completed, but evidence metadata could not be saved: ${evidenceError.message}`);
+                  }
+                  setTasks((items) => items.map((item) => item.id === task.id ? { ...item, status: "Solved", remarks } : item));
+                  setCompletionEvidence(null);
                   setFinishModal(null);
-                  flash("Task marked SOLVED and moved to completed tasks.");
-                }}
+                  flash("Task marked SOLVED and completion evidence saved.");
+                })()}
                 className="mt-5 w-full rounded-lg bg-emerald-600 py-3 font-bold text-white"
               >
                 Submit Completed Task
@@ -4078,6 +4180,78 @@ function VolunteerDashboard({ user }: { user: User | null }) {
   );
 }
 
+function FundingTransparency({ user, profile, flash, embedded = false }: { user: User | null; profile: Profile | null; flash: (message: string) => void; embedded?: boolean }) {
+  const admin = !embedded && profile?.role === "admin";
+  const [sources, setSources] = useState<any[]>([]), [transactions, setTransactions] = useState<any[]>([]), [projects, setProjects] = useState<any[]>([]);
+  const [category, setCategory] = useState("government"), [donor, setDonor] = useState(""), [amount, setAmount] = useState(""), [purpose, setPurpose] = useState(""), [projectId, setProjectId] = useState(""), [transactionSourceId, setTransactionSourceId] = useState(""), [transactionType, setTransactionType] = useState("approval"), [transactionAmount, setTransactionAmount] = useState(""), [transactionPurpose, setTransactionPurpose] = useState("");
+  const format = (value: number) => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(value || 0);
+  const load = async () => {
+    if (!supabase) return;
+    const [sourceResult, transactionResult, projectResult] = await Promise.all([
+      supabase.from("funding_sources").select("id,category,donor_name,amount,received_on,purpose,status,created_at").order("received_on", { ascending: false }),
+      supabase.from("financial_transactions").select("id,project_id,transaction_type,amount,occurred_on,purpose,status,projects(title,challenges(title,district)),funding_sources(donor_name,category)").order("occurred_on", { ascending: false }),
+      supabase.from("projects").select("id,title,challenges(public_id,title,district)").order("created_at", { ascending: false }),
+    ]);
+    setSources(((embedded ? (sourceResult.data ?? []).filter((item: any) => item.status === "verified") : sourceResult.data) ?? []) as any[]); setTransactions(((embedded ? (transactionResult.data ?? []).filter((item: any) => item.status === "verified") : transactionResult.data) ?? []) as any[]); setProjects((projectResult.data ?? []) as any[]);
+  };
+  useEffect(() => { void load(); }, []);
+  const publicSources = sources.filter((item) => item.status === "verified");
+  const publicTransactions = transactions.filter((item) => item.status === "verified");
+  const totalReceived = publicSources.reduce((sum, item) => sum + Number(item.amount), 0);
+  const totalSpent = publicTransactions.filter((item) => item.transaction_type === "expenditure").reduce((sum, item) => sum + Number(item.amount), 0);
+  const addSource = async () => { if (!user || !donor.trim() || Number(amount) <= 0 || !purpose.trim()) return flash("Enter a valid funding source, amount, and purpose."); const { error } = await supabase!.from("funding_sources").insert({ category, donor_name: donor.trim(), amount: Number(amount), received_on: new Date().toISOString().slice(0, 10), purpose: purpose.trim(), created_by: user.id }); if (error) return flash(error.message); setDonor(""); setAmount(""); setPurpose(""); flash("Funding source recorded as pending verification."); await load(); };
+  const addTransaction = async () => { if (!user || !projectId || Number(transactionAmount) <= 0 || !transactionPurpose.trim()) return flash("Select a project and enter a valid amount and purpose."); const { error } = await supabase!.from("financial_transactions").insert({ project_id: projectId, funding_source_id: transactionSourceId || null, transaction_type: transactionType, amount: Number(transactionAmount), occurred_on: new Date().toISOString().slice(0, 10), purpose: transactionPurpose.trim(), created_by: user.id }); if (error) return flash(error.message); setTransactionAmount(""); setTransactionPurpose(""); flash("Financial ledger entry recorded as pending verification."); await load(); };
+  const verify = async (table: "funding_sources" | "financial_transactions", id: string) => { const { error } = await supabase!.from(table).update({ status: "verified", verified_by: user?.id ?? null, verified_at: new Date().toISOString() }).eq("id", id); if (error) flash(error.message); else { flash("Financial record verified and published."); await load(); } };
+  return <section className="container-page py-12"><span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">PUBLIC FINANCIAL TRANSPARENCY</span><h1 className="mt-4 text-3xl font-bold">Every Rupee Has a Source. Every Rupee Has a Purpose.</h1><p className="mt-2 max-w-3xl text-muted-foreground">Verified funding, project allocations, and expenditure records are published here for public accountability.</p><div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><DashboardStat label="Funds received" value={format(totalReceived)} icon={<Building2 size={18} />}/><DashboardStat label="Funds utilized" value={format(totalSpent)} icon={<Activity size={18} />}/><DashboardStat label="Funds available" value={format(totalReceived - totalSpent)} icon={<BadgeCheck size={18} />}/><DashboardStat label="Verified entries" value={sources.length + transactions.length} icon={<ClipboardCheck size={18} />}/></div><div className="mt-7 grid gap-5 lg:grid-cols-2"><section className="card-surface p-6"><h2 className="text-xl font-bold">Funding sources</h2><div className="mt-5 space-y-3">{sources.map((source) => <article key={source.id} className="rounded-lg bg-surface p-4"><div className="flex justify-between gap-3"><div><b>{source.donor_name}</b><p className="mt-1 text-xs capitalize text-muted-foreground">{source.category.replaceAll("_", " ")} · {new Date(source.received_on).toLocaleDateString()}</p></div><b className="text-primary">{format(Number(source.amount))}</b></div><p className="mt-2 text-sm text-muted-foreground">{source.purpose}</p>{admin && source.status === "pending" && <button onClick={() => void verify("funding_sources", source.id)} className="mt-2 text-xs font-bold text-primary">Verify & publish</button>}</article>)}{!sources.length && <p className="text-sm text-muted-foreground">No verified funding entries have been published.</p>}</div></section><section className="card-surface p-6"><h2 className="text-xl font-bold">Project financial timeline</h2><div className="mt-5 space-y-3">{transactions.map((transaction) => <article key={transaction.id} className="rounded-lg bg-surface p-4"><div className="flex justify-between gap-3"><div><b>{transaction.projects?.title ?? "Project"}</b><p className="mt-1 text-xs capitalize text-muted-foreground">{transaction.transaction_type} · {new Date(transaction.occurred_on).toLocaleDateString()}</p></div><b className={transaction.transaction_type === "expenditure" ? "text-destructive" : "text-primary"}>{format(Number(transaction.amount))}</b></div><p className="mt-2 text-sm text-muted-foreground">{transaction.purpose}</p>{admin && transaction.status === "pending" && <button onClick={() => void verify("financial_transactions", transaction.id)} className="mt-2 text-xs font-bold text-primary">Verify & publish</button>}</article>)}{!transactions.length && <p className="text-sm text-muted-foreground">No verified project transactions have been published.</p>}</div></section></div>{admin && <section className="card-surface mt-7 p-6"><h2 className="text-xl font-bold">Admin funding portal</h2><p className="mt-1 text-sm text-muted-foreground">New financial records remain pending until verified; every change is audit logged.</p><div className="mt-5 grid gap-5 lg:grid-cols-2"><div className="rounded-lg bg-surface p-4"><h3 className="font-bold">Record funding source</h3><div className="mt-3 grid gap-2"><select value={category} onChange={(e) => setCategory(e.target.value)} className="rounded border border-input bg-background p-2"><option value="government">Government</option><option value="industry_csr">Industry / CSR</option><option value="samajsetu_trust">SamajSetu Trust</option><option value="university">University</option><option value="ngo">NGO</option><option value="other_approved">Other approved</option></select><input value={donor} onChange={(e) => setDonor(e.target.value)} placeholder="Donor / organization" className="rounded border border-input p-2"/><input value={amount} onChange={(e) => setAmount(e.target.value)} type="number" min="1" placeholder="Amount in ₹" className="rounded border border-input p-2"/><textarea value={purpose} onChange={(e) => setPurpose(e.target.value)} placeholder="Purpose / restrictions" className="rounded border border-input p-2"/><button onClick={() => void addSource()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Add funding source</button></div></div><div className="rounded-lg bg-surface p-4"><h3 className="font-bold">Record project ledger entry</h3><div className="mt-3 grid gap-2"><select value={projectId} onChange={(e) => setProjectId(e.target.value)} className="rounded border border-input bg-background p-2"><option value="">Select project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}</select><select value={transactionType} onChange={(e) => setTransactionType(e.target.value)} className="rounded border border-input bg-background p-2"><option value="approval">Budget approved</option><option value="release">Funds released</option><option value="expenditure">Expenditure</option><option value="adjustment">Approved adjustment</option></select><input value={transactionAmount} onChange={(e) => setTransactionAmount(e.target.value)} type="number" min="1" placeholder="Amount in ₹" className="rounded border border-input p-2"/><textarea value={transactionPurpose} onChange={(e) => setTransactionPurpose(e.target.value)} placeholder="Purpose / expenditure detail" className="rounded border border-input p-2"/><button onClick={() => void addTransaction()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Add ledger entry</button></div></div></div></section>}</section>;
+}
+
+function ProjectWorkspace({ user, profile, flash }: { user: User | null; profile: Profile | null; flash: (message: string) => void }) {
+  const staff = ["admin", "government", "university_admin", "faculty"].includes(profile?.role ?? "");
+  const [projects, setProjects] = useState<any[]>([]), [challenges, setChallenges] = useState<any[]>([]), [selected, setSelected] = useState<any | null>(null);
+  const [title, setTitle] = useState(""), [objective, setObjective] = useState(""), [challengeId, setChallengeId] = useState("");
+  const [milestone, setMilestone] = useState(""), [prototype, setPrototype] = useState(""), [repository, setRepository] = useState(""), [impact, setImpact] = useState(""), [unit, setUnit] = useState(""), [pilotLocation, setPilotLocation] = useState(""), [verdict, setVerdict] = useState("solved"), [feedback, setFeedback] = useState("");
+  const load = async () => {
+    if (!supabase) return;
+    const [projectResult, challengeResult] = await Promise.all([
+      supabase.from("projects").select("id,title,objective,expected_outcome,status,health_score,created_at,challenges(public_id,title),milestones(id,title,status,due_date),prototypes(id,version,description,repository_url),pilots(id,location_text,status,starts_on,ends_on),community_feedback(id,verdict,comment,created_at),impact_observations(id,metric,unit,baseline,target,observed,verification_status)").order("created_at", { ascending: false }),
+      supabase.from("challenges").select("id,public_id,title").in("verification", ["community_verified", "officially_verified"]).order("created_at", { ascending: false }),
+    ]);
+    setProjects((projectResult.data ?? []) as any[]); setChallenges((challengeResult.data ?? []) as any[]);
+    if (selected) setSelected((projectResult.data ?? []).find((item: any) => item.id === selected.id) ?? null);
+  };
+  useEffect(() => { void load(); }, []);
+  if (!user) return <section className="container-page py-12"><h1 className="text-3xl font-bold">Innovation projects</h1><p className="mt-3 text-muted-foreground">Sign in to view projects.</p></section>;
+  const create = async () => { if (!challengeId || !title.trim() || !objective.trim()) return flash("Select a verified challenge, title, and objective."); const { error } = await supabase!.rpc("create_innovation_project", { challenge_uuid: challengeId, project_title: title.trim(), project_objective: objective.trim(), outcome: null }); if (error) return flash(error.message); setTitle(""); setObjective(""); setChallengeId(""); flash("Innovation project created."); await load(); };
+  const addMilestone = async () => { if (!selected || !milestone.trim()) return; const { error } = await supabase!.from("milestones").insert({ project_id: selected.id, title: milestone.trim() }); if (error) flash(error.message); else { setMilestone(""); await load(); } };
+  const addPrototype = async () => { if (!selected || !prototype.trim()) return; const { error } = await supabase!.from("prototypes").insert({ project_id: selected.id, version: prototype.trim(), repository_url: repository.trim() || null, created_by: user.id }); if (error) flash(error.message); else { setPrototype(""); setRepository(""); await load(); } };
+  const addImpact = async () => { if (!selected || !impact.trim() || !unit.trim()) return; const { error } = await supabase!.from("impact_observations").insert({ project_id: selected.id, metric: impact.trim(), unit: unit.trim(), source: "Project workspace", verification_status: "unverified" }); if (error) flash(error.message); else { setImpact(""); setUnit(""); await load(); } };
+  const createPilot = async () => { if (!selected || !pilotLocation.trim()) return; const { error } = await supabase!.from("pilots").upsert({ project_id: selected.id, location_text: pilotLocation.trim(), status: "planned" }, { onConflict: "project_id" }); if (error) flash(error.message); else { setPilotLocation(""); await load(); } };
+  const addFeedback = async () => { if (!selected || !feedback.trim()) return; const { error } = await supabase!.from("community_feedback").insert({ project_id: selected.id, author_id: user.id, verdict, comment: feedback.trim() }); if (error) flash(error.message); else { setFeedback(""); await load(); } };
+  return <section className="container-page py-12"><h1 className="text-3xl font-bold">Innovation projects</h1><p className="mt-2 text-muted-foreground">Deliver verified challenges through milestones, prototypes, pilots, and measured impact.</p>{staff && <div className="card-surface mt-6 grid gap-3 p-5 md:grid-cols-2"><select value={challengeId} onChange={(e) => setChallengeId(e.target.value)} className="rounded-lg border border-input bg-background p-3"><option value="">Verified challenge</option>{challenges.map((item) => <option key={item.id} value={item.id}>{item.public_id} · {item.title}</option>)}</select><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Project title" className="rounded-lg border border-input p-3"/><textarea value={objective} onChange={(e) => setObjective(e.target.value)} placeholder="Project objective" className="min-h-24 rounded-lg border border-input p-3"/><button onClick={() => void create()} className="rounded-lg bg-primary px-4 py-3 font-bold text-primary-foreground">Convert to innovation project</button></div>}<div className="mt-7 grid gap-5 lg:grid-cols-[.8fr_1.2fr]"><div className="space-y-3">{projects.length ? projects.map((project) => <button key={project.id} onClick={() => setSelected(project)} className={`card-surface w-full p-5 text-left ${selected?.id === project.id ? "border-primary" : ""}`}><b>{project.title}</b><p className="mt-1 text-sm text-muted-foreground">{project.challenges?.public_id} · {project.status}</p></button>) : <p className="card-surface p-5 text-muted-foreground">No projects yet.</p>}</div><div className="card-surface p-6">{selected ? <><h2 className="text-2xl font-bold">{selected.title}</h2><p className="mt-2 text-muted-foreground">{selected.objective}</p><div className="mt-6 grid gap-5 md:grid-cols-2"><section><h3 className="font-bold">Milestones</h3><div className="mt-3 space-y-2">{(selected.milestones ?? []).map((item: any) => <p key={item.id} className="rounded bg-surface p-2 text-sm">{item.title} · {item.status}</p>)}</div>{staff && <div className="mt-3 flex gap-2"><input value={milestone} onChange={(e) => setMilestone(e.target.value)} placeholder="Milestone" className="min-w-0 rounded border border-input p-2 text-sm"/><button onClick={() => void addMilestone()} className="rounded bg-primary px-3 text-sm font-bold text-primary-foreground">Add</button></div>}</section><section><h3 className="font-bold">Prototype versions</h3>{(selected.prototypes ?? []).map((item: any) => <p key={item.id} className="mt-2 rounded bg-surface p-2 text-sm">{item.version}{item.repository_url && ` · ${item.repository_url}`}</p>)}{staff && <div className="mt-3 space-y-2"><input value={prototype} onChange={(e) => setPrototype(e.target.value)} placeholder="Version, e.g. V1" className="w-full rounded border border-input p-2 text-sm"/><input value={repository} onChange={(e) => setRepository(e.target.value)} placeholder="Repository URL (optional)" className="w-full rounded border border-input p-2 text-sm"/><button onClick={() => void addPrototype()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Record prototype</button></div>}</section><section><h3 className="font-bold">Pilot</h3>{selected.pilots?.[0] ? <p className="mt-2 rounded bg-surface p-2 text-sm">{selected.pilots[0].location_text} · {selected.pilots[0].status}</p> : <p className="mt-2 text-sm text-muted-foreground">No pilot proposed.</p>}{staff && <div className="mt-3 flex gap-2"><input value={pilotLocation} onChange={(e) => setPilotLocation(e.target.value)} placeholder="Pilot location" className="min-w-0 rounded border border-input p-2 text-sm"/><button onClick={() => void createPilot()} className="rounded bg-primary px-3 text-sm font-bold text-primary-foreground">Save</button></div>}</section><section><h3 className="font-bold">Impact observations</h3>{(selected.impact_observations ?? []).map((item: any) => <p key={item.id} className="mt-2 rounded bg-surface p-2 text-sm">{item.metric} · {item.observed ?? "Pending"} {item.unit}</p>)}{staff && <div className="mt-3 flex gap-2"><input value={impact} onChange={(e) => setImpact(e.target.value)} placeholder="Metric" className="min-w-0 rounded border border-input p-2 text-sm"/><input value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="Unit" className="w-20 rounded border border-input p-2 text-sm"/><button onClick={() => void addImpact()} className="rounded bg-primary px-3 text-sm font-bold text-primary-foreground">Add</button></div>}</section></div><section className="mt-6 border-t border-border pt-5"><h3 className="font-bold">Community feedback</h3>{(selected.community_feedback ?? []).map((item: any) => <p key={item.id} className="mt-2 rounded bg-surface p-2 text-sm">{item.verdict.replaceAll("_", " ")} · {item.comment}</p>)}<div className="mt-3 flex flex-wrap gap-2"><select value={verdict} onChange={(e) => setVerdict(e.target.value)} className="rounded border border-input bg-background p-2 text-sm"><option value="solved">Solved</option><option value="partially_solved">Partially solved</option><option value="not_solved">Not solved</option></select><input value={feedback} onChange={(e) => setFeedback(e.target.value)} placeholder="Share outcome feedback" className="min-w-48 flex-1 rounded border border-input p-2 text-sm"/><button onClick={() => void addFeedback()} className="rounded bg-primary px-3 text-sm font-bold text-primary-foreground">Submit</button></div></section></> : <p className="text-muted-foreground">Select a project to open its workspace.</p>}</div></div></section>;
+}
+
+function Notifications({ user, go }: { user: User | null; go: (x: Screen) => void }) {
+  const [items, setItems] = useState<Array<{ id: string; kind: string; title: string; body: string | null; created_at: string; read_at: string | null }>>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    if (!user || !supabase) { setLoading(false); return; }
+    const load = async () => {
+      const { data } = await supabase.from("notifications").select("id,kind,title,body,created_at,read_at").eq("recipient_id", user.id).order("created_at", { ascending: false }).limit(100);
+      setItems((data ?? []) as typeof items);
+      setLoading(false);
+    };
+    void load();
+    const channel = supabase.channel(`notifications-${user.id}`).on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications", filter: `recipient_id=eq.${user.id}` }, () => void load()).subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [user]);
+  if (!user) return <section className="container-page py-14"><h1 className="text-3xl font-bold">Notifications</h1><p className="mt-3 text-muted-foreground">Sign in to view your notifications.</p><button onClick={() => go("auth")} className="mt-5 rounded-lg bg-primary px-4 py-2 text-sm font-bold text-primary-foreground">Sign in</button></section>;
+  const markRead = async (id: string) => {
+    const { error } = await supabase!.from("notifications").update({ read_at: new Date().toISOString() }).eq("id", id);
+    if (!error) setItems((current) => current.map((item) => item.id === id ? { ...item, read_at: new Date().toISOString() } : item));
+  };
+  return <section className="container-page max-w-3xl py-12"><h1 className="text-3xl font-bold">Notifications</h1><p className="mt-2 text-muted-foreground">Assignment and workflow updates are stored here.</p><div className="mt-7 space-y-3">{loading ? <p>Loading…</p> : !items.length ? <p className="card-surface p-6 text-muted-foreground">You have no notifications yet.</p> : items.map((item) => <article key={item.id} className={`card-surface flex gap-4 p-5 ${item.read_at ? "opacity-70" : "border-primary/30"}`}><Bell className="mt-1 shrink-0 text-primary" size={18} /><div className="min-w-0 flex-1"><p className="font-bold">{item.title}</p>{item.body && <p className="mt-1 text-sm text-muted-foreground">{item.body}</p>}<p className="mt-2 text-xs text-muted-foreground">{new Date(item.created_at).toLocaleString()}</p></div>{!item.read_at && <button onClick={() => void markRead(item.id)} className="h-fit text-xs font-bold text-primary">Mark read</button>}</article>)}</div></section>;
+}
+
 function MyReports({ user, go }: { user: User | null; go: (x: Screen) => void }) {
   const [data, setData] = useState<Report[]>([]),
     [loading, setLoading] = useState(true);
@@ -4290,9 +4464,13 @@ function AdminRedirect({ user, go }: { user: User | null; go: (x: Screen) => voi
 }
 
 function AdminControlCenter({
+  user,
+  profile,
   flash,
   refresh,
 }: {
+  user: User | null;
+  profile: Profile | null;
   flash: (x: string) => void;
   refresh: (q?: string) => void;
 }) {
@@ -4387,7 +4565,7 @@ function AdminControlCenter({
     "Skilled Participants",
     "Volunteers",
     "Expertise & Resources",
-    "Support & Funding",
+    "Financial Transparency",
     "Reports",
     "Analytics",
     "Account Management",
@@ -4411,6 +4589,18 @@ function AdminControlCenter({
       );
       flash(`${partner.name} is now ${account_status.toLowerCase()}.`);
     }
+  };
+  const verifyChallenge = async (challenge: Challenge) => {
+    const { error } = await supabase!.rpc("review_challenge", {
+      challenge_uuid: challenge.id,
+      next_status: "officially_verified",
+      review_method: "admin manual verification",
+      review_note: "Verified by an authorized platform administrator.",
+    });
+    if (error) return flash(error.message);
+    flash(`${challenge.public_id} has been verified.`);
+    await load();
+    void refresh();
   };
   const cards = [
     ["Organizations", organizations.length],
@@ -4489,7 +4679,7 @@ function AdminControlCenter({
               />
             </div>
           </header>
-          {section === "Support & Funding" && <SupportFunding flash={flash} />}
+          {section === "Financial Transparency" && <FundingTransparency user={user} profile={profile} flash={flash} />}
           {section === "Dashboard" && (
             <>
               <div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -4766,8 +4956,9 @@ function AdminControlCenter({
                   .map((task) => (
                     <article
                       key={task.id}
-                      className="card-surface flex flex-wrap items-center justify-between gap-4 p-5"
+                      className="card-surface p-5"
                     >
+                      <div className="flex flex-wrap items-center justify-between gap-4">
                       <div>
                         <p className="text-xs font-bold text-primary">
                           {task.public_id} · {task.domain}
@@ -4778,9 +4969,21 @@ function AdminControlCenter({
                           {new Date(task.created_at).toLocaleDateString()}
                         </p>
                       </div>
-                      <span className="rounded-full bg-surface px-3 py-1 text-xs font-bold">
-                        {task.stage}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="rounded-full bg-surface px-3 py-1 text-xs font-bold">
+                          {task.verification.replaceAll("_", " ")}
+                        </span>
+                        {!['community_verified', 'officially_verified'].includes(task.verification) && (
+                          <button
+                            onClick={() => void verifyChallenge(task)}
+                            className="rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground"
+                          >
+                            Verify challenge
+                          </button>
+                        )}
+                      </div>
+                      </div>
+                      <ProblemProgressTimeline challenge={task} compact />
                     </article>
                   ))}
               </div>
@@ -5266,10 +5469,12 @@ function Admin({ flash, refresh }: { flash: (x: string) => void; refresh: (q?: s
     void load();
   }, []);
   const verify = async (c: Challenge) => {
-    const { error } = await supabase!
-      .from("challenges")
-      .update({ verification: "under_review", stage: "validated" })
-      .eq("id", c.id);
+    const { error } = await supabase!.rpc("review_challenge", {
+      challenge_uuid: c.id,
+      next_status: "under_review",
+      review_method: "admin queue review",
+      review_note: "Moved from the verification queue for documented review.",
+    });
     if (error) flash(error.message);
     else {
       flash(`${c.public_id} moved to review.`);
