@@ -66,6 +66,7 @@ type Challenge = {
   domain: string;
   district: string;
   priority_score: number;
+  priority_level?: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "MINOR";
   verification: string;
   stage: string;
   affected_population: number | null;
@@ -79,6 +80,15 @@ type Challenge = {
   public_longitude?: number | null;
   assignment_status?: string | null;
   participant_count?: number;
+};
+type PriorityAnalysis = {
+  challenge_id: string;
+  validated_factors: Record<string, number | boolean | string>;
+  confidence: number | null;
+  analysis_status: string;
+  override_applied: boolean;
+  override_reason: string | null;
+  ai_analysis: { reasons?: string[] } | null;
 };
 type Report = {
   id: string;
@@ -916,7 +926,8 @@ function Report({
     [supportingInfo, setSupportingInfo] = useState(""),
     [nearProblem, setNearProblem] = useState<"yes" | "no" | "">(""),
     [voiceTranscript, setVoiceTranscript] = useState(""),
-    [voiceRecording, setVoiceRecording] = useState(false),
+    [voiceRecording, setVoiceRecording] = useState<"title" | "description" | null>(null),
+    [voiceTranslating, setVoiceTranslating] = useState(false),
     [voiceError, setVoiceError] = useState(""),
     [reviewing, setReviewing] = useState(false),
     [district, setDistrict] = useState(""),
@@ -972,7 +983,31 @@ function Report({
       { enableHighAccuracy: true, timeout: 12000 },
     );
   };
-  const startVoiceTranscription = async () => {
+  const translateToEnglish = async (text: string) => {
+    if (speechLanguage.toLowerCase().startsWith("en-")) return text;
+
+    // Chrome's on-device Translation API is used when it is available. It keeps
+    // dictated report text on the device instead of sending it to a third party.
+    const Translator = (window as any).Translator;
+    if (Translator) {
+      const availability = await Translator.availability?.({ sourceLanguage: speechLanguage, targetLanguage: "en" });
+      if (availability === "available" || availability === "downloadable") {
+        const translator = await Translator.create({ sourceLanguage: speechLanguage, targetLanguage: "en" });
+        return await translator.translate(text);
+      }
+    }
+
+    // Fallback for browsers without the on-device API. The browser translation
+    // endpoint detects the spoken language and returns English text.
+    const response = await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=${encodeURIComponent(text)}`);
+    if (!response.ok) throw new Error("translation-failed");
+    const data = await response.json();
+    const translated = data?.[0]?.map((part: unknown[]) => part?.[0]).join("").trim();
+    if (!translated) throw new Error("translation-failed");
+    return translated;
+  };
+
+  const startVoiceTranscription = async (field: "title" | "description") => {
     setVoiceError("");
     setError("");
     const Recognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -996,10 +1031,24 @@ function Report({
     recognition.continuous = false;
     recognition.interimResults = true;
     recognition.lang = speechLanguage;
-    recognition.onresult = (event: any) => {
-      const transcript = Array.from(event.results as any).map((result: any) => result[0].transcript).join(" ").trim();
+    recognition.onresult = async (event: any) => {
+      const transcript = Array.from(event.results as any)
+        .filter((result: any) => result.isFinal)
+        .map((result: any) => result[0].transcript)
+        .join(" ")
+        .trim();
+      if (!transcript) return;
       setVoiceTranscript(transcript);
-      setDescription((current) => current.trim() ? `${current} ${transcript}`.trim() : transcript);
+      setVoiceTranslating(true);
+      try {
+        const englishText = await translateToEnglish(transcript);
+        const updateField = field === "title" ? setTitle : setDescription;
+        updateField((current) => current.trim() ? `${current.trim()} ${englishText}` : englishText);
+      } catch {
+        setVoiceError("We heard your speech, but could not translate it to English. Check your internet connection and try again.");
+      } finally {
+        setVoiceTranslating(false);
+      }
     };
     recognition.onerror = (event: any) => {
       const messages: Record<string, string> = {
@@ -1010,9 +1059,9 @@ function Report({
       };
       setVoiceError(messages[event.error] ?? "Voice transcription could not be completed. Please try again or type your report.");
     };
-    recognition.onend = () => { setVoiceRecording(false); speechRecognition.current = null; };
-    setVoiceRecording(true);
-    try { recognition.start(); } catch { setVoiceRecording(false); setVoiceError("Speech recognition is already starting. Please wait a moment and try again."); }
+    recognition.onend = () => { setVoiceRecording(null); speechRecognition.current = null; };
+    setVoiceRecording(field);
+    try { recognition.start(); } catch { setVoiceRecording(null); setVoiceError("Speech recognition is already starting. Please wait a moment and try again."); }
   };
   const stopVoiceTranscription = () => speechRecognition.current?.stop();
   const review = async () => {
@@ -1053,7 +1102,7 @@ function Report({
       .from("challenges")
       .insert({
         title: title.trim(),
-        summary: `${description}${voiceTranscript ? `\n\nVoice transcription: ${voiceTranscript}` : ""}${supportingInfo ? `\n\nSupporting information: ${supportingInfo}` : ""}`,
+        summary: `${description}${supportingInfo ? `\n\nSupporting information: ${supportingInfo}` : ""}`,
         domain,
         district: savedDistrict,
         block: savedBlock,
@@ -1078,7 +1127,7 @@ function Report({
       .insert({
         challenge_id: c.id,
         reporter_id: actor.id,
-        description: `${description}${voiceTranscript ? `\n\nVoice transcription: ${voiceTranscript}` : ""}`,
+        description,
         district: savedDistrict,
         block: savedBlock,
         locality: savedLocality,
@@ -1103,6 +1152,9 @@ function Report({
     setReportId(r.id);
     setChallengeId(c.id);
     setPublicId(c.public_id);
+    // The report remains usable if analysis is delayed or unavailable. The Edge
+    // Function persists either validated AI factors or a marked rule fallback.
+    void supabase.functions.invoke("analyze-priority", { body: { challengeId: c.id } });
     const { data: support } = await supabase
       .from("support_information")
       .select("id,title,support_type,official_url,contact_information")
@@ -1188,18 +1240,29 @@ function Report({
         submission.
       </p>
       <div className="card-surface mt-7 p-6">
-        <input
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          placeholder="Problem title *"
-          className="w-full rounded-lg border border-input p-3"
-        />
-        <textarea
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder="What is happening? Who is affected?"
-          className="mt-3 min-h-36 w-full rounded-lg border border-input p-3"
-        />
+        <div className="relative">
+          <label className="sr-only" htmlFor="problem-title">Problem title</label>
+          <input
+            id="problem-title"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Problem title *"
+            className="w-full rounded-lg border border-input p-3 pr-14"
+          />
+          <button type="button" onClick={() => voiceRecording === "title" ? stopVoiceTranscription() : startVoiceTranscription("title")} disabled={voiceRecording === "description" || voiceTranslating} aria-label={voiceRecording === "title" ? "Stop dictating problem title" : "Dictate problem title"} title={voiceRecording === "title" ? "Stop listening" : "Dictate title"} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-2 text-primary hover:bg-primary-soft disabled:opacity-50"><Mic size={19} className={voiceRecording === "title" ? "animate-pulse" : ""} /></button>
+        </div>
+        <div className="relative mt-3">
+          <label className="sr-only" htmlFor="problem-description">Problem description</label>
+          <textarea
+            id="problem-description"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="What is happening? Who is affected?"
+            className="min-h-36 w-full rounded-lg border border-input p-3 pr-14"
+          />
+          <button type="button" onClick={() => voiceRecording === "description" ? stopVoiceTranscription() : startVoiceTranscription("description")} disabled={voiceRecording === "title" || voiceTranslating} aria-label={voiceRecording === "description" ? "Stop dictating problem description" : "Dictate problem description"} title={voiceRecording === "description" ? "Stop listening" : "Dictate description"} className="absolute right-2 top-3 rounded-full p-2 text-primary hover:bg-primary-soft disabled:opacity-50"><Mic size={19} className={voiceRecording === "description" ? "animate-pulse" : ""} /></button>
+        </div>
+        {(voiceRecording || voiceTranslating || voiceError) && <div className="mt-3 rounded-lg bg-primary-soft/40 p-3 text-sm"><p className="font-medium text-primary">{voiceRecording ? `Listening for the problem ${voiceRecording} in your selected language…` : voiceTranslating ? "Translating your dictated words into English…" : null}</p>{voiceError && <p className="text-destructive">{voiceError}</p>}<p className="mt-1 text-xs text-muted-foreground">Dictate in your selected language. English translation is added to the selected field; review it before submitting.</p></div>}
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <label className="text-sm font-bold">Category
             <select value={category} onChange={(event) => setCategory(event.target.value)} className="mt-1 w-full rounded-lg border border-input bg-background p-3 font-normal">
@@ -1211,10 +1274,10 @@ function Report({
             <input value={affectedPopulation} onChange={(event) => setAffectedPopulation(event.target.value)} type="number" min="0" placeholder="Estimated number" className="mt-1 w-full rounded-lg border border-input p-3 font-normal" />
           </label>
           <label className="text-sm font-bold">Severity
-            <select value={severity} onChange={(event) => setSeverity(event.target.value)} className="mt-1 w-full rounded-lg border border-input bg-background p-3 font-normal"><option value="1">Low</option><option value="2">Moderate</option><option value="3">High</option><option value="4">Critical</option></select>
+            <select value={severity} onChange={(event) => setSeverity(event.target.value)} className="mt-1 w-full rounded-lg border border-input bg-background p-3 font-normal"><option value="1">Minor</option><option value="2">Moderate</option><option value="3">High</option><option value="4">Critical</option></select>
           </label>
           <label className="text-sm font-bold">Urgency
-            <select value={urgency} onChange={(event) => setUrgency(event.target.value)} className="mt-1 w-full rounded-lg border border-input bg-background p-3 font-normal"><option value="1">Low</option><option value="2">Moderate</option><option value="3">High</option><option value="4">Immediate</option></select>
+            <select value={urgency} onChange={(event) => setUrgency(event.target.value)} className="mt-1 w-full rounded-lg border border-input bg-background p-3 font-normal"><option value="1">Low</option><option value="2">Medium</option><option value="3">High</option><option value="4">Critical</option></select>
           </label>
         </div>
         <div className="mt-4 rounded-xl border border-primary/20 bg-primary-soft/40 p-4">
@@ -1231,13 +1294,6 @@ function Report({
         </div>
         <div className="mt-3 rounded-lg bg-surface p-3 text-xs text-muted-foreground">
           <label className="flex items-start gap-2"><input type="checkbox" checked={consentLocation} onChange={(event) => setConsentLocation(event.target.checked)} /> I consent to authorised verifiers and assigned partners using my exact location. Public discovery uses an approximate location only.</label>
-        </div>
-        <div className="mt-4 rounded-xl border border-border p-4">
-          <p className="font-bold">Describe by voice (optional)</p><p className="mt-1 text-xs text-muted-foreground">Speak, then review and edit the converted text.</p>
-          {voiceRecording && <><p className="mt-3 text-sm font-medium text-primary">Listening now — speak clearly, then press Stop below.</p><button type="button" onClick={stopVoiceTranscription} className="mt-2 rounded-lg border border-input px-3 py-2 text-sm font-bold">Stop recording</button></>}
-          {voiceError && <p className="mt-3 rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{voiceError}</p>}
-          <button type="button" onClick={startVoiceTranscription} disabled={voiceRecording} className="mt-3 rounded-lg border border-primary px-3 py-2 text-sm font-bold text-primary disabled:opacity-50"><Mic className="mr-1 inline" size={16} /> {voiceRecording ? "Listening…" : "Record and convert to text"}</button>
-          {voiceTranscript && <textarea value={voiceTranscript} onChange={(event) => setVoiceTranscript(event.target.value)} className="mt-3 min-h-20 w-full rounded-lg border border-input p-3 text-sm" aria-label="Editable voice transcription" />}
         </div>
         {nearProblem === "no" && <><div className="mt-5 flex items-center justify-between gap-3">
           <label className="text-sm font-bold">Problem location</label>
@@ -1475,7 +1531,7 @@ function Explorer({
               <article className="card-surface overflow-hidden" key={c.id}>
                 <div className="flex items-center justify-between p-4">
                   <b className="text-xs text-primary">{c.public_id}</b>
-                  <b>{c.priority_score}/100</b>
+                  <div className="text-right"><b>{c.priority_score}/100</b><p className="text-[10px] font-bold text-primary">{c.priority_level ?? (c.priority_score >= 90 ? "CRITICAL" : c.priority_score >= 75 ? "HIGH" : c.priority_score >= 50 ? "MEDIUM" : c.priority_score >= 25 ? "LOW" : "MINOR")}</p></div>
                 </div>
                 {activeMedia && supabase ? (
                   <div className="relative aspect-square bg-black">
@@ -5459,10 +5515,17 @@ function SupportFunding({ flash }: { flash: (message: string) => void }) {
 
 function Admin({ flash, refresh }: { flash: (x: string) => void; refresh: (q?: string) => void }) {
   const [items, setItems] = useState<Challenge[]>([]),
+    [analyses, setAnalyses] = useState<Record<string, PriorityAnalysis>>({}),
     [loading, setLoading] = useState(true);
   const load = async () => {
-    const { data } = await supabase!.rpc("search_challenges", { search_text: "" });
+    const [{ data }, { data: analysisData }] = await Promise.all([
+      supabase!.rpc("search_challenges", { search_text: "" }),
+      supabase!.from("challenge_priority_analyses").select("challenge_id,validated_factors,confidence,analysis_status,override_applied,override_reason,ai_analysis").order("created_at", { ascending: false }),
+    ]);
     setItems((data ?? []) as Challenge[]);
+    const latestAnalyses: Record<string, PriorityAnalysis> = {};
+    for (const item of (analysisData ?? []) as PriorityAnalysis[]) if (!latestAnalyses[item.challenge_id]) latestAnalyses[item.challenge_id] = item;
+    setAnalyses(latestAnalyses);
     setLoading(false);
   };
   useEffect(() => {
@@ -5508,6 +5571,7 @@ function Admin({ flash, refresh }: { flash: (x: string) => void; refresh: (q?: s
               <div>
                 <b className="text-xs text-primary">{c.public_id}</b>
                 <p className="mt-1 font-bold">{c.title}</p>
+                {analyses[c.id] && <details className="mt-3 max-w-xl rounded-lg bg-primary-soft/40 p-3 text-xs"><summary className="cursor-pointer font-bold text-primary">AI-assisted priority analysis · {analyses[c.id].analysis_status.replaceAll("_", " ")} · {analyses[c.id].confidence ?? 0}% confidence</summary><div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">{Object.entries(analyses[c.id].validated_factors).filter(([key]) => !["emergency_signal", "critical_hazard"].includes(key)).map(([key, value]) => <p key={key}><span className="text-muted-foreground">{key.replaceAll("_", " ")}</span><br /><b>{String(value)}/100</b></p>)}</div>{analyses[c.id].ai_analysis?.reasons?.length ? <ul className="mt-3 list-disc space-y-1 pl-4">{analyses[c.id].ai_analysis.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}{analyses[c.id].override_applied && <p className="mt-3 font-bold text-destructive">Critical override: {analyses[c.id].override_reason}</p>}</details>}
                 <p className="mt-1 text-sm text-muted-foreground">
                   {c.district} · {c.domain} · {c.priority_score}/100
                 </p>

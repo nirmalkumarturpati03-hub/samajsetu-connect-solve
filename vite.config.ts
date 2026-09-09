@@ -7,6 +7,9 @@
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 
 export default defineConfig({
+  // The Lovable preset defaults to Cloudflare outside its hosted environment.
+  // Vercel uses Nitro's Build Output API adapter and emits .vercel/output.
+  nitro: { preset: "vercel" },
   vite: {
     server: {
       // Required for an ngrok agent running outside the Vite process.
