@@ -310,7 +310,8 @@ function Header({
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur">
       <div className="container-page flex h-17 items-center justify-between">
-        <button onClick={() => go("home")} className="font-display text-xl font-bold text-primary">
+        <button onClick={() => go("home")} className="flex items-center gap-2 font-display text-xl font-bold text-primary">
+          <img src="/samajsetu-community-logo.svg" alt="" className="size-9" />
           SamajSetu
         </button>
         <nav className="flex items-center gap-3 text-sm font-bold">
