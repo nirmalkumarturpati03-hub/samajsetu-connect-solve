@@ -23,6 +23,7 @@ import {
   ListChecks,
   LogOut,
   MapPin,
+  Menu,
   Mic,
   Navigation,
   Paperclip,
@@ -34,6 +35,7 @@ import {
   Upload,
   UserRound,
   Users,
+  X,
   XCircle,
 } from "lucide-react";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
@@ -307,14 +309,16 @@ function Header({
 }) {
   const isOrganizationUser = user?.user_metadata?.["account_type"] === "organization";
   const isVolunteer = user?.user_metadata?.["account_type"] === "volunteer";
+  const [menuOpen, setMenuOpen] = useState(false);
+  const navigate = (screen: Screen) => { setMenuOpen(false); go(screen); };
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur">
-      <div className="container-page flex h-17 items-center justify-between">
-        <button onClick={() => go("home")} className="flex items-center gap-2 font-display text-xl font-bold text-primary">
+      <div className="container-page flex h-16 items-center justify-between sm:h-17">
+        <button onClick={() => navigate("home")} className="flex min-w-0 items-center gap-2 font-display text-lg font-bold text-primary sm:text-xl">
           <img src="/samajsetu-community-logo.svg" alt="" className="size-9" />
           SamajSetu
         </button>
-        <nav className="flex items-center gap-3 text-sm font-bold">
+        <nav className="hidden items-center gap-3 text-sm font-bold sm:flex">
           <LanguageSelector onLanguageChange={setLanguage} />
           <button onClick={() => go("explore")} className="hidden sm:block">
             Challenges
@@ -371,13 +375,27 @@ function Header({
             </>
           )}
           <button
-            onClick={() => go("report")}
+            onClick={() => navigate("report")}
             className="rounded-lg bg-primary px-4 py-2 text-primary-foreground"
           >
             Report
           </button>
         </nav>
+        <button onClick={() => setMenuOpen((open) => !open)} aria-label={menuOpen ? "Close navigation menu" : "Open navigation menu"} className="grid size-11 place-items-center rounded-lg border border-border sm:hidden">
+          {menuOpen ? <X size={20} /> : <Menu size={20} />}
+        </button>
       </div>
+      {menuOpen && <nav className="container-page grid gap-1 border-t border-border py-3 text-sm font-bold sm:hidden">
+        <div className="mb-2"><LanguageSelector onLanguageChange={setLanguage} /></div>
+        <button onClick={() => navigate("explore")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">Challenges</button>
+        {user && !isOrganizationUser && <button onClick={() => navigate("my-reports")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">My reports</button>}
+        {user && <button onClick={() => navigate("projects")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">Projects</button>}
+        {user && isOrganizationUser && <button onClick={() => navigate("coordinator")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">Partner dashboard</button>}
+        {user && isVolunteer && <button onClick={() => navigate("volunteer")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">My workspace</button>}
+        {profile?.role === "admin" && <button onClick={() => navigate("admin")} className="rounded-lg px-3 py-3 text-left text-primary hover:bg-primary-soft">Admin</button>}
+        {user ? <button onClick={() => { setMenuOpen(false); logout(); }} className="rounded-lg px-3 py-3 text-left hover:bg-surface">Sign out</button> : <button onClick={() => navigate("auth")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">Sign in</button>}
+        <button onClick={() => navigate("report")} className="mt-1 rounded-lg bg-primary px-3 py-3 text-left text-primary-foreground">Report a problem</button>
+      </nav>}
     </header>
   );
 }
@@ -400,14 +418,14 @@ function Home({ go, count, user, profile, flash }: { go: (x: Screen) => void; co
     <>
       <section className="grid-bg relative overflow-hidden">
         <CursorParticleField />
-        <div className="container-page relative z-10 py-24">
+        <div className="container-page relative z-10 py-14 sm:py-24">
           <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
             COMMUNITY INNOVATION
           </span>
-          <h1 className="mt-6 max-w-3xl text-5xl font-bold leading-tight">
+          <h1 className="mt-5 max-w-3xl text-3xl font-bold leading-tight sm:mt-6 sm:text-5xl">
             From community problems to <span className="text-primary">measurable impact.</span>
           </h1>
-          <p className="mt-6 max-w-2xl text-lg leading-8 text-muted-foreground">
+          <p className="mt-5 max-w-2xl text-base leading-7 text-muted-foreground sm:mt-6 sm:text-lg sm:leading-8">
             The intelligence and collaboration layer connecting community needs with the people who
             can solve them.
           </p>
@@ -432,7 +450,7 @@ function Home({ go, count, user, profile, flash }: { go: (x: Screen) => void; co
           </div>
         </div>
       </section>
-      <section className="container-page grid grid-cols-3 border-x border-b border-border bg-card">
+      <section className="container-page grid grid-cols-1 border-x border-b border-border bg-card sm:grid-cols-3">
         <Stat n={count} t="Live challenges" />
         <Stat n="Realtime" t="Database updates" />
         <Stat n="Human-led" t="Verification" />
@@ -2061,7 +2079,10 @@ function OrganizationDashboardLegacy({
             <LogOut size={17} /> Logout
           </button>
         </aside>
-        <main className="min-w-0 flex-1 p-4 sm:p-7">
+        <nav className="fixed inset-x-0 bottom-0 z-30 flex gap-1 overflow-x-auto border-t border-border bg-card p-2 shadow-[0_-4px_16px_rgba(0,0,0,.08)] lg:hidden">
+          {nav.map((item) => <button key={item} onClick={() => setSection(item === plural ? "People" : item)} className={`shrink-0 rounded-lg px-3 py-2 text-xs font-bold ${section === (item === plural ? "People" : item) ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>{item}</button>)}
+        </nav>
+        <main className="min-w-0 flex-1 p-4 pb-20 sm:p-7 lg:pb-7">
           <header className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <p className="text-sm font-medium text-primary">ORGANIZATION WORKSPACE</p>
@@ -4720,7 +4741,10 @@ function AdminControlCenter({
             ))}
           </nav>
         </aside>
-        <main className="min-w-0 flex-1 p-4 sm:p-7">
+        <nav className="fixed inset-x-0 bottom-0 z-30 flex gap-1 overflow-x-auto border-t border-border bg-card p-2 shadow-[0_-4px_16px_rgba(0,0,0,.08)] lg:hidden">
+          {nav.map((item) => <button key={item} onClick={() => { setSection(item); setSelected(null); }} className={`shrink-0 rounded-lg px-3 py-2 text-xs font-bold ${section === item ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>{item}</button>)}
+        </nav>
+        <main className="min-w-0 flex-1 p-4 pb-20 sm:p-7 lg:pb-7">
           <header className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <p className="text-sm font-medium text-primary">PLATFORM ADMINISTRATION</p>
