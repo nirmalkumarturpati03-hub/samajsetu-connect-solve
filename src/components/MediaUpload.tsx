@@ -348,6 +348,14 @@ export function MediaUpload({ reportId, challengeId, onMediaAdded, onError }: Me
     }
   };
 
+  // Upload immediately after capture or selection. Citizens should never have to
+  // find a second "Upload" action before they can finish their report.
+  useEffect(() => {
+    if (reportId && mediaFiles.some((media) => !media.uploadedPath) && !uploading) {
+      void uploadAllMedia();
+    }
+  }, [reportId, mediaFiles, uploading]);
+
   return (
     <div className="space-y-4">
       {/* Camera Section */}
@@ -550,15 +558,7 @@ export function MediaUpload({ reportId, challengeId, onMediaAdded, onError }: Me
             ))}
           </div>
 
-          {mediaFiles.some((m) => !m.uploadedPath) && (
-            <button
-              onClick={uploadAllMedia}
-              disabled={uploading || mediaFiles.every((m) => m.uploadedPath)}
-              className="w-full rounded-lg bg-primary px-4 py-2 text-sm font-bold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {uploading ? "Uploading..." : "Upload media"}
-            </button>
-          )}
+          {mediaFiles.some((m) => !m.uploadedPath) && <p className="text-center text-xs font-medium text-primary">{uploading ? "Uploading evidence…" : "Evidence will upload automatically."}</p>}
         </div>
       )}
 

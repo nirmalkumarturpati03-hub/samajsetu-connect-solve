@@ -118,7 +118,10 @@ function SamajSetu() {
     else setChallenges((data ?? []) as Challenge[]);
   };
   const loadProfile = async (u: User | null) => {
-    setUser(u);
+    // Anonymous sessions secure report/evidence writes but are never presented
+    // as a signed-in citizen account in the UI.
+    setUser(u?.is_anonymous ? null : u);
+    if (u?.is_anonymous) { setProfile(null); return; }
     if (!u || !supabase) {
       setProfile(null);
       return;
@@ -202,14 +205,22 @@ function SamajSetu() {
     scrollTo({ top: 0, behavior: "smooth" });
   };
   const repost = async (challenge: Challenge, note = "") => {
-    if (!user) {
-      flash("Sign in to repost a community problem.");
-      go("auth");
-      return;
+    let supporter = user;
+    if (!supporter) {
+      // Anonymous citizens deliberately have no visible account in the UI. Reuse
+      // their secure anonymous session before creating one, so repeated reposts
+      // remain attributable to one device without ever opening partner sign-in.
+      const current = await supabase!.auth.getUser();
+      supporter = current.data.user;
+      if (!supporter) {
+        const anonymous = await supabase!.auth.signInAnonymously();
+        supporter = anonymous.data.user;
+        if (anonymous.error || !supporter) { flash(anonymous.error?.message ?? "Unable to add your repost."); return; }
+      }
     }
     const { error } = await supabase!.from("challenge_supports").insert({
       challenge_id: challenge.id,
-      supporter_id: user.id,
+      supporter_id: supporter.id,
       ...(note.trim() ? { note: note.trim() } : {}),
     });
     if (error) {
@@ -219,6 +230,8 @@ function SamajSetu() {
     setSupportedIds((ids) => [...ids, challenge.id]);
     void loadChallenges();
     flash(`Your repost added support to ${challenge.public_id}.`);
+    // A repost completes the citizen flow; do not route a citizen to any login.
+    go("explore");
   };
   const isAdmin = profile?.role === "admin";
   return (
@@ -259,7 +272,8 @@ function SamajSetu() {
           complete={() => {
             flash("Report submitted for verification.");
             void loadChallenges();
-            go("my-reports");
+            // Citizen reports do not require an account, so return to the public view.
+            go("home");
           }}
         />
       )}{" "}
@@ -370,7 +384,7 @@ function Header({
                 onClick={() => go("auth")}
                 className="rounded-lg border border-border px-3 py-2"
               >
-                Sign in
+                Partner access
               </button>
             </>
           )}
@@ -393,7 +407,7 @@ function Header({
         {user && isOrganizationUser && <button onClick={() => navigate("coordinator")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">Partner dashboard</button>}
         {user && isVolunteer && <button onClick={() => navigate("volunteer")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">My workspace</button>}
         {profile?.role === "admin" && <button onClick={() => navigate("admin")} className="rounded-lg px-3 py-3 text-left text-primary hover:bg-primary-soft">Admin</button>}
-        {user ? <button onClick={() => { setMenuOpen(false); logout(); }} className="rounded-lg px-3 py-3 text-left hover:bg-surface">Sign out</button> : <button onClick={() => navigate("auth")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">Sign in</button>}
+        {user ? <button onClick={() => { setMenuOpen(false); logout(); }} className="rounded-lg px-3 py-3 text-left hover:bg-surface">Sign out</button> : <button onClick={() => navigate("auth")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">Partner access</button>}
         <button onClick={() => navigate("report")} className="mt-1 rounded-lg bg-primary px-3 py-3 text-left text-primary-foreground">Report a problem</button>
       </nav>}
     </header>
@@ -962,6 +976,7 @@ function Report({
     [duplicateMatches, setDuplicateMatches] = useState<
       { challenge_id: string; public_id: string; title: string; duplicate_score: number }[]
     >([]),
+    [duplicateDecision, setDuplicateDecision] = useState(false),
     [supportSuggestions, setSupportSuggestions] = useState<
       { id: string; title: string; support_type: string; official_url: string | null; contact_information: string | null }[]
     >([]),
@@ -1083,6 +1098,33 @@ function Report({
     try { recognition.start(); } catch { setVoiceRecording(null); setVoiceError("Speech recognition is already starting. Please wait a moment and try again."); }
   };
   const stopVoiceTranscription = () => speechRecognition.current?.stop();
+  const findDuplicates = async () => {
+    if (!supabase) return [] as { challenge_id: string; public_id: string; title: string; duplicate_score: number }[];
+    const duplicateArgs = {
+      problem_title: title.trim(),
+      problem_description: description.trim(),
+      problem_domain: category,
+      problem_lat: latitude,
+      problem_lng: longitude,
+      problem_district: nearProblem === "yes" ? null : district.trim() || null,
+      problem_locality: nearProblem === "yes" ? null : locality.trim() || null,
+    };
+    // Prefer the locality-aware function, but retain compatibility until its migration is applied.
+    let result = await supabase.rpc("find_possible_duplicates_v2", duplicateArgs);
+    if (result.error) {
+      result = await supabase.rpc("find_possible_duplicates", {
+        problem_title: duplicateArgs.problem_title,
+        problem_description: duplicateArgs.problem_description,
+        problem_domain: duplicateArgs.problem_domain,
+        problem_lat: duplicateArgs.problem_lat,
+        problem_lng: duplicateArgs.problem_lng,
+      });
+    }
+    return ((result.data ?? []) as { challenge_id: string; public_id: string; title: string; duplicate_score: number }[])
+      // 55 includes a strong title/context match in the same locality while
+      // still requiring the citizen to explicitly choose "different" to proceed.
+      .filter((item) => item.duplicate_score >= 55);
+  };
   const review = async () => {
     setError("");
     if (!nearProblem) return setError("Please select whether you are currently near the problem location.");
@@ -1091,25 +1133,39 @@ function Report({
     if (nearProblem === "yes" && (latitude == null || longitude == null)) return setError("We need your GPS location. Retry GPS, or choose ‘No, I am elsewhere’ to enter it manually.");
     if (nearProblem === "no" && (!district.trim() || !block.trim() || !locality.trim())) return setError("District, Block / Mandal, and Village / City are required when entering the location manually.");
     if (nearProblem === "yes" && !consentLocation) return setError("Confirm consent before sharing your exact GPS location with authorised responders.");
-    if (supabase) {
-      const domain = category;
-      const { data } = await supabase.rpc("find_possible_duplicates", { problem_title: title.trim(), problem_description: description.trim(), problem_domain: domain, problem_lat: latitude, problem_lng: longitude });
-      setDuplicateMatches(((data ?? []) as { challenge_id: string; public_id: string; title: string; duplicate_score: number }[]).filter((item) => item.duplicate_score >= 75));
-    }
+    setDuplicateDecision(false);
+    setDuplicateMatches(await findDuplicates());
     setReviewing(true);
   };
 
   const submit = async () => {
     if (!supabase) return;
     setBusy(true);
-    let actor = user;
-    if (!actor) {
-      const a = await supabase.auth.signInAnonymously();
-      actor = a.data.user;
-      if (a.error || !actor) {
-        setError(a.error?.message ?? "Unable to create secure reporting session.");
+    // Check again immediately before creating a record. This catches a report made
+    // by another citizen while this form was open.
+    if (!duplicateDecision) {
+      const matches = await findDuplicates();
+      if (matches.length > 0) {
+        setDuplicateMatches(matches);
+        setReviewing(true);
         setBusy(false);
         return;
+      }
+    }
+    let actor = user;
+    if (!actor) {
+      // The interface intentionally hides anonymous sessions. Reuse one when
+      // it exists instead of repeatedly signing a citizen in.
+      const current = await supabase.auth.getUser();
+      actor = current.data.user;
+      if (!actor) {
+        const a = await supabase.auth.signInAnonymously();
+        actor = a.data.user;
+        if (a.error || !actor) {
+          setError(a.error?.message ?? "Unable to create secure reporting session.");
+          setBusy(false);
+          return;
+        }
       }
     }
     const domain = category;
@@ -1171,9 +1227,6 @@ function Report({
     setReportId(r.id);
     setChallengeId(c.id);
     setPublicId(c.public_id);
-    // The report remains usable if analysis is delayed or unavailable. The Edge
-    // Function persists either validated AI factors or a marked rule fallback.
-    void supabase.functions.invoke("analyze-priority", { body: { challengeId: c.id } });
     const { data: support } = await supabase
       .from("support_information")
       .select("id,title,support_type,official_url,contact_information")
@@ -1405,8 +1458,8 @@ function Report({
               <p><b>Problem location:</b> {district}, {block}, {locality}</p>
               {supportingInfo && <p><b>Supporting information:</b> {supportingInfo}</p>}
             </div>
-            {duplicateMatches.length > 0 && <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm"><b>Possible duplicate reports</b><p className="mt-1">These stay separate unless an admin merges them. You can still continue and add evidence.</p>{duplicateMatches.map((item) => <p key={item.challenge_id} className="mt-2"><b>{item.public_id}</b> · {item.title} ({Math.round(item.duplicate_score)}% match)</p>)}</div>}
-            <button onClick={() => void submit()} disabled={busy} className="mt-5 rounded-lg bg-primary px-5 py-3 font-bold text-primary-foreground disabled:opacity-50">{busy ? "Submitting…" : "Submit Report"}</button>
+            {duplicateMatches.length > 0 && !duplicateDecision && <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm"><b>A problem with similar problem is already reported.</b><p className="mt-1">Choose repost if this is the same issue. It adds your support to the existing problem without creating a duplicate.</p>{duplicateMatches.map((item) => <div key={item.challenge_id} className="mt-3 flex flex-wrap items-center justify-between gap-2"><p><b>{item.public_id}</b> · {item.title} ({Math.round(item.duplicate_score)}% match)</p><button type="button" onClick={() => { const match = challenges.find((challenge) => challenge.id === item.challenge_id); if (match) void repost(match); }} className="rounded-lg border border-primary px-3 py-2 text-xs font-bold text-primary">This is the same problem — repost</button></div>)}<button type="button" onClick={() => setDuplicateDecision(true)} className="mt-3 rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground">These are different — continue reporting</button></div>}
+            {(duplicateMatches.length === 0 || duplicateDecision) && <button onClick={() => void submit()} disabled={busy} className="mt-5 rounded-lg bg-primary px-5 py-3 font-bold text-primary-foreground disabled:opacity-50">{busy ? "Submitting…" : "Submit Report"}</button>}
             <button onClick={() => setReviewing(false)} className="ml-3 text-sm font-bold text-primary">Edit report</button>
           </div>
         )}
@@ -4261,7 +4314,7 @@ function VolunteerDashboard({ user }: { user: User | null }) {
 function FundingTransparency({ user, profile, flash, embedded = false }: { user: User | null; profile: Profile | null; flash: (message: string) => void; embedded?: boolean }) {
   const admin = !embedded && profile?.role === "admin";
   const [sources, setSources] = useState<any[]>([]), [transactions, setTransactions] = useState<any[]>([]), [projects, setProjects] = useState<any[]>([]);
-  const [category, setCategory] = useState("government"), [donor, setDonor] = useState(""), [amount, setAmount] = useState(""), [purpose, setPurpose] = useState(""), [projectId, setProjectId] = useState(""), [transactionSourceId, setTransactionSourceId] = useState(""), [transactionType, setTransactionType] = useState("approval"), [transactionAmount, setTransactionAmount] = useState(""), [transactionPurpose, setTransactionPurpose] = useState("");
+  const [category, setCategory] = useState("government"), [donor, setDonor] = useState(""), [amount, setAmount] = useState(""), [purpose, setPurpose] = useState(""), [projectId, setProjectId] = useState(""), [transactionSourceId, setTransactionSourceId] = useState(""), [transactionType, setTransactionType] = useState("expenditure"), [transactionAmount, setTransactionAmount] = useState(""), [transactionPurpose, setTransactionPurpose] = useState("");
   const format = (value: number) => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(value || 0);
   const load = async () => {
     if (!supabase) return;
@@ -5077,7 +5130,6 @@ function AdminControlCenter({
             "Skilled Participants",
             "Volunteers",
             "Expertise & Resources",
-            "Reports",
             "Analytics",
           ].includes(section) && (
             <AdminDataSection
@@ -5092,10 +5144,42 @@ function AdminControlCenter({
               allocationSettings={allocationSettings}
             />
           )}
+          {section === "Reports" && <AdminProblemReview flash={flash} refresh={refresh} />}
         </main>
       </div>
     </div>
   );
+}
+
+type AdminReviewProblem = {
+  challenge_id: string; public_id: string; title: string; summary: string; domain: string; district: string; block: string | null; locality: string | null;
+  severity: number; urgency: number; affected_population: number | null; created_at: string; priority_score: number; priority_level: string;
+  report_id: string | null; report_description: string | null; report_latitude: number | null; report_longitude: number | null; voice_transcript: string | null;
+  evidence: { path: string; mime_type: string; size_bytes: number; created_at: string }[];
+};
+
+function AdminProblemReview({ flash, refresh }: { flash: (message: string) => void; refresh: () => void }) {
+  const [items, setItems] = useState<AdminReviewProblem[]>([]), [scores, setScores] = useState<Record<string, string>>({}), [notes, setNotes] = useState<Record<string, string>>({}), [busy, setBusy] = useState<string | null>(null);
+  const load = async () => {
+    const { data, error } = await supabase!.rpc("admin_problem_review");
+    if (error) flash(error.message); else setItems((data ?? []) as AdminReviewProblem[]);
+  };
+  useEffect(() => { void load(); }, []);
+  const assign = async (item: AdminReviewProblem) => {
+    const score = Number(scores[item.challenge_id] ?? item.priority_score);
+    if (!Number.isInteger(score) || score < 0 || score > 100) return flash("Enter a whole priority score from 0 to 100.");
+    setBusy(item.challenge_id);
+    const { error } = await supabase!.rpc("assign_problem_priority", { challenge_uuid: item.challenge_id, assigned_score: score, assignment_note: notes[item.challenge_id] ?? null });
+    setBusy(null);
+    if (error) return flash(error.message);
+    flash(`${item.public_id} priority assigned and smart allocation started.`); await load(); refresh();
+  };
+  const evidenceUrl = async (path: string) => {
+    const { data, error } = await supabase!.storage.from("evidence").createSignedUrl(path, 300);
+    if (error || !data?.signedUrl) return flash(error?.message ?? "Unable to open evidence.");
+    window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+  };
+  return <section className="mt-7"><h2 className="text-2xl font-bold">Citizen problem review</h2><p className="mt-1 text-sm text-muted-foreground">Review the complete report, exact reported location and private evidence. Assigning priority starts smart partner allocation.</p><div className="mt-5 space-y-4">{items.map((item) => <article key={`${item.challenge_id}-${item.report_id}`} className="card-surface p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-bold text-primary">{item.public_id} · {item.domain}</p><h3 className="mt-1 text-lg font-bold">{item.title}</h3><p className="mt-2 text-sm text-muted-foreground">{item.summary}</p></div><span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">Current: {item.priority_score}/100 · {item.priority_level}</span></div><div className="mt-4 grid gap-3 text-sm sm:grid-cols-2"><p><b>Submitted location:</b> {item.district}{item.block ? `, ${item.block}` : ""}{item.locality ? `, ${item.locality}` : ""}</p><p><b>Exact report GPS:</b> {item.report_latitude ?? "Not shared"}, {item.report_longitude ?? "Not shared"}</p><p><b>Citizen severity / urgency:</b> {item.severity}/4 · {item.urgency}/4</p><p><b>Affected people:</b> {item.affected_population ?? "Not provided"}</p></div>{item.report_description && <p className="mt-3 rounded-lg bg-surface p-3 text-sm"><b>Citizen description:</b> {item.report_description}</p>}{item.voice_transcript && <p className="mt-2 rounded-lg bg-surface p-3 text-sm"><b>Original voice transcript:</b> {item.voice_transcript}</p>}<div className="mt-3"><p className="text-sm font-bold">Private submitted media ({item.evidence.length})</p><div className="mt-2 flex flex-wrap gap-2">{item.evidence.map((media) => <button key={media.path} onClick={() => void evidenceUrl(media.path)} className="rounded-lg border border-input px-3 py-2 text-xs font-bold text-primary">Open {media.mime_type.split("/")[0]} · {Math.ceil(media.size_bytes / 1024)} KB</button>)}{!item.evidence.length && <p className="text-sm text-muted-foreground">No media attached.</p>}</div></div><div className="mt-4 grid gap-2 sm:grid-cols-[150px_1fr_auto]"><input value={scores[item.challenge_id] ?? String(item.priority_score)} onChange={(event) => setScores((all) => ({ ...all, [item.challenge_id]: event.target.value }))} type="number" min="0" max="100" placeholder="0–100" className="rounded-lg border border-input p-3" aria-label="Priority score"/><input value={notes[item.challenge_id] ?? ""} onChange={(event) => setNotes((all) => ({ ...all, [item.challenge_id]: event.target.value }))} placeholder="Priority rationale (optional)" className="rounded-lg border border-input p-3"/><button onClick={() => void assign(item)} disabled={busy === item.challenge_id} className="rounded-lg bg-primary px-4 py-3 text-sm font-bold text-primary-foreground disabled:opacity-50">{busy === item.challenge_id ? "Saving…" : "Assign & allocate"}</button></div></article>)}{!items.length && <p className="card-surface p-5 text-muted-foreground">No citizen reports are available for review.</p>}</div></section>;
 }
 
 function AdminDataSection({
