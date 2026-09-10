@@ -1,1 +1,4 @@
 project_id = "dkzqzzeeoiblnevppiwf"
+
+[functions.send-task-allocation-email]
+verify_jwt = false

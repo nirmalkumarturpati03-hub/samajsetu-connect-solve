@@ -13,7 +13,7 @@ type Particle = {
   color: string;
 };
 
-const COLORS = ["37, 99, 235", "59, 130, 246", "99, 102, 241", "147, 197, 253"];
+const COLORS = ["11, 93, 42", "22, 138, 69", "89, 171, 113", "188, 225, 199"];
 
 /** A decorative, pointer-transparent canvas that listens on its hero parent. */
 export function CursorParticleField() {
@@ -53,7 +53,7 @@ export function CursorParticleField() {
           size: 0.5 + Math.random() * 1.15,
           alpha: 0.14 + Math.random() * 0.32,
           phase: Math.random() * Math.PI * 2,
-          color: COLORS[Math.floor(Math.random() * COLORS.length)] ?? COLORS[0],
+          color: COLORS[Math.floor(Math.random() * COLORS.length)] ?? "22, 138, 69",
         };
       });
       mouse.x = mouse.targetX = width * 0.72;
@@ -126,10 +126,10 @@ export function CursorParticleField() {
       }
       if (mouse.active && !reduced && !touch) {
         const glow = context.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 145);
-        glow.addColorStop(0, "rgba(37, 99, 235, 0.13)");
-        glow.addColorStop(0.22, "rgba(59, 130, 246, 0.055)");
-        glow.addColorStop(0.48, "rgba(59, 130, 246, 0.025)");
-        glow.addColorStop(1, "rgba(59, 130, 246, 0)");
+        glow.addColorStop(0, "rgba(22, 138, 69, 0.13)");
+        glow.addColorStop(0.22, "rgba(89, 171, 113, 0.055)");
+        glow.addColorStop(0.48, "rgba(89, 171, 113, 0.025)");
+        glow.addColorStop(1, "rgba(89, 171, 113, 0)");
         context.fillStyle = glow;
         context.beginPath();
         context.arc(mouse.x, mouse.y, 145, 0, Math.PI * 2);

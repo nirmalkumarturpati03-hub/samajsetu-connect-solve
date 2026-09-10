@@ -535,7 +535,7 @@ export function MediaUpload({ reportId, challengeId, onMediaAdded, onError }: Me
 
                 <div className="absolute top-2 right-2 space-x-1 flex">
                   {media.uploadedPath ? (
-                    <div className="flex items-center gap-1 rounded bg-emerald-500 px-2 py-1 text-xs font-bold text-white">
+                    <div className="flex items-center gap-1 rounded bg-[#168A45] px-2 py-1 text-xs font-bold text-white">
                       <CheckCircle2 size={12} /> Uploaded
                     </div>
                   ) : uploadProgress[media.id] ? (
@@ -558,7 +558,7 @@ export function MediaUpload({ reportId, challengeId, onMediaAdded, onError }: Me
             ))}
           </div>
 
-          {mediaFiles.some((m) => !m.uploadedPath) && <p className="text-center text-xs font-medium text-primary">{uploading ? "Uploading evidence…" : "Evidence will upload automatically."}</p>}
+          {mediaFiles.some((m) => !m.uploadedPath) && <p className="text-center text-xs font-medium text-primary">{uploading ? "Uploading evidence..." : "Evidence will upload automatically."}</p>}
         </div>
       )}
 
@@ -629,7 +629,7 @@ export function MediaUpload({ reportId, challengeId, onMediaAdded, onError }: Me
       )}
 
       {/* Info */}
-      <div className="flex gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+      <div className="flex gap-2 rounded-lg border border-[#DDEBE2] bg-[#F6FBF8] p-3 text-xs text-[#0B5D2A]">
         <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
         <p>
           Maximum file size: 25MB per file. Supported formats: JPEG, PNG, WebP, MP4, WebM, MPEG

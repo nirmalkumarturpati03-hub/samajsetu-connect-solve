@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Building2,
@@ -15,6 +15,8 @@ import {
   ClipboardCheck,
   Clock3,
   Download,
+  Eye,
+  EyeOff,
   FileSpreadsheet,
   FileUp,
   Image as ImageIcon,
@@ -44,6 +46,7 @@ import { LanguageSelector, voiceLocale } from "@/components/LanguageSelector";
 import { CursorParticleField } from "@/components/CursorParticleField";
 import { ProblemMap } from "@/components/ProblemMap";
 import { distanceKm } from "@/lib/samaj";
+import { createElevenLabsScribeToken } from "@/lib/elevenlabs.functions";
 import type { User } from "@supabase/supabase-js";
 
 export const Route = createFileRoute("/")({ component: SamajSetu });
@@ -61,10 +64,12 @@ type Screen =
   | "coordinator"
   | "volunteer";
 type Profile = { id: string; display_name: string | null; role: string; district: string | null };
+type PartnerIdentity = { id: string; name: string; organization_type: string };
 type Challenge = {
   id: string;
   public_id: string;
   title: string;
+  summary: string;
   domain: string;
   district: string;
   priority_score: number;
@@ -103,14 +108,58 @@ type Report = {
   challenges: { public_id: string; title: string; verification: string; stage: string } | null;
 };
 
+const malformedText = /[\u00c2\u00c3\u00e2\u0192\u20ac\u201a\u201c\u201d\u2020\u2021]/;
+const cp1252Bytes = new Map<number, number>([
+  [0x20ac, 0x80], [0x201a, 0x82], [0x0192, 0x83], [0x201e, 0x84], [0x2026, 0x85],
+  [0x2020, 0x86], [0x2021, 0x87], [0x02c6, 0x88], [0x2030, 0x89], [0x0160, 0x8a],
+  [0x2039, 0x8b], [0x0152, 0x8c], [0x017d, 0x8e], [0x2018, 0x91], [0x2019, 0x92],
+  [0x201c, 0x93], [0x201d, 0x94], [0x2022, 0x95], [0x2013, 0x96], [0x2014, 0x97],
+  [0x02dc, 0x98], [0x2122, 0x99], [0x0161, 0x9a], [0x203a, 0x9b], [0x0153, 0x9c],
+  [0x017e, 0x9e], [0x0178, 0x9f],
+]);
+
+/** Repairs legacy Windows-1252/UTF-8 mojibake received from older records. */
+function cleanLegacyText(value: string | null | undefined) {
+  let current = value ?? "";
+  for (let pass = 0; pass < 4 && malformedText.test(current); pass += 1) {
+    const bytes: number[] = [];
+    let canDecode = true;
+    for (const character of current) {
+      const code = character.codePointAt(0)!;
+      const byte = code <= 0xff ? code : cp1252Bytes.get(code);
+      if (byte === undefined) { canDecode = false; break; }
+      bytes.push(byte);
+    }
+    if (!canDecode) break;
+    try {
+      const repaired = new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(bytes));
+      if (repaired === current) break;
+      current = repaired;
+    } catch { break; }
+  }
+  return current;
+}
+
 function SamajSetu() {
   const [screen, setScreen] = useState<Screen>("home"),
     [user, setUser] = useState<User | null>(null),
     [profile, setProfile] = useState<Profile | null>(null),
+    [partnerIdentity, setPartnerIdentity] = useState<PartnerIdentity | null>(null),
     [challenges, setChallenges] = useState<Challenge[]>([]),
     [supportedIds, setSupportedIds] = useState<string[]>([]),
     [language, setLanguage] = useState("en"),
-    [notice, setNotice] = useState("");
+    [notice, setNotice] = useState(""),
+    [showSplash, setShowSplash] = useState(true),
+    [passwordRecovery, setPasswordRecovery] = useState(false);
+  useEffect(() => {
+    const saved = window.history.state?.samajsetuScreen as Screen | undefined;
+    if (!saved) window.history.replaceState({ ...(window.history.state ?? {}), samajsetuScreen: "home" }, "", window.location.href);
+    else setScreen(saved);
+    const onBack = (event: PopStateEvent) => setScreen((event.state?.samajsetuScreen as Screen | undefined) ?? "home");
+    window.addEventListener("popstate", onBack);
+    const timer = window.setTimeout(() => setShowSplash(false), 2200);
+    return () => { window.removeEventListener("popstate", onBack); window.clearTimeout(timer); };
+  }, []);
   const loadChallenges = async (q = "") => {
     if (!supabase) return;
     const { data, error } = await supabase.rpc("search_challenges", { search_text: q });
@@ -121,9 +170,10 @@ function SamajSetu() {
     // Anonymous sessions secure report/evidence writes but are never presented
     // as a signed-in citizen account in the UI.
     setUser(u?.is_anonymous ? null : u);
-    if (u?.is_anonymous) { setProfile(null); return; }
+    if (u?.is_anonymous) { setProfile(null); setPartnerIdentity(null); return; }
     if (!u || !supabase) {
       setProfile(null);
+      setPartnerIdentity(null);
       return;
     }
     const { data } = await supabase
@@ -157,6 +207,14 @@ function SamajSetu() {
         },
         { onConflict: "owner_id" },
       );
+      const { data: entity } = await supabase
+        .from("organization_accounts")
+        .select("id,name,organization_type")
+        .eq("owner_id", u.id)
+        .maybeSingle();
+      setPartnerIdentity(entity ?? null);
+    } else {
+      setPartnerIdentity(null);
     }
   };
   const flash = (x: string) => {
@@ -168,7 +226,10 @@ function SamajSetu() {
     void supabase!.auth.getUser().then(({ data }) => loadProfile(data.user));
     const {
       data: { subscription },
-    } = supabase!.auth.onAuthStateChange((_e, s) => void loadProfile(s?.user ?? null));
+    } = supabase!.auth.onAuthStateChange((event, s) => {
+      if (event === "PASSWORD_RECOVERY") { setPasswordRecovery(true); go("auth"); }
+      void loadProfile(s?.user ?? null);
+    });
     const channel = supabase!
       .channel("challenge-live")
       .on(
@@ -199,8 +260,32 @@ function SamajSetu() {
       .eq("supporter_id", user.id)
       .then(({ data }) => setSupportedIds((data ?? []).map((x) => x.challenge_id)));
   }, [user]);
+  useEffect(() => {
+    const repairTextNodes = (root: Node) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      const nodes: Text[] = root.nodeType === Node.TEXT_NODE ? [root as Text] : [];
+      let node: Node | null;
+      while ((node = walker.nextNode())) nodes.push(node as Text);
+      nodes.forEach((textNode) => {
+        const parent = textNode.parentElement;
+        if (!parent || ["SCRIPT", "STYLE", "TEXTAREA"].includes(parent.tagName)) return;
+        const repaired = cleanLegacyText(textNode.data);
+        if (repaired !== textNode.data) textNode.data = repaired;
+      });
+    };
+    repairTextNodes(document.body);
+    const observer = new MutationObserver((records) => {
+      records.forEach((record) => {
+        record.addedNodes.forEach((node) => repairTextNodes(node));
+        if (record.type === "characterData") repairTextNodes(record.target.parentNode ?? document.body);
+      });
+    });
+    observer.observe(document.body, { childList: true, characterData: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
   if (!isSupabaseConfigured) return <Setup />;
   const go = (v: Screen) => {
+    if (v !== screen) window.history.pushState({ ...(window.history.state ?? {}), samajsetuScreen: v }, "", window.location.href);
     setScreen(v);
     scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -233,12 +318,14 @@ function SamajSetu() {
     // A repost completes the citizen flow; do not route a citizen to any login.
     go("explore");
   };
-  const isAdmin = profile?.role === "admin";
+  const isAdmin = profile?.role.trim().toLowerCase() === "admin";
   return (
-    <main className="min-h-screen bg-background">
+    <main className="samaj-app min-h-screen bg-background">
+      {showSplash && <LaunchScreen />}
       <Header
         user={user}
         profile={profile}
+        partnerIdentity={partnerIdentity}
         go={go}
         setLanguage={setLanguage}
         logout={async () => {
@@ -248,11 +335,13 @@ function SamajSetu() {
       />
       {screen === "home" && <Home go={go} count={challenges.length} user={user} profile={profile} flash={flash} />}{" "}
       {screen === "auth" && (
-        <Auth
+        <Auth recovery={passwordRecovery}
           complete={(accountType) => {
             flash("Welcome to SamajSetu.");
             go(
-              accountType === "organization"
+              accountType === "admin"
+                ? "admin"
+                : accountType === "organization"
                 ? "coordinator"
                 : accountType === "volunteer"
                   ? "volunteer"
@@ -290,18 +379,20 @@ function SamajSetu() {
       {screen === "notifications" && <Notifications user={user} go={go} />}{" "}
       {screen === "projects" && <ProjectWorkspace user={user} profile={profile} flash={flash} />}{" "}
       {screen === "organization" && <OrganizationRegistration user={user} go={go} flash={flash} />}{" "}
-      {screen === "coordinator" && <PartnerDashboard user={user} flash={flash} />}{" "}
+      {screen === "coordinator" && <PartnerDashboard user={user} partnerIdentity={partnerIdentity} flash={flash} />}{" "}
       {screen === "volunteer" && <VolunteerDashboard user={user} />}{" "}
       {screen === "admin-login" && <AdminLogin complete={() => go("admin")} />}
       {screen === "admin" &&
-        (isAdmin ? (
+        (user && !profile ? (
+          <section className="container-page py-20 text-center text-sm text-muted-foreground">Loading administrator access...</section>
+        ) : isAdmin ? (
           <AdminControlCenter user={user} profile={profile} flash={flash} refresh={loadChallenges} />
         ) : (
-          <AdminRedirect user={user} go={go} />
+          <AdminRedirect go={go} />
         ))}
       {notice && (
         <div className="fixed bottom-5 right-5 z-50 rounded-xl bg-ink px-4 py-3 text-sm font-semibold text-white shadow-lift">
-          <Check className="mr-2 inline text-emerald-300" size={16} />
+          <Check className="mr-2 inline text-white/80" size={16} />
           {notice}
         </div>
       )}
@@ -311,107 +402,56 @@ function SamajSetu() {
 function Header({
   user,
   profile,
+  partnerIdentity,
   go,
   setLanguage,
   logout,
 }: {
   user: User | null;
   profile: Profile | null;
+  partnerIdentity: PartnerIdentity | null;
   go: (x: Screen) => void;
   setLanguage: (language: string) => void;
   logout: () => void;
 }) {
-  const isOrganizationUser = user?.user_metadata?.["account_type"] === "organization";
-  const isVolunteer = user?.user_metadata?.["account_type"] === "volunteer";
+  const identityName = profile?.role === "admin"
+    ? profile.display_name || user?.email
+    : partnerIdentity?.name || profile?.display_name || user?.email;
+  const identityRole = profile?.role === "admin"
+    ? "Admin"
+    : partnerIdentity?.organization_type || user?.user_metadata?.["organization_type"] || user?.user_metadata?.["account_type"] || "Member";
   const [menuOpen, setMenuOpen] = useState(false);
   const navigate = (screen: Screen) => { setMenuOpen(false); go(screen); };
+  const accountType = String(user?.user_metadata?.["account_type"] ?? "").trim().toLowerCase();
+  const dashboardScreen: Screen = profile?.role.trim().toLowerCase() === "admin"
+    ? "admin"
+    : accountType === "volunteer"
+      ? "volunteer"
+      : ["organization", "ngo"].includes(accountType)
+        ? "coordinator"
+        : "my-reports";
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur">
       <div className="container-page flex h-16 items-center justify-between sm:h-17">
-        <button onClick={() => navigate("home")} className="flex min-w-0 items-center gap-2 font-display text-lg font-bold text-primary sm:text-xl">
-          <img src="/samajsetu-community-logo.svg" alt="" className="size-9" />
-          SamajSetu
+        <button onClick={() => navigate("home")} className="flex min-w-0 items-center">
+          <img src="/samajsetu-community-logo.svg" alt="SamajSetu" className="h-9 w-auto sm:h-10" />
         </button>
         <nav className="hidden items-center gap-3 text-sm font-bold sm:flex">
           <LanguageSelector onLanguageChange={setLanguage} />
-          <button onClick={() => go("explore")} className="hidden sm:block">
-            Challenges
-          </button>
-          {user && !isOrganizationUser && (
-            <button onClick={() => go("my-reports")} className="hidden sm:block">
-              My reports
-            </button>
-          )}
-          {user && <button onClick={() => go("notifications")} title="Notifications" className="rounded-lg border border-border p-2"><Bell size={16} /></button>}
-          {user && <button onClick={() => go("projects")} className="hidden sm:block">Projects</button>}
-          {user && isOrganizationUser && (
-            <button onClick={() => go("coordinator")} className="hidden sm:block">
-              Partner dashboard
-            </button>
-          )}
-          {user && isVolunteer && (
-            <button onClick={() => go("volunteer")} className="hidden sm:block">
-              My workspace
-            </button>
-          )}
-          {profile?.role === "admin" && (
-            <button onClick={() => go("admin")} className="hidden sm:block text-primary">
-              Admin
-            </button>
-          )}
-          {user ? (
-            <>
-              <span className="hidden text-xs text-muted-foreground md:block">
-                {profile?.display_name || user.email || "Signed in"}
-              </span>
-              <button
-                onClick={logout}
-                title="Sign out"
-                className="rounded-lg border border-border p-2"
-              >
-                <LogOut size={16} />
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                onClick={() => go("admin-login")}
-                className="hidden text-xs font-bold text-muted-foreground sm:block"
-              >
-                Admin login
-              </button>
-              <button
-                onClick={() => go("auth")}
-                className="rounded-lg border border-border px-3 py-2"
-              >
-                Partner access
-              </button>
-            </>
-          )}
-          <button
-            onClick={() => navigate("report")}
-            className="rounded-lg bg-primary px-4 py-2 text-primary-foreground"
-          >
-            Report
-          </button>
+          {user ? <><button onClick={() => navigate(dashboardScreen)} title="Open dashboard" className="text-right text-xs leading-4"><b className="block text-foreground">{identityName}</b><span className="capitalize text-muted-foreground">{identityRole}</span></button><button onClick={logout} title="Sign out" className="rounded-lg border border-border p-2"><LogOut size={16} /></button></> : <><button onClick={() => go("explore")}>Challenges</button><button onClick={() => go("auth")} className="rounded-lg border border-border px-3 py-2">Sign in / register</button><button onClick={() => navigate("report")} className="rounded-lg bg-primary px-4 py-2 text-primary-foreground">Report</button></>}
         </nav>
         <button onClick={() => setMenuOpen((open) => !open)} aria-label={menuOpen ? "Close navigation menu" : "Open navigation menu"} className="grid size-11 place-items-center rounded-lg border border-border sm:hidden">
           {menuOpen ? <X size={20} /> : <Menu size={20} />}
         </button>
       </div>
       {menuOpen && <nav className="container-page grid gap-1 border-t border-border py-3 text-sm font-bold sm:hidden">
-        <div className="mb-2"><LanguageSelector onLanguageChange={setLanguage} /></div>
-        <button onClick={() => navigate("explore")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">Challenges</button>
-        {user && !isOrganizationUser && <button onClick={() => navigate("my-reports")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">My reports</button>}
-        {user && <button onClick={() => navigate("projects")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">Projects</button>}
-        {user && isOrganizationUser && <button onClick={() => navigate("coordinator")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">Partner dashboard</button>}
-        {user && isVolunteer && <button onClick={() => navigate("volunteer")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">My workspace</button>}
-        {profile?.role === "admin" && <button onClick={() => navigate("admin")} className="rounded-lg px-3 py-3 text-left text-primary hover:bg-primary-soft">Admin</button>}
-        {user ? <button onClick={() => { setMenuOpen(false); logout(); }} className="rounded-lg px-3 py-3 text-left hover:bg-surface">Sign out</button> : <button onClick={() => navigate("auth")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">Partner access</button>}
-        <button onClick={() => navigate("report")} className="mt-1 rounded-lg bg-primary px-3 py-3 text-left text-primary-foreground">Report a problem</button>
+        {user ? <><button onClick={() => navigate(dashboardScreen)} className="rounded-lg bg-surface px-3 py-3 text-left"><b className="block">{identityName}</b><span className="text-xs capitalize text-muted-foreground">{identityRole}</span></button><div className="px-2 py-2"><LanguageSelector onLanguageChange={setLanguage} /></div><button onClick={() => { setMenuOpen(false); logout(); }} className="rounded-lg px-3 py-3 text-left text-destructive hover:bg-destructive-soft">Sign out</button></> : <><button onClick={() => navigate("report")} className="rounded-lg bg-primary px-3 py-3 text-left text-primary-foreground">REPORT</button><button onClick={() => navigate("explore")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">CHALLENGES</button><button onClick={() => navigate("auth")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">SIGN IN / REGISTER</button></>}
       </nav>}
     </header>
   );
+}
+function LaunchScreen() {
+  return <div className="launch-screen" role="status" aria-label="Loading SamajSetu"><div className="launch-mark"><img src="/samajsetu-community-logo.svg" alt="SamajSetu" className="launch-logo" /></div></div>;
 }
 function Setup() {
   return (
@@ -430,48 +470,62 @@ function Setup() {
 function Home({ go, count, user, profile, flash }: { go: (x: Screen) => void; count: number; user: User | null; profile: Profile | null; flash: (message: string) => void }) {
   return (
     <>
-      <section className="grid-bg relative overflow-hidden">
+      <section className="public-hero relative overflow-hidden">
         <CursorParticleField />
-        <div className="container-page relative z-10 py-14 sm:py-24">
-          <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
-            COMMUNITY INNOVATION
-          </span>
-          <h1 className="mt-5 max-w-3xl text-3xl font-bold leading-tight sm:mt-6 sm:text-5xl">
-            From community problems to <span className="text-primary">measurable impact.</span>
-          </h1>
-          <p className="mt-5 max-w-2xl text-base leading-7 text-muted-foreground sm:mt-6 sm:text-lg sm:leading-8">
-            The intelligence and collaboration layer connecting community needs with the people who
-            can solve them.
-          </p>
-          <div className="mt-8 flex flex-wrap gap-3">
-            <button
-              onClick={() => go("report")}
-              className="rounded-lg bg-primary px-5 py-3 font-bold text-primary-foreground"
-            >
-              Report a problem <ArrowRight className="inline" size={16} />
-            </button>
-            <button
-              onClick={() => go("explore")}
-              className="rounded-lg border border-border bg-card px-5 py-3 font-bold"
-            >
-              Explore challenges
-            </button>
-            {!user && (
-              <button onClick={() => go("auth")} className="px-4 text-sm font-bold text-primary">
-                Create an account
+        <div className="hero-content container-page relative z-10 py-10 sm:py-14 lg:py-16">
+          <div className="hero-copy">
+            <p className="hero-kicker">COMMUNITY ACTION PLATFORM</p>
+            <h1 className="mt-4 text-3xl font-bold leading-[.96] sm:mt-5 sm:text-5xl">
+              From community problems to <span className="text-primary">measurable impact.</span>
+            </h1>
+            <p className="mt-5 max-w-xl text-base leading-7 text-muted-foreground sm:text-lg sm:leading-8">
+              The intelligence and collaboration layer connecting community needs with the people who
+              can solve them.
+            </p>
+            <div className="mt-8 flex flex-wrap gap-3">
+              <button
+                onClick={() => go("report")}
+                className="rounded-lg bg-primary px-5 py-3 font-bold text-primary-foreground"
+              >
+                Report a problem <ArrowRight className="inline" size={16} />
               </button>
-            )}
+              <button
+                onClick={() => go("explore")}
+                className="rounded-lg border border-border bg-card px-5 py-3 font-bold"
+              >
+                Explore challenges
+              </button>
+            </div>
           </div>
+          <figure className="hero-scene" aria-label="A connected community moving from reports to impact">
+            <p className="hero-scene-note">From reports<br />to impact</p>
+            <img
+              src="/WhatsApp%20Image%202026-09-11%20at%2000.52.34.jpeg"
+              alt="Bridge crossing a forested river at sunrise"
+              className="hero-scene-art"
+            />
+            <figcaption>People / Ideas / Collaboration / Impact</figcaption><aside className="hero-impact-quote"><Sparkles size={24} /><p><b>Stronger communities,<br />a brighter tomorrow.</b><br /><small>SamajSetu</small></p></aside>
+          </figure>
         </div>
       </section>
-      <section className="container-page grid grid-cols-1 border-x border-b border-border bg-card sm:grid-cols-3">
-        <Stat n={count} t="Live challenges" />
-        <Stat n="Realtime" t="Database updates" />
-        <Stat n="Human-led" t="Verification" />
+      <section id="landing-metrics" className="public-metrics container-page grid grid-cols-1 border-x border-b border-border bg-card sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1.35fr]">
+        <HeroMetric icon={<Users size={23} />} value={count} label="Live challenges" />
+        <HeroMetric icon={<Activity size={23} />} value="Realtime" label="Database updates" />
+        <HeroMetric icon={<BadgeCheck size={23} />} value="Human-led" label="Verification" />
+        <p className="hero-metrics-quote">&quot;Real change begins when people<br />come together.&quot;<br /><span>- SamajSetu</span></p>
       </section>
-      <FundingTransparency user={user} profile={profile} flash={flash} embedded />
+      <FundingTransparencyV2 user={user} profile={profile} flash={flash} embedded />
+      <section id="featured-challenges" className="featured-challenges container-page py-14 sm:py-18">
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div><p className="hero-kicker">COMMUNITY ACTION</p><h2 className="mt-3">Featured Challenges</h2><p className="mt-2 text-sm text-muted-foreground">Verified local problems where people and institutions are creating measurable change.</p></div>
+          <button onClick={() => go("explore")} className="rounded-lg border border-primary px-4 py-2.5 text-sm font-bold text-primary">View All <ArrowRight className="inline" size={16} /></button>
+        </div>
+      </section>
     </>
   );
+}
+function HeroMetric({ icon, value, label }: { icon: React.ReactNode; value: number | string; label: string }) {
+  return <div className="hero-metric"><span>{icon}</span><div><b>{value}</b><p>{label}</p></div><ArrowRight size={18} /></div>;
 }
 function AuthLegacy({ complete }: { complete: (accountType: string) => void }) {
   const [mode, setMode] = useState<"signin" | "signup">("signin"),
@@ -535,9 +589,9 @@ function AuthLegacy({ complete }: { complete: (accountType: string) => void }) {
               onChange={(e) => setAccountType(e.target.value as typeof accountType)}
               className="mt-2 w-full rounded-lg border border-input bg-background p-3"
             >
-              <option value="citizen">Citizen — report and track local problems</option>
-              <option value="volunteer">Volunteer — help solve community challenges</option>
-              <option value="organization">Organization — coordinate projects and teams</option>
+              <option value="citizen">Citizen - report and track local problems</option>
+              <option value="volunteer">Volunteer - help solve community challenges</option>
+              <option value="organization">Organization - coordinate projects and teams</option>
             </select>
           </>
         )}
@@ -562,7 +616,7 @@ function AuthLegacy({ complete }: { complete: (accountType: string) => void }) {
           onClick={() => void submit()}
           className="mt-5 w-full rounded-lg bg-primary py-3 font-bold text-primary-foreground disabled:opacity-60"
         >
-          {busy ? "Please wait…" : mode === "signin" ? "Sign in" : "Create account"}
+          {busy ? "Please wait..." : mode === "signin" ? "Sign in" : "Create account"}
         </button>
         <button
           onClick={() => {
@@ -578,94 +632,145 @@ function AuthLegacy({ complete }: { complete: (accountType: string) => void }) {
     </section>
   );
 }
-function Auth({ complete }: { complete: (accountType: string) => void }) {
+function Auth({ complete, recovery = false }: { complete: (accountType: string) => void; recovery?: boolean }) {
   const [kind, setKind] = useState<"Organization" | "NGO" | null>(null);
   const [signIn, setSignIn] = useState(false),
     [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
     [error, setError] = useState(""),
-    [busy, setBusy] = useState(false);
+    [busy, setBusy] = useState(false),
+    [showPassword, setShowPassword] = useState(false),
+    [forgotPassword, setForgotPassword] = useState(false),
+    [resetSent, setResetSent] = useState(false),
+    [newPassword, setNewPassword] = useState(""),
+    [resetComplete, setResetComplete] = useState(false);
   const login = async () => {
     if (!supabase) return;
     setBusy(true);
     setError("");
     const { data, error: loginError } = await supabase.auth.signInWithPassword({ email, password });
+    if (loginError || !data.user) { setBusy(false); setError(loginError?.message ?? "Unable to sign in."); }
+    else {
+      const { data: accountProfile, error: profileError } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", data.user.id)
+        .maybeSingle();
+      if (profileError || !accountProfile) {
+        await supabase.auth.signOut();
+        setBusy(false);
+        setError("We could not determine this account's SamajSetu role. Please contact support.");
+        return;
+      }
+      setBusy(false);
+      const role = accountProfile.role.trim().toLowerCase();
+      complete(role === "admin" ? "admin" : (data.user.user_metadata?.["account_type"] ?? "organization"));
+    }
+  };
+  const requestReset = async () => {
+    if (!supabase || !email.trim()) return setError("Enter your registered email address first.");
+    setBusy(true); setError("");
+    const { data: registeredAccount, error: limitError } = await supabase.rpc("request_password_reset", { requested_email: email.trim().toLowerCase() });
+    if (limitError) { setBusy(false); setError(limitError.message); return; }
+    const { error: resetError } = registeredAccount
+      ? await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: `${window.location.origin}/` })
+      : { error: null };
     setBusy(false);
-    if (loginError) setError(loginError.message);
-    else complete(data.user?.user_metadata?.["account_type"] ?? "organization");
+    if (resetError) setError(resetError.message);
+    else setResetSent(true);
+  };
+  const saveNewPassword = async () => {
+    if (!supabase || newPassword.length < 6) return setError("Use a password with at least 6 characters.");
+    setBusy(true); setError("");
+    const { error: updateError } = await supabase.auth.updateUser({ password: newPassword });
+    setBusy(false);
+    if (updateError) setError(updateError.message); else setResetComplete(true);
   };
   return (
-    <section className="container-page max-w-3xl py-14">
-      <div className="card-surface p-7 sm:p-10">
+    <section className="auth-page container-page max-w-6xl py-8 sm:py-14">
+      <div className="auth-shell card-surface overflow-hidden p-0">
+        <aside className="auth-intro">
+          <img src="/samajsetu-community-logo.svg" alt="SamajSetu" className="h-14 w-auto max-w-full" />
+          <p className="mt-7 text-xs font-bold tracking-[.14em] text-white/75">SAMAJSETU PARTNER NETWORK</p>
+          <h2 className="mt-3 font-display text-3xl font-bold leading-tight text-white">Work together for stronger communities.</h2>
+          <p className="mt-4 text-sm leading-6 text-white/80">Bring your organization&apos;s expertise, volunteers, and resources to verified local problems.</p>
+          <div className="auth-intro-points">
+            <span>Verified community challenges</span>
+            <span>Location-aware task matching</span>
+            <span>Clear progress and impact tracking</span>
+          </div>
+        </aside>
+        <div className="auth-panel p-6 sm:p-10">
         <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
           SECURE PARTNER ACCESS
         </span>
-        <h1 className="mt-4 text-3xl font-bold">Sign In / Register</h1>
+        <h1 className="mt-4 text-3xl font-bold">{recovery ? "Create a new password" : signIn ? "Welcome back" : "Create a partner account"}</h1>
+        {recovery ? <div className="mt-6 grid max-w-md gap-3">{resetComplete ? <p className="rounded-lg bg-accent-soft p-4 text-sm font-semibold">Password reset successful. You can now sign in with your new password.</p> : <><div className="relative"><input type={showPassword ? "text" : "password"} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="New password" className="w-full rounded-lg border border-input p-3 pr-12"/><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Hide password" : "Show password"} className="absolute right-1 top-1 grid size-10 place-items-center rounded-md text-muted-foreground">{showPassword ? <EyeOff size={18}/> : <Eye size={18}/>}</button></div><button disabled={busy} onClick={() => void saveNewPassword()} className="rounded-lg bg-primary py-3 font-bold text-primary-foreground disabled:opacity-50">{busy ? "Saving..." : "Save new password"}</button></>}</div> : <>
         <p className="mt-2 text-muted-foreground">
-          Choose the type of partner account you want to create.
+          Choose the type of team you represent. You can always sign in with the same secure account.
         </p>
         <div className="mt-7 grid gap-4 sm:grid-cols-2">
           <button
             onClick={() => setKind("Organization")}
-            className="rounded-2xl border border-border p-6 text-left transition hover:border-primary hover:shadow-lift"
+            className="auth-choice rounded-2xl border border-border p-5 text-left"
           >
-            <Users className="text-primary" size={26} />
-            <h2 className="mt-5 text-xl font-bold">Organization</h2>
+            <span className="auth-choice-icon"><Users size={22} /></span>
+            <h2 className="mt-4 text-xl font-bold">Organization</h2>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
               Register a response team that contributes skilled people, expertise, and resources.
             </p>
-            <span className="mt-5 inline-block text-sm font-bold text-primary">
-              Register organization →
+            <span className="auth-choice-action mt-5 inline-flex items-center gap-2 text-sm font-bold text-primary">
+              Register organization <ArrowRight size={16} />
             </span>
           </button>
           <button
             onClick={() => setKind("NGO")}
-            className="rounded-2xl border border-border p-6 text-left transition hover:border-primary hover:shadow-lift"
+            className="auth-choice rounded-2xl border border-border p-5 text-left"
           >
-            <ShieldCheck className="text-accent" size={26} />
-            <h2 className="mt-5 text-xl font-bold">NGO</h2>
+            <span className="auth-choice-icon"><ShieldCheck size={22} /></span>
+            <h2 className="mt-4 text-xl font-bold">NGO</h2>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
               Register a non-profit team to contribute expertise and community resources.
             </p>
-            <span className="mt-5 inline-block text-sm font-bold text-primary">Register NGO →</span>
+            <span className="auth-choice-action mt-5 inline-flex items-center gap-2 text-sm font-bold text-primary">Register NGO <ArrowRight size={16} /></span>
           </button>
         </div>
-        <div className="mt-8 border-t border-border pt-6 text-center">
+        <div className="auth-login-section mt-8 border-t border-border pt-6 text-center">
           <button
             onClick={() => {
               setSignIn(!signIn);
               setError("");
             }}
-            className="text-sm font-bold text-primary"
+            className="auth-login-toggle text-sm font-bold text-primary"
           >
             Already registered? Sign in securely
           </button>
           {signIn && (
-            <div className="mx-auto mt-4 grid max-w-md gap-3 text-left">
+            <div className="auth-login-form mx-auto mt-5 grid max-w-md gap-4 text-left">
               <input
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="Official email ID"
-                className="rounded-lg border border-input p-3"
+                className="rounded-xl border border-input p-3"
               />
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Password"
-                className="rounded-lg border border-input p-3"
-              />
+              <div className="relative">
+                <input type={showPassword ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" className="w-full rounded-xl border border-input p-3 pr-12" />
+                <button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Hide password" : "Show password"} className="absolute right-1 top-1 grid size-10 place-items-center rounded-lg text-muted-foreground">{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button>
+              </div>
+              <button type="button" onClick={() => { setForgotPassword(true); setResetSent(false); setError(""); }} className="justify-self-start text-sm font-bold text-primary">Forgot Password?</button>
               {error && <p className="text-sm text-destructive">{error}</p>}
               <button
                 disabled={busy || !email || !password}
                 onClick={() => void login()}
-                className="rounded-lg bg-primary py-3 font-bold text-primary-foreground disabled:opacity-50"
+                className="auth-submit rounded-xl bg-primary py-3 font-bold text-primary-foreground disabled:opacity-50"
               >
-                {busy ? "Signing in…" : "Sign in"}
+                {busy ? "Signing in..." : "Sign in"}
               </button>
+              {forgotPassword && <div className="auth-reset rounded-xl border border-primary/20 bg-primary-soft p-4"><p className="font-bold">Reset your password</p>{resetSent ? <p className="mt-1 text-sm text-muted-foreground">If this registered email exists, a secure reset link has been sent.</p> : <><p className="mt-1 text-sm text-muted-foreground">We will send a secure, single-use reset link. Requests are limited to four per cooldown window.</p><button disabled={busy || !email} onClick={() => void requestReset()} className="mt-3 rounded-xl bg-primary px-4 py-2 text-sm font-bold text-primary-foreground disabled:opacity-50">{busy ? "Sending..." : "Send reset link"}</button></>}</div>}
             </div>
           )}
+        </div></>}
         </div>
       </div>
       {kind && <PartnerRegistration kind={kind} close={() => setKind(null)} complete={complete} />}
@@ -696,7 +801,7 @@ function PartnerRegistration({
     [busy, setBusy] = useState(false);
   const getGps = () => {
     setError("");
-    setInfo("Requesting location permission…");
+    setInfo("Requesting location permission...");
     if (!navigator.geolocation) {
       setInfo("");
       setError("GPS is not supported on this device. Enter coordinates manually.");
@@ -739,7 +844,7 @@ function PartnerRegistration({
       lng < -180 ||
       lng > 180
     )
-      return setError("Enter valid coordinates: latitude −90 to 90 and longitude −180 to 180.");
+      return setError("Enter valid coordinates: latitude -90 to 90 and longitude -180 to 180.");
     if (!supabase) return;
     setBusy(true);
     setError("");
@@ -925,7 +1030,7 @@ function PartnerRegistration({
             onClick={() => void register()}
             className="rounded-lg bg-primary py-3 font-bold text-primary-foreground disabled:opacity-50"
           >
-            {busy ? "Registering…" : `Register ${noun}`}
+            {busy ? "Registering..." : `Register ${noun}`}
           </button>
         </div>
       </div>
@@ -960,7 +1065,6 @@ function Report({
     [nearProblem, setNearProblem] = useState<"yes" | "no" | "">(""),
     [voiceTranscript, setVoiceTranscript] = useState(""),
     [voiceRecording, setVoiceRecording] = useState<"title" | "description" | null>(null),
-    [voiceTranslating, setVoiceTranslating] = useState(false),
     [voiceError, setVoiceError] = useState(""),
     [reviewing, setReviewing] = useState(false),
     [district, setDistrict] = useState(""),
@@ -986,7 +1090,17 @@ function Report({
     [consentMedia, setConsentMedia] = useState(false),
     [consentAi, setConsentAi] = useState(false),
     [mediaError, setMediaError] = useState("");
-  const speechRecognition = useRef<any>(null);
+  const voiceSession = useRef<{
+    socket: WebSocket;
+    stream: MediaStream;
+    source: MediaStreamAudioSourceNode;
+    processor: ScriptProcessorNode;
+    gain: GainNode;
+    context: AudioContext;
+  } | null>(null);
+  const voiceCommittedText = useRef("");
+  const voicePartialText = useRef("");
+  const voiceBaseText = useRef("");
 
   const nearby = challenges
     .filter((challenge) => latitude != null && longitude != null && challenge.public_latitude != null && challenge.public_longitude != null)
@@ -1012,92 +1126,112 @@ function Report({
       },
       () => {
         setLocationLabel("");
-        setError("Location permission was denied. Choose ‘No, I am elsewhere’ to enter the problem location manually.");
+        setError("Location permission was denied. Choose 'No, I am elsewhere' to enter the problem location manually.");
       },
       { enableHighAccuracy: true, timeout: 12000 },
     );
   };
-  const translateToEnglish = async (text: string) => {
-    if (speechLanguage.toLowerCase().startsWith("en-")) return text;
-
-    // Chrome's on-device Translation API is used when it is available. It keeps
-    // dictated report text on the device instead of sending it to a third party.
-    const Translator = (window as any).Translator;
-    if (Translator) {
-      const availability = await Translator.availability?.({ sourceLanguage: speechLanguage, targetLanguage: "en" });
-      if (availability === "available" || availability === "downloadable") {
-        const translator = await Translator.create({ sourceLanguage: speechLanguage, targetLanguage: "en" });
-        return await translator.translate(text);
-      }
-    }
-
-    // Fallback for browsers without the on-device API. The browser translation
-    // endpoint detects the spoken language and returns English text.
-    const response = await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=${encodeURIComponent(text)}`);
-    if (!response.ok) throw new Error("translation-failed");
-    const data = await response.json();
-    const translated = data?.[0]?.map((part: unknown[]) => part?.[0]).join("").trim();
-    if (!translated) throw new Error("translation-failed");
-    return translated;
+  const stopVoiceResources = () => {
+    const session = voiceSession.current;
+    if (!session) return;
+    session.processor.disconnect();
+    session.source.disconnect();
+    session.gain.disconnect();
+    session.stream.getTracks().forEach((track) => track.stop());
+    void session.context.close();
+    voiceSession.current = null;
+  };
+  const updateLiveTranscript = (field: "title" | "description") => {
+    const transcript = [voiceCommittedText.current, voicePartialText.current].filter(Boolean).join(" ").trim();
+    const fullText = [voiceBaseText.current, transcript].filter(Boolean).join(voiceBaseText.current && transcript ? " " : "");
+    setVoiceTranscript(transcript);
+    (field === "title" ? setTitle : setDescription)(fullText);
   };
 
   const startVoiceTranscription = async (field: "title" | "description") => {
     setVoiceError("");
     setError("");
-    const Recognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!Recognition) {
-      setVoiceError("Speech-to-text is unavailable in this browser. Use the latest Chrome or Edge over HTTPS, then allow microphone access.");
-      return;
-    }
     if (!window.isSecureContext) {
       setVoiceError("Microphone access requires a secure (HTTPS) connection. Open the deployed HTTPS site or use localhost.");
       return;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((track) => track.stop());
-    } catch (cause: any) {
-      setVoiceError(cause?.name === "NotAllowedError" ? "Microphone permission was blocked. Allow it in your browser site settings, then try again." : "We could not access a microphone on this device. Check that it is connected and available.");
-      return;
-    }
-    const recognition = new Recognition();
-    speechRecognition.current = recognition;
-    recognition.continuous = false;
-    recognition.interimResults = true;
-    recognition.lang = speechLanguage;
-    recognition.onresult = async (event: any) => {
-      const transcript = Array.from(event.results as any)
-        .filter((result: any) => result.isFinal)
-        .map((result: any) => result[0].transcript)
-        .join(" ")
-        .trim();
-      if (!transcript) return;
-      setVoiceTranscript(transcript);
-      setVoiceTranslating(true);
-      try {
-        const englishText = await translateToEnglish(transcript);
-        const updateField = field === "title" ? setTitle : setDescription;
-        updateField((current) => current.trim() ? `${current.trim()} ${englishText}` : englishText);
-      } catch {
-        setVoiceError("We heard your speech, but could not translate it to English. Check your internet connection and try again.");
-      } finally {
-        setVoiceTranslating(false);
-      }
-    };
-    recognition.onerror = (event: any) => {
-      const messages: Record<string, string> = {
-        "not-allowed": "Microphone permission was blocked. Allow it in browser site settings, then try again.",
-        "no-speech": "No speech was detected. Speak after pressing record, then try again.",
-        "audio-capture": "No microphone was detected. Connect or enable a microphone and retry.",
-        network: "Speech recognition needs an internet connection. Check your connection and retry.",
+      const { token } = await createElevenLabsScribeToken();
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextClass) throw new Error("This browser does not support the audio processing needed for live transcription.");
+      const context = new AudioContextClass();
+      await context.resume();
+      const source = context.createMediaStreamSource(stream);
+      const processor = context.createScriptProcessor(4096, 1, 1);
+      const gain = context.createGain();
+      gain.gain.value = 0;
+      const languageCode = speechLanguage.split("-")[0] || "en";
+      const socket = new WebSocket(`wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v2_realtime&language_code=${encodeURIComponent(languageCode)}&token=${encodeURIComponent(token)}`);
+      voiceBaseText.current = (field === "title" ? title : description).trim();
+      voiceCommittedText.current = "";
+      voicePartialText.current = "";
+      voiceSession.current = { socket, stream, source, processor, gain, context };
+      setVoiceRecording(field);
+
+      socket.onopen = () => {
+        source.connect(processor);
+        processor.connect(gain);
+        gain.connect(context.destination);
+        processor.onaudioprocess = (event) => {
+          if (socket.readyState !== WebSocket.OPEN) return;
+          const input = event.inputBuffer.getChannelData(0);
+          const outputLength = Math.floor(input.length * 16000 / context.sampleRate);
+          const pcm = new Int16Array(outputLength);
+          for (let index = 0; index < outputLength; index += 1) {
+            const sample = Math.max(-1, Math.min(1, input[Math.floor(index * context.sampleRate / 16000)] ?? 0));
+            pcm[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+          }
+          const bytes = new Uint8Array(pcm.buffer);
+          let binary = "";
+          bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+          socket.send(JSON.stringify({ message_type: "input_audio_chunk", audio_base_64: btoa(binary) }));
+        };
       };
-      setVoiceError(messages[event.error] ?? "Voice transcription could not be completed. Please try again or type your report.");
-    };
-    recognition.onend = () => { setVoiceRecording(null); speechRecognition.current = null; };
-    setVoiceRecording(field);
-    try { recognition.start(); } catch { setVoiceRecording(null); setVoiceError("Speech recognition is already starting. Please wait a moment and try again."); }
+      socket.onmessage = (event) => {
+        const message = JSON.parse(event.data) as { message_type?: string; text?: string; error?: string };
+        if (message.message_type === "partial_transcript") {
+          voicePartialText.current = message.text?.trim() ?? "";
+          updateLiveTranscript(field);
+        } else if (message.message_type === "committed_transcript") {
+          voiceCommittedText.current = [voiceCommittedText.current, message.text?.trim()].filter(Boolean).join(" ");
+          voicePartialText.current = "";
+          updateLiveTranscript(field);
+        } else if (message.message_type === "rate_limited" || message.message_type === "error") {
+          setVoiceError(message.error || "ElevenLabs could not transcribe this recording. Please try again.");
+        }
+      };
+      socket.onerror = () => setVoiceError("The live transcription connection failed. Check your connection and try again.");
+      socket.onclose = () => {
+        stopVoiceResources();
+        setVoiceRecording(null);
+      };
+    } catch (cause: any) {
+      stopVoiceResources();
+      setVoiceRecording(null);
+      setVoiceError(cause?.name === "NotAllowedError" ? "Microphone permission was blocked. Allow it in your browser site settings, then try again." : cause?.message || "We could not start live transcription. Please try again.");
+    }
   };
-  const stopVoiceTranscription = () => speechRecognition.current?.stop();
+  const stopVoiceTranscription = () => {
+    const session = voiceSession.current;
+    if (!session) return;
+    session.processor.disconnect();
+    session.source.disconnect();
+    session.stream.getTracks().forEach((track) => track.stop());
+    if (session.socket.readyState === WebSocket.OPEN) {
+      session.socket.send(JSON.stringify({ message_type: "input_audio_chunk", audio_base_64: "", commit: true }));
+      window.setTimeout(() => session.socket.close(), 650);
+    } else {
+      stopVoiceResources();
+      setVoiceRecording(null);
+    }
+  };
+  useEffect(() => () => stopVoiceResources(), []);
   const findDuplicates = async () => {
     if (!supabase) return [] as { challenge_id: string; public_id: string; title: string; duplicate_score: number }[];
     const duplicateArgs = {
@@ -1130,7 +1264,7 @@ function Report({
     if (!nearProblem) return setError("Please select whether you are currently near the problem location.");
     if (!title.trim() || description.trim().length < 10) return setError("Enter a problem title and a description of at least 10 characters.");
     if (!category) return setError("Select the category that best describes this problem.");
-    if (nearProblem === "yes" && (latitude == null || longitude == null)) return setError("We need your GPS location. Retry GPS, or choose ‘No, I am elsewhere’ to enter it manually.");
+    if (nearProblem === "yes" && (latitude == null || longitude == null)) return setError("We need your GPS location. Retry GPS, or choose 'No, I am elsewhere' to enter it manually.");
     if (nearProblem === "no" && (!district.trim() || !block.trim() || !locality.trim())) return setError("District, Block / Mandal, and Village / City are required when entering the location manually.");
     if (nearProblem === "yes" && !consentLocation) return setError("Confirm consent before sharing your exact GPS location with authorised responders.");
     setDuplicateDecision(false);
@@ -1257,14 +1391,14 @@ function Report({
           }}
           className="text-sm font-bold text-muted-foreground"
         >
-          ← Back
+          Back
         </button>
         <span className="rounded-full bg-accent-soft px-3 py-1 text-xs font-bold text-accent">
-          REPORT SAVED — NO ACCOUNT NEEDED
+          REPORT SAVED - NO ACCOUNT NEEDED
         </span>
         <h1 className="mt-5 text-3xl font-bold">Your Problem ID is ready</h1>
         <p className="mt-2 rounded-lg bg-primary-soft p-3 text-sm font-bold text-primary">
-          Problem ID: {publicId ?? "Generating…"}. Keep this ID to track your report.
+          Problem ID: {publicId ?? "Generating..."}. Keep this ID to track your report.
         </p>
         <div className="mt-3 rounded-lg border border-border bg-surface p-3 text-sm">
           <b>Tracking link</b>
@@ -1274,7 +1408,7 @@ function Report({
           Attach photos, videos, or audio recordings to strengthen your report and help verify the
           problem.
         </p>
-        {supportSuggestions.length > 0 && <section className="card-surface mt-5 p-5"><h2 className="font-bold">Verified support that may help</h2><p className="mt-1 text-sm text-muted-foreground">Matched to this report’s category or district. Confirm eligibility and documents with the provider.</p><div className="mt-3 space-y-2">{supportSuggestions.map((item) => <div key={item.id} className="rounded-lg bg-surface p-3 text-sm"><b>{item.title}</b><p className="mt-1 text-xs text-muted-foreground">{item.support_type.replaceAll("_", " ")}</p>{item.official_url && <a href={item.official_url} target="_blank" rel="noreferrer" className="mt-1 inline-block font-bold text-primary">Official application link</a>}{item.contact_information && <p className="mt-1">{item.contact_information}</p>}</div>)}</div></section>}
+        {supportSuggestions.length > 0 && <section className="card-surface mt-5 p-5"><h2 className="font-bold">Verified support that may help</h2><p className="mt-1 text-sm text-muted-foreground">Matched to this report's category or district. Confirm eligibility and documents with the provider.</p><div className="mt-3 space-y-2">{supportSuggestions.map((item) => <div key={item.id} className="rounded-lg bg-surface p-3 text-sm"><b>{item.title}</b><p className="mt-1 text-xs text-muted-foreground">{item.support_type.replaceAll("_", " ")}</p>{item.official_url && <a href={item.official_url} target="_blank" rel="noreferrer" className="mt-1 inline-block font-bold text-primary">Official application link</a>}{item.contact_information && <p className="mt-1">{item.contact_information}</p>}</div>)}</div></section>}
         <div className="card-surface mt-7 p-6">
           <MediaUpload
             reportId={reportId}
@@ -1301,7 +1435,7 @@ function Report({
   return (
     <section className="container-page max-w-3xl py-14">
       <button onClick={() => go("home")} className="text-sm font-bold text-muted-foreground">
-        ← Back
+        Back
       </button>
       <span className="rounded-full bg-accent-soft px-3 py-1 text-xs font-bold text-accent">
         NO SIGN-IN REQUIRED
@@ -1321,7 +1455,7 @@ function Report({
             placeholder="Problem title *"
             className="w-full rounded-lg border border-input p-3 pr-14"
           />
-          <button type="button" onClick={() => voiceRecording === "title" ? stopVoiceTranscription() : startVoiceTranscription("title")} disabled={voiceRecording === "description" || voiceTranslating} aria-label={voiceRecording === "title" ? "Stop dictating problem title" : "Dictate problem title"} title={voiceRecording === "title" ? "Stop listening" : "Dictate title"} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-2 text-primary hover:bg-primary-soft disabled:opacity-50"><Mic size={19} className={voiceRecording === "title" ? "animate-pulse" : ""} /></button>
+          <button type="button" onClick={() => voiceRecording === "title" ? stopVoiceTranscription() : startVoiceTranscription("title")} disabled={voiceRecording === "description"} aria-label={voiceRecording === "title" ? "Stop dictating problem title" : "Dictate problem title"} title={voiceRecording === "title" ? "Stop listening" : "Start listening"} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-2 text-primary hover:bg-primary-soft disabled:opacity-50"><Mic size={19} className={voiceRecording === "title" ? "animate-pulse" : ""} /></button>
         </div>
         <div className="relative mt-3">
           <label className="sr-only" htmlFor="problem-description">Problem description</label>
@@ -1332,9 +1466,9 @@ function Report({
             placeholder="What is happening? Who is affected?"
             className="min-h-36 w-full rounded-lg border border-input p-3 pr-14"
           />
-          <button type="button" onClick={() => voiceRecording === "description" ? stopVoiceTranscription() : startVoiceTranscription("description")} disabled={voiceRecording === "title" || voiceTranslating} aria-label={voiceRecording === "description" ? "Stop dictating problem description" : "Dictate problem description"} title={voiceRecording === "description" ? "Stop listening" : "Dictate description"} className="absolute right-2 top-3 rounded-full p-2 text-primary hover:bg-primary-soft disabled:opacity-50"><Mic size={19} className={voiceRecording === "description" ? "animate-pulse" : ""} /></button>
+          <button type="button" onClick={() => voiceRecording === "description" ? stopVoiceTranscription() : startVoiceTranscription("description")} disabled={voiceRecording === "title"} aria-label={voiceRecording === "description" ? "Stop dictating problem description" : "Dictate problem description"} title={voiceRecording === "description" ? "Stop listening" : "Start listening"} className="absolute right-2 top-3 rounded-full p-2 text-primary hover:bg-primary-soft disabled:opacity-50"><Mic size={19} className={voiceRecording === "description" ? "animate-pulse" : ""} /></button>
         </div>
-        {(voiceRecording || voiceTranslating || voiceError) && <div className="mt-3 rounded-lg bg-primary-soft/40 p-3 text-sm"><p className="font-medium text-primary">{voiceRecording ? `Listening for the problem ${voiceRecording} in your selected language…` : voiceTranslating ? "Translating your dictated words into English…" : null}</p>{voiceError && <p className="text-destructive">{voiceError}</p>}<p className="mt-1 text-xs text-muted-foreground">Dictate in your selected language. English translation is added to the selected field; review it before submitting.</p></div>}
+        {(voiceRecording || voiceError) && <div className="mt-3 rounded-lg bg-primary-soft/40 p-3 text-sm"><p className="font-medium text-primary">{voiceRecording ? `Listening for the problem ${voiceRecording}. Live transcription appears as you speak; click the microphone again to stop listening.` : null}</p>{voiceError && <p className="text-destructive">{voiceError}</p>}<p className="mt-1 text-xs text-muted-foreground">ElevenLabs transcribes in your selected language. Review the live transcript before submitting.</p></div>}
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <label className="text-sm font-bold">Category
             <select value={category} onChange={(event) => setCategory(event.target.value)} className="mt-1 w-full rounded-lg border border-input bg-background p-3 font-normal">
@@ -1362,7 +1496,7 @@ function Report({
               </label>
             ))}
           </div>
-          {nearProblem === "yes" && <div className="mt-3 text-sm"><button type="button" onClick={getProblemGps} className="font-bold text-primary"><LocateFixed className="mr-1 inline" size={16} /> Get / retry GPS location</button>{latitude != null && longitude != null && <p className="mt-2 font-mono text-xs">Latitude: {latitude.toFixed(6)} · Longitude: {longitude.toFixed(6)}</p>}</div>}
+          {nearProblem === "yes" && <div className="mt-3 text-sm"><button type="button" onClick={getProblemGps} className="font-bold text-primary"><LocateFixed className="mr-1 inline" size={16} /> Get / retry GPS location</button>{latitude != null && longitude != null && <p className="mt-2 font-mono text-xs">Latitude: {latitude.toFixed(6)} | Longitude: {longitude.toFixed(6)}</p>}</div>}
         </div>
         <div className="mt-3 rounded-lg bg-surface p-3 text-xs text-muted-foreground">
           <label className="flex items-start gap-2"><input type="checkbox" checked={consentLocation} onChange={(event) => setConsentLocation(event.target.checked)} /> I consent to authorised verifiers and assigned partners using my exact location. Public discovery uses an approximate location only.</label>
@@ -1425,13 +1559,13 @@ function Report({
                     <b className="text-sm">{challenge.title}</b>
                     <p className="mt-1 text-xs text-muted-foreground">
                       <MapPin className="mr-1 inline" size={12} />
-                      {distance.toFixed(1)} km away · {challenge.stage.replaceAll("_", " ")}
+                      {distance.toFixed(1)} km away | {challenge.stage.replaceAll("_", " ")}
                     </p>
                   </div>
                   <button
                     disabled={supportedIds.includes(challenge.id)}
                     onClick={() =>
-                      void repost(challenge, "Also affected — submitted from report flow.")
+                      void repost(challenge, "Also affected - submitted from report flow.")
                     }
                     className="rounded-lg border border-primary px-3 py-2 text-xs font-bold text-primary disabled:opacity-50"
                   >
@@ -1450,16 +1584,16 @@ function Report({
           <div className="mt-5 rounded-xl border border-primary bg-primary-soft/40 p-5">
             <h2 className="text-lg font-bold">Review Report</h2>
             <div className="mt-3 space-y-2 text-sm">
-              <p><b>Problem:</b> {title} — {description}</p>
-              <p><b>Category:</b> {category} · <b>Severity:</b> {severity}/4 · <b>Urgency:</b> {urgency}/4</p>
+              <p><b>Problem:</b> {title} - {description}</p>
+              <p><b>Category:</b> {category} | <b>Severity:</b> {severity}/4 | <b>Urgency:</b> {urgency}/4</p>
               {voiceTranscript && <p><b>Voice transcription:</b> {voiceTranscript}</p>}
               <p><b>Near the problem:</b> {nearProblem === "yes" ? "Yes" : "No"}</p>
               {nearProblem === "yes" && latitude != null && <p><b>Reporter GPS:</b> {latitude.toFixed(6)}, {longitude?.toFixed(6)}</p>}
               <p><b>Problem location:</b> {district}, {block}, {locality}</p>
               {supportingInfo && <p><b>Supporting information:</b> {supportingInfo}</p>}
             </div>
-            {duplicateMatches.length > 0 && !duplicateDecision && <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm"><b>A problem with similar problem is already reported.</b><p className="mt-1">Choose repost if this is the same issue. It adds your support to the existing problem without creating a duplicate.</p>{duplicateMatches.map((item) => <div key={item.challenge_id} className="mt-3 flex flex-wrap items-center justify-between gap-2"><p><b>{item.public_id}</b> · {item.title} ({Math.round(item.duplicate_score)}% match)</p><button type="button" onClick={() => { const match = challenges.find((challenge) => challenge.id === item.challenge_id); if (match) void repost(match); }} className="rounded-lg border border-primary px-3 py-2 text-xs font-bold text-primary">This is the same problem — repost</button></div>)}<button type="button" onClick={() => setDuplicateDecision(true)} className="mt-3 rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground">These are different — continue reporting</button></div>}
-            {(duplicateMatches.length === 0 || duplicateDecision) && <button onClick={() => void submit()} disabled={busy} className="mt-5 rounded-lg bg-primary px-5 py-3 font-bold text-primary-foreground disabled:opacity-50">{busy ? "Submitting…" : "Submit Report"}</button>}
+            {duplicateMatches.length > 0 && !duplicateDecision && <div className="mt-4 rounded-lg border border-[#DDEBE2] bg-[#F6FBF8] p-3 text-sm"><b>A problem with similar problem is already reported.</b><p className="mt-1">Choose repost if this is the same issue. It adds your support to the existing problem without creating a duplicate.</p>{duplicateMatches.map((item) => <div key={item.challenge_id} className="mt-3 flex flex-wrap items-center justify-between gap-2"><p><b>{item.public_id}</b> | {item.title} ({Math.round(item.duplicate_score)}% match)</p><button type="button" onClick={() => { const match = challenges.find((challenge) => challenge.id === item.challenge_id); if (match) void repost(match); }} className="rounded-lg border border-primary px-3 py-2 text-xs font-bold text-primary">This is the same problem - repost</button></div>)}<button type="button" onClick={() => setDuplicateDecision(true)} className="mt-3 rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground">These are different - continue reporting</button></div>}
+            {(duplicateMatches.length === 0 || duplicateDecision) && <button onClick={() => void submit()} disabled={busy} className="mt-5 rounded-lg bg-primary px-5 py-3 font-bold text-primary-foreground disabled:opacity-50">{busy ? "Submitting..." : "Submit Report"}</button>}
             <button onClick={() => setReviewing(false)} className="ml-3 text-sm font-bold text-primary">Edit report</button>
           </div>
         )}
@@ -1469,7 +1603,7 @@ function Report({
           onClick={review}
           className="mt-6 rounded-lg bg-primary px-5 py-3 font-bold text-primary-foreground disabled:opacity-50"
         >
-          {busy ? "Saving…" : "Submit for review"}
+          {busy ? "Saving..." : "Submit for review"}
         </button>
       </div>
     </section>
@@ -1487,12 +1621,66 @@ function ProblemProgressTimeline({ challenge, compact = false }: { challenge: Ch
     ["Task Accepted", accepted],
     ["Skilled Participants Assigned", participants],
     ["Work in Progress", working],
-    [status === "unable_to_resolve" ? "Couldn't Solve — reassignment" : "Solved / Resolution", finished],
+    [status === "unable_to_resolve" ? "Couldn't Solve - reassignment" : "Solved / Resolution", finished],
   ] as const;
   return <section className={compact ? "mt-4" : "mt-5 rounded-xl border border-border bg-surface p-4"} aria-label="Problem progress timeline"><p className="text-sm font-bold">Progress timeline</p><ol className={`mt-3 ${compact ? "flex flex-wrap gap-2" : "space-y-3"}`}>{steps.map(([label, complete], index) => <li key={label} className={`flex items-center gap-3 text-sm ${complete ? "text-foreground" : "text-muted-foreground"}`}><span className={`grid size-6 shrink-0 place-items-center rounded-full text-xs font-bold ${complete ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground"}`}>{index + 1}</span><span className={complete ? "font-semibold" : ""}>{label}</span></li>)}</ol>{!assigned && <p className="mt-3 text-xs text-muted-foreground">Awaiting verification and partner assignment.</p>}</section>;
 }
 
-function Explorer({
+function Explorer({ challenges, load, go }: { challenges: Challenge[]; load: (q: string) => void; go: (x: Screen) => void }) {
+  const [query, setQuery] = useState("");
+  const [category, setCategory] = useState("all");
+  const [state, setState] = useState("all");
+  const [sort, setSort] = useState("priority");
+  const [devicePosition, setDevicePosition] = useState<{ lat: number; lng: number } | null>(null);
+  const [locationError, setLocationError] = useState("");
+  const [selected, setSelected] = useState<Challenge | null>(null);
+  const [mediaIndex, setMediaIndex] = useState(0);
+  const categories = [...new Set(challenges.map((item) => item.domain).filter(Boolean))].sort();
+  const visibleChallenges = challenges
+    .filter((item) => category === "all" || item.domain === category)
+    .filter((item) => state === "all" || item.stage === state || item.assignment_status === state)
+    .sort((a, b) => sort === "newest" ? +new Date(b.created_at) - +new Date(a.created_at) : sort === "oldest" ? +new Date(a.created_at) - +new Date(b.created_at) : b.priority_score - a.priority_score);
+  const mediaFor = (challenge: Challenge) => challenge.media?.length ? challenge.media : challenge.preview_image_path ? [{ path: challenge.preview_image_path, type: "image/jpeg" }] : [];
+  const mediaUrl = (path: string) => supabase?.storage.from("challenge-previews").getPublicUrl(path).data.publicUrl ?? "";
+  const priorityLabel = (challenge: Challenge) => challenge.priority_level ?? (challenge.priority_score >= 75 ? "HIGH" : challenge.priority_score >= 50 ? "MEDIUM" : "LOW");
+  const locateDevice = () => {
+    if (!navigator.geolocation) return setLocationError("Location is not supported on this device.");
+    setLocationError("");
+    navigator.geolocation.getCurrentPosition(
+      (position) => setDevicePosition({ lat: position.coords.latitude, lng: position.coords.longitude }),
+      () => setLocationError("Location access was not granted. Problem markers are still available."),
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 },
+    );
+  };
+  const openProblem = (challenge: Challenge) => { setMediaIndex(0); setSelected(challenge); };
+  return <section className="container-page py-8 sm:py-12">
+    <div className="flex flex-wrap items-start justify-between gap-4">
+      <div><h1 className="text-3xl font-bold">Explore Problems</h1><p className="mt-1 text-sm text-muted-foreground">Discover real-world challenges and be a part of the solution.</p></div>
+      <button onClick={() => go("report")} className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground"><Plus size={16} /> Report a Problem</button>
+    </div>
+    <div className="mt-6 grid gap-3 md:grid-cols-[minmax(0,1.5fr)_minmax(10rem,.9fr)_minmax(10rem,.9fr)_minmax(10rem,.9fr)]">
+      <label className="relative"><Search className="absolute left-3 top-3 text-muted-foreground" size={17} /><input value={query} onChange={(event) => { setQuery(event.target.value); void load(event.target.value); }} placeholder="Search problems..." className="w-full rounded-lg border border-input bg-card py-2.5 pl-10 pr-3 text-sm" /></label>
+      <select value={category} onChange={(event) => setCategory(event.target.value)} className="rounded-lg border border-input bg-card px-3 py-2.5 text-sm"><option value="all">All Categories</option>{categories.map((item) => <option key={item} value={item}>{item}</option>)}</select>
+      <select value={state} onChange={(event) => setState(event.target.value)} className="rounded-lg border border-input bg-card px-3 py-2.5 text-sm"><option value="all">All States</option><option value="reported">Reported</option><option value="matched">Matched</option><option value="in_progress">In progress</option><option value="impact">Resolved</option></select>
+      <select value={sort} onChange={(event) => setSort(event.target.value)} className="rounded-lg border border-input bg-card px-3 py-2.5 text-sm"><option value="priority">Sort by priority</option><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select>
+    </div>
+    <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      {visibleChallenges.map((challenge) => {
+        const thumbnail = mediaFor(challenge)[0];
+        const priority = priorityLabel(challenge);
+        return <button key={challenge.id} onClick={() => openProblem(challenge)} className="group overflow-hidden rounded-xl border border-border bg-card text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-card">
+          <div className="relative aspect-[1.8] bg-surface">{thumbnail ? thumbnail.type.startsWith("video/") ? <video src={mediaUrl(thumbnail.path)} muted preload="metadata" className="h-full w-full object-cover" /> : <img src={mediaUrl(thumbnail.path)} alt="" className="h-full w-full object-cover" loading="lazy" /> : <div className="grid h-full place-items-center text-muted-foreground"><ImageIcon size={28} /></div>}<span className={`absolute right-2 top-2 rounded-full px-2 py-1 text-[10px] font-bold text-white ${priority === "HIGH" || priority === "CRITICAL" ? "bg-destructive" : priority === "MEDIUM" ? "bg-[#d9902f]" : "bg-primary"}`}>{priority[0] + priority.slice(1).toLowerCase()} Priority</span></div>
+          <div className="p-3"><h2 className="line-clamp-2 font-bold leading-5 group-hover:text-primary">{challenge.title}</h2><p className="mt-2 flex items-center gap-1 text-xs text-muted-foreground"><MapPin size={13} /> {challenge.district}</p><div className="mt-3 flex items-center justify-between text-[11px] text-muted-foreground"><span className="inline-flex items-center gap-1"><BadgeCheck size={12} className="text-primary" /> {challenge.domain}</span><span>{new Date(challenge.created_at).toLocaleDateString()}</span></div></div>
+        </button>;
+      })}
+      {!visibleChallenges.length && <p className="card-surface col-span-full p-8 text-center text-muted-foreground">No problems match these filters.</p>}
+    </div>
+    <section className="mt-10 overflow-hidden rounded-xl border border-border bg-card"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-border p-4"><div><h2 className="font-bold">Problem map</h2><p className="mt-1 text-xs text-muted-foreground">Select a marker to view that problem&apos;s complete public details.</p></div><button onClick={locateDevice} className="inline-flex items-center gap-2 rounded-lg border border-primary px-3 py-2 text-xs font-bold text-primary"><LocateFixed size={15} /> {devicePosition ? "Location updated" : "Use my location"}</button></div><ProblemMap problems={visibleChallenges} devicePosition={devicePosition} onProblemSelect={(problem) => { const match = challenges.find((item) => item.id === problem.id); if (match) openProblem(match); }} />{locationError && <p className="px-4 py-3 text-sm text-destructive">{locationError}</p>}</section>
+    {selected && (() => { const media = mediaFor(selected); const activeMedia = media[mediaIndex]; return <div className="fixed inset-0 z-[2000] grid place-items-end bg-ink/50 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-label="Problem details"><article className="card-surface max-h-[92dvh] w-full max-w-4xl overflow-y-auto p-5 sm:p-7"><div className="flex items-start justify-between gap-4"><div><span className="rounded-full bg-primary-soft px-2 py-1 text-xs font-bold text-primary">{selected.public_id}</span><h2 className="mt-3 text-2xl font-bold">{selected.title}</h2></div><button onClick={() => setSelected(null)} className="grid size-10 shrink-0 place-items-center rounded-lg border border-border" aria-label="Close problem details"><X size={18} /></button></div><div className="mt-6 grid gap-6 lg:grid-cols-[1.1fr_.9fr]"><div>{activeMedia ? <div className="relative aspect-video overflow-hidden rounded-xl bg-black">{activeMedia.type.startsWith("video/") ? <video src={mediaUrl(activeMedia.path)} controls className="h-full w-full object-contain" /> : <img src={mediaUrl(activeMedia.path)} alt={`Evidence for ${selected.title}`} className="h-full w-full object-cover" />}{media.length > 1 && <div className="absolute inset-x-3 bottom-3 flex justify-between"><button onClick={() => setMediaIndex((index) => (index - 1 + media.length) % media.length)} className="rounded-full bg-black/65 p-2 text-white" aria-label="Previous media"><ChevronLeft size={18} /></button><button onClick={() => setMediaIndex((index) => (index + 1) % media.length)} className="rounded-full bg-black/65 p-2 text-white" aria-label="Next media"><ChevronRight size={18} /></button></div>}</div> : <div className="grid aspect-video place-items-center rounded-xl bg-surface text-sm text-muted-foreground">No public media submitted</div>}<h3 className="mt-5 font-bold">Problem details</h3><p className="mt-2 text-sm leading-6 text-muted-foreground">{selected.summary}</p><div className="mt-5 grid gap-3 text-sm sm:grid-cols-2"><p><b>Category</b><br />{selected.domain}</p><p><b>Location</b><br />{selected.district}</p><p><b>Reported</b><br />{new Date(selected.created_at).toLocaleDateString()}</p><p><b>People affected</b><br />{selected.affected_population ?? "Not reported"}</p><p><b>Verification</b><br />{selected.verification.replaceAll("_", " ")}</p><p><b>Community support</b><br />{selected.reports + selected.reposts} reports and reposts</p></div>{selected.comments?.length ? <section className="mt-5 border-t border-border pt-4"><h3 className="font-bold">Community updates</h3><div className="mt-3 space-y-2">{selected.comments.map((comment) => <p key={comment.id} className="rounded-lg bg-surface px-3 py-2 text-sm">{comment.note}</p>)}</div></section> : null}</div><aside><div className="rounded-xl bg-primary-soft/40 p-4"><p className="text-xs font-bold text-primary">CURRENT STATUS</p><p className="mt-1 font-bold capitalize">{(selected.assignment_status ?? selected.stage).replaceAll("_", " ")}</p><p className="mt-3 text-sm"><b>Priority:</b> {priorityLabel(selected)} ({selected.priority_score}/100)</p></div><ProblemProgressTimeline challenge={selected} /></aside></div></article></div>; })()}
+  </section>;
+}
+
+function ExplorerLegacy({
   challenges,
   load,
   supportedIds,
@@ -1511,7 +1699,8 @@ function Explorer({
     [repostNotes, setRepostNotes] = useState<Record<string, string>>({}),
     [expandedComments, setExpandedComments] = useState<Record<string, boolean>>({}),
     [devicePosition, setDevicePosition] = useState<{ lat: number; lng: number } | null>(null),
-    [locationError, setLocationError] = useState("");
+    [locationError, setLocationError] = useState(""),
+    [selectedMapChallenge, setSelectedMapChallenge] = useState<Challenge | null>(null);
   const locateDevice = () => {
     if (!navigator.geolocation) return setLocationError("Location is not supported on this device.");
     setLocationError("");
@@ -1544,9 +1733,9 @@ function Explorer({
       </p>
       <div className="mt-6 grid gap-4 lg:grid-cols-[1.1fr_.9fr]">
         <div className="overflow-hidden rounded-2xl border border-border bg-card">
-          <ProblemMap problems={challenges} devicePosition={devicePosition} />
+          <ProblemMap problems={challenges} devicePosition={devicePosition} onProblemSelect={(problem) => setSelectedMapChallenge(challenges.find((item) => item.id === problem.id) ?? null)} />
           <p className="border-t border-border px-4 py-3 text-xs text-muted-foreground">
-            {devicePosition ? "Blue marker: your current device location. It is never stored or shared." : "Enable location to show your current device marker."} Problem markers use their approved public map locations.
+            {devicePosition ? "Green marker: your current device location. It is never stored or shared." : "Enable location to show your current device marker."} Only community-verified and officially verified problems are pinned, using their stored public problem coordinates. Numbered pins group nearby problems; zoom in to inspect each one.
           </p>
         </div>
         <div className="card-surface p-5">
@@ -1672,7 +1861,7 @@ function Explorer({
                   <h2 className="mt-2 font-bold">{c.title}</h2>
                   <p className="mt-2 text-sm text-muted-foreground">
                     <MapPin className="inline" size={14} />
-                    {c.district} · {c.domain}
+                    {c.district} | {c.domain}
                   </p>
                   <div className="mt-4 flex gap-2 text-xs font-bold">
                     <span className="rounded-full bg-surface px-2 py-1">
@@ -1782,6 +1971,7 @@ function Explorer({
           })
         )}
       </div>
+      {selectedMapChallenge && <div className="fixed inset-0 z-[2000] grid place-items-end bg-ink/45 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-label="Problem details"><article className="card-surface max-h-[88dvh] w-full max-w-lg overflow-y-auto p-5 sm:p-6"><div className="flex items-start justify-between gap-4"><div><span className="rounded-full bg-primary-soft px-2 py-1 text-xs font-bold text-primary">{selectedMapChallenge.public_id}</span><h2 className="mt-3 text-xl font-bold">{selectedMapChallenge.title}</h2></div><button onClick={() => setSelectedMapChallenge(null)} className="grid size-10 shrink-0 place-items-center rounded-lg border border-border" aria-label="Close problem details"><X size={18}/></button></div><div className="mt-5 grid gap-3 text-sm sm:grid-cols-2"><p><b>Category</b><br/>{selectedMapChallenge.domain}</p><p><b>Location</b><br/>{selectedMapChallenge.district}</p><p><b>Date reported</b><br/>{new Date(selectedMapChallenge.created_at).toLocaleDateString()}</p><p><b>Current status</b><br/>{selectedMapChallenge.stage.replaceAll("_", " ")}</p><p><b>Supporting reports</b><br/>{selectedMapChallenge.reports + selectedMapChallenge.reposts}</p><p><b>Priority</b><br/>{selectedMapChallenge.priority_level ?? "Under review"}</p></div><p className="mt-5 rounded-lg bg-surface p-3 text-xs text-muted-foreground">Map locations are approximate public problem locations. Reporter identity and private evidence are protected.</p></article></div>}
     </section>
   );
 }
@@ -1890,7 +2080,7 @@ function OrganizationRegistration({
           onClick={() => void submit()}
           className="rounded-lg bg-primary px-5 py-3 font-bold text-primary-foreground disabled:opacity-50"
         >
-          {busy ? "Saving…" : "Save and open coordinator dashboard"}
+          {busy ? "Saving..." : "Save and open coordinator dashboard"}
         </button>
       </div>
     </section>
@@ -1903,7 +2093,7 @@ type OrganizationTaskStatus =
   | "Students Assigned"
   | "Work in Progress"
   | "Solved"
-  | "Couldn't Solve — Reassigned";
+  | "Couldn't Solve - Reassigned";
 type OrganizationTask = {
   id: string;
   title: string;
@@ -1935,8 +2125,8 @@ function OrganizationDashboardLegacy({
   const [reason, setReason] = useState("Insufficient skilled participants");
   const [remarks, setRemarks] = useState("");
   const [institutes, setInstitutes] = useState([
-    { name: "ABC University", count: 20, history: ["20 participants · Today"] },
-    { name: "XYZ Institute", count: 15, history: ["15 participants · Today"] },
+    { name: "ABC University", count: 20, history: ["20 participants | Today"] },
+    { name: "XYZ Institute", count: 15, history: ["15 participants | Today"] },
   ]);
   const [tasks, setTasks] = useState<OrganizationTask[]>([
     {
@@ -1982,12 +2172,12 @@ function OrganizationDashboardLegacy({
   const task = tasks.find((item) => item.id === selectedTask) ?? tasks[0]!;
   if (!user) return <Forbidden />;
   const statusTone: Record<OrganizationTaskStatus, string> = {
-    Pending: "bg-amber-100 text-amber-800",
-    Accepted: "bg-sky-100 text-sky-800",
-    "Students Assigned": "bg-violet-100 text-violet-800",
-    "Work in Progress": "bg-orange-100 text-orange-800",
-    Solved: "bg-emerald-100 text-emerald-800",
-    "Couldn't Solve — Reassigned": "bg-rose-100 text-rose-800",
+    Pending: "bg-[#F6FBF8] text-[#0B5D2A]",
+    Accepted: "bg-[#EAF7EF] text-[#0B5D2A]",
+    "Students Assigned": "bg-[#EAF7EF] text-[#0B5D2A]",
+    "Work in Progress": "bg-[#EAF7EF] text-[#0B5D2A]",
+    Solved: "bg-[#0B5D2A] text-white",
+    "Couldn't Solve - Reassigned": "bg-rose-100 text-rose-800",
   };
   const updateTask = (id: string, patch: Partial<OrganizationTask>) =>
     setTasks((items) => items.map((item) => (item.id === id ? { ...item, ...patch } : item)));
@@ -2004,7 +2194,7 @@ function OrganizationDashboardLegacy({
                 ...item,
                 count,
                 history: [
-                  `${count} participants · ${new Date().toLocaleString()}`,
+                  `${count} participants | ${new Date().toLocaleString()}`,
                   ...item.history,
                 ],
               }
@@ -2015,7 +2205,7 @@ function OrganizationDashboardLegacy({
         {
           name: instituteName.trim() || "New Institute",
           count,
-          history: [`${count} participants · ${new Date().toLocaleString()}`],
+          history: [`${count} participants | ${new Date().toLocaleString()}`],
         },
       ];
     });
@@ -2089,9 +2279,9 @@ function OrganizationDashboardLegacy({
           ? tasks.filter((item) => item.status.includes("Couldn't"))
           : tasks;
   return (
-    <div className="min-h-screen bg-surface">
-      <div className="mx-auto flex max-w-[1600px]">
-        <aside className="sticky top-0 hidden h-screen w-68 shrink-0 border-r border-border bg-card p-5 lg:block">
+    <div className="dashboard-shell min-h-screen bg-surface">
+      <div className="dashboard-frame mx-auto flex max-w-[1600px]">
+        <aside className="app-sidebar sticky top-0 hidden h-screen w-68 shrink-0 border-r border-border bg-card p-5 lg:block">
           <div className="flex items-center gap-3 px-2">
             <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground">
               <Building2 size={20} />
@@ -2133,9 +2323,9 @@ function OrganizationDashboardLegacy({
           </button>
         </aside>
         <nav className="fixed inset-x-0 bottom-0 z-30 flex gap-1 overflow-x-auto border-t border-border bg-card p-2 shadow-[0_-4px_16px_rgba(0,0,0,.08)] lg:hidden">
-          {nav.map((item) => <button key={item} onClick={() => setSection(item === plural ? "People" : item)} className={`shrink-0 rounded-lg px-3 py-2 text-xs font-bold ${section === (item === plural ? "People" : item) ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>{item}</button>)}
+          {nav.map((item) => <button key={item} onClick={() => setSection(item)} className={`shrink-0 rounded-lg px-3 py-2 text-xs font-bold ${section === item ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>{item}</button>)}
         </nav>
-        <main className="min-w-0 flex-1 p-4 pb-20 sm:p-7 lg:pb-7">
+        <main className="dashboard-main min-w-0 flex-1 p-4 pb-20 sm:p-7 lg:pb-7">
           <header className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <p className="text-sm font-medium text-primary">ORGANIZATION WORKSPACE</p>
@@ -2290,14 +2480,14 @@ function OrganizationDashboardLegacy({
                 onClick={() => setSection("Assigned Tasks")}
                 className="text-sm font-bold text-primary"
               >
-                ← Back to assigned tasks
+                Back to assigned tasks
               </button>
               <div className="mt-3 grid gap-6 xl:grid-cols-[1.2fr_.8fr]">
                 <article className="card-surface p-6">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <span className="text-xs font-bold text-primary">
-                        {task.id} · {task.category.toUpperCase()}
+                        {task.id} | {task.category.toUpperCase()}
                       </span>
                       <h2 className="mt-2 text-2xl font-bold">{task.title}</h2>
                     </div>
@@ -2369,15 +2559,15 @@ function OrganizationDashboardLegacy({
                           </button>
                           <button
                             onClick={() => setShowClose("solved")}
-                            className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white"
+                            className="rounded-lg bg-[#0B5D2A] px-4 py-2.5 text-sm font-bold text-white"
                           >
-                            ✓ Solved
+                            Solved
                           </button>
                           <button
                             onClick={() => setShowClose("failed")}
                             className="rounded-lg border border-destructive px-4 py-2.5 text-sm font-bold text-destructive"
                           >
-                            ✕ Couldn't Solve
+                            Couldn't Solve
                           </button>
                         </>
                       )}
@@ -2411,7 +2601,7 @@ function OrganizationDashboardLegacy({
                           <div
                             className={`grid size-6 shrink-0 place-items-center rounded-full text-xs font-bold ${active ? "bg-primary text-primary-foreground" : "bg-surface text-muted-foreground"}`}
                           >
-                            {active ? "✓" : index + 1}
+                            {active ? "Done" : index + 1}
                           </div>
                           <div>
                             <p className="text-sm font-semibold">{step}</p>
@@ -2439,7 +2629,7 @@ function OrganizationDashboardLegacy({
                           <div>
                             <p className="text-sm font-semibold">{student}</p>
                             <p className="text-xs text-muted-foreground">
-                              {i ? "Civil Engineering" : "Electrical Engineering"} · Available
+                              {i ? "Civil Engineering" : "Electrical Engineering"} | Available
                             </p>
                           </div>
                         </div>
@@ -2556,7 +2746,7 @@ function OrganizationDashboardLegacy({
         </Modal>
       )}
       {showAssign && (
-        <Modal title={`Assign students · ${task.id}`} close={() => setShowAssign(false)}>
+        <Modal title={`Assign students | ${task.id}`} close={() => setShowAssign(false)}>
           <p className="text-sm text-muted-foreground">
             Select available students from your university/institute pool.
           </p>
@@ -2573,11 +2763,11 @@ function OrganizationDashboardLegacy({
               <div className="flex-1">
                 <b className="text-sm">{student}</b>
                 <p className="text-xs text-muted-foreground">
-                  21A01A00{index + 1} · {index === 1 ? "Civil" : index === 2 ? "IT" : "Electrical"}{" "}
-                  · {index === 2 ? "XYZ Institute" : "ABC University"}
+                  21A01A00{index + 1} | {index === 1 ? "Civil" : index === 2 ? "IT" : "Electrical"}{" "}
+                  | {index === 2 ? "XYZ Institute" : "ABC University"}
                 </p>
               </div>
-              <span className="text-xs font-bold text-emerald-700">Available</span>
+              <span className="text-xs font-bold text-[#0B5D2A]">Available</span>
             </label>
           ))}
           <button
@@ -2631,9 +2821,9 @@ function OrganizationDashboardLegacy({
                 onClick={() => {
                   updateTask(task.id, { status: "Solved", remarks });
                   setShowClose(null);
-                  flash("Completed task submitted. Excel Report: Uploaded ✓");
+                  flash("Completed task submitted. Excel Report uploaded successfully.");
                 }}
-                className="mt-5 w-full rounded-lg bg-emerald-600 py-3 font-bold text-white"
+                className="mt-5 w-full rounded-lg bg-[#0B5D2A] py-3 font-bold text-white"
               >
                 Submit Completed Task
               </button>
@@ -2672,7 +2862,7 @@ function OrganizationDashboardLegacy({
               <button
                 onClick={() => {
                   updateTask(task.id, {
-                    status: "Couldn't Solve — Reassigned",
+                    status: "Couldn't Solve - Reassigned",
                     remarks: `${reason}. ${remarks}`,
                   });
                   setShowClose(null);
@@ -2698,13 +2888,13 @@ function DashboardStat({
   icon,
 }: {
   label: string;
-  value: number;
+  value: number | string;
   icon: React.ReactNode;
 }) {
   return (
-    <div className="card-surface p-4">
-      <div className="flex items-center justify-between text-primary">
-        {icon}
+    <div className="dashboard-stat card-surface p-4">
+      <div className="flex items-center justify-between">
+        <span className="dashboard-stat-icon">{icon}</span>
         <span className="text-2xl font-bold text-foreground">{value}</span>
       </div>
       <p className="mt-3 text-xs font-semibold text-muted-foreground">{label}</p>
@@ -2747,7 +2937,7 @@ function InstituteTable({
               <td className="px-5 py-4 font-semibold">{item.name}</td>
               <td className="px-5 py-4">{item.count}</td>
               <td className="px-5 py-4">
-                <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-bold text-emerald-800">
+                <span className="rounded-full bg-[#EAF7EF] px-2.5 py-1 text-xs font-bold text-[#0B5D2A]">
                   Available
                 </span>
               </td>
@@ -2881,7 +3071,7 @@ type PartnerTaskStatus =
   | "People Assigned"
   | "Work in Progress"
   | "Solved"
-  | "Couldn't Solve — Reassigned";
+  | "Couldn't Solve - Reassigned";
 type PartnerTask = {
   id: string;
   assignmentId?: string;
@@ -2897,6 +3087,7 @@ type PartnerTask = {
   taskIds?: string[];
   remarks?: string;
   acceptanceDeadline?: string | null;
+  assignedAt?: string;
 };
 
 function AcceptanceCountdown({ deadline }: { deadline: string | null | undefined }) {
@@ -2904,18 +3095,125 @@ function AcceptanceCountdown({ deadline }: { deadline: string | null | undefined
   useEffect(() => { const timer = window.setInterval(() => tick((value) => value + 1), 1000); return () => window.clearInterval(timer); }, []);
   if (!deadline) return null;
   const remaining = new Date(deadline).getTime() - Date.now();
-  if (remaining <= 0) return <span className="text-xs font-bold text-destructive">Acceptance deadline reached — reassignment is pending.</span>;
+  const exactDeadline = new Date(deadline).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  if (remaining <= 0) return <span className="text-xs font-bold text-destructive">Response deadline: {exactDeadline}. Reassignment is pending.</span>;
   const hours = Math.floor(remaining / 3_600_000), minutes = Math.floor((remaining % 3_600_000) / 60_000), seconds = Math.floor((remaining % 60_000) / 1000);
-  return <span className="text-xs font-bold text-amber-700"><Clock3 className="mr-1 inline" size={13} />Accept within {hours}h {minutes}m {seconds}s</span>;
+  return <span className="text-xs font-bold text-[#0B5D2A]"><Clock3 className="mr-1 inline" size={13} />Respond by {exactDeadline} | {hours}h {minutes}m {seconds}s remaining</span>;
 }
 
-function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: string) => void }) {
-  const isNgo = user?.user_metadata?.["organization_type"] === "NGO";
+function PartnerAnalytics({
+  tasks,
+  partnerName,
+  isNgo,
+}: {
+  tasks: PartnerTask[];
+  partnerName: string;
+  isNgo: boolean;
+}) {
+  const { metrics, months, assignedTotal, solved, unable, inProgress } = useMemo(() => {
+    const solved = tasks.filter((task) => task.status === "Solved").length;
+    const unable = tasks.filter((task) => task.status.includes("Couldn't")).length;
+    const inProgress = tasks.filter((task) => ["Accepted", "People Assigned", "Work in Progress"].includes(task.status)).length;
+    const now = new Date();
+    const monthBuckets = Array.from({ length: 6 }, (_, index) => {
+      const date = new Date(now.getFullYear(), now.getMonth() - (5 - index), 1);
+      return {
+        key: `${date.getFullYear()}-${date.getMonth()}`,
+        label: date.toLocaleDateString(undefined, { month: "short" }),
+        value: 0,
+      };
+    });
+    for (const task of tasks) {
+      if (!task.assignedAt) continue;
+      const assigned = new Date(task.assignedAt);
+      if (Number.isNaN(assigned.getTime())) continue;
+      const bucket = monthBuckets.find((month) => month.key === `${assigned.getFullYear()}-${assigned.getMonth()}`);
+      if (bucket && task.status === "Solved") bucket.value += 1;
+    }
+    return {
+      metrics: [
+        { label: "Problems solved", value: solved, color: "bg-[#0B5D2A]" },
+        { label: "Could not be solved", value: unable, color: "bg-rose-500" },
+        { label: "Currently in progress", value: inProgress, color: "bg-[#0B5D2A]" },
+      ],
+      months: monthBuckets,
+      assignedTotal: tasks.length,
+      solved,
+      unable,
+      inProgress,
+    };
+  }, [tasks]);
+  const maximum = Math.max(assignedTotal, ...metrics.map((metric) => metric.value), 1);
+  const completedTotal = solved + unable + inProgress;
+  const solvedShare = completedTotal ? (solved / completedTotal) * 100 : 0;
+  const unableShare = completedTotal ? (unable / completedTotal) * 100 : 0;
+  const trendMaximum = Math.max(...months.map((month) => month.value), 1);
+
+  return (
+    <section className="mt-7 card-surface p-5 sm:p-6" aria-label="Live partner analytics">
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <p className="text-xs font-bold text-primary">LIVE ASSIGNMENT ANALYTICS</p>
+          <h2 className="mt-1 text-xl font-bold">{partnerName} {isNgo ? "NGO" : "Organization"}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Updates automatically when this account's assignments change.</p>
+        </div>
+        <span className="rounded-full bg-primary-soft px-3 py-1 text-sm font-bold text-primary">Total assigned: {assignedTotal}</span>
+      </div>
+      <div className="mt-6 grid gap-5 lg:grid-cols-[1.3fr_0.7fr]">
+        <div className="rounded-xl bg-surface p-4">
+          <h3 className="text-sm font-bold">Assignment status</h3>
+          <div className="mt-5 space-y-4">
+            {[...metrics, { label: "Total assigned", value: assignedTotal, color: "bg-primary" }].map((metric) => (
+              <div key={metric.label}>
+                <div className="mb-1 flex items-center justify-between gap-3 text-sm"><span>{metric.label}</span><b>{metric.value}</b></div>
+                <div className="h-3 overflow-hidden rounded-full bg-card"><div className={`h-full rounded-full ${metric.color}`} style={{ width: `${(metric.value / maximum) * 100}%` }} /></div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-xl bg-surface p-4">
+          <h3 className="text-sm font-bold">Solved outcome</h3>
+          <div className="mt-4 flex items-center gap-4">
+            <div className="grid size-28 shrink-0 place-items-center rounded-full" style={{ background: `conic-gradient(#0B5D2A 0 ${solvedShare}%, #B54A4A ${solvedShare}% ${solvedShare + unableShare}%, #DDEBE2 ${solvedShare + unableShare}% 100%)` }}><div className="grid size-20 place-items-center rounded-full bg-card text-center"><b>{solved}</b><span className="text-[10px] text-muted-foreground">solved</span></div></div>
+            <div className="text-xs leading-6"><p><span className="mr-2 inline-block size-2 rounded-full bg-[#0B5D2A]" />Solved: <b>{solved}</b></p><p><span className="mr-2 inline-block size-2 rounded-full bg-rose-500" />Could not solve: <b>{unable}</b></p><p><span className="mr-2 inline-block size-2 rounded-full bg-slate-200" />In progress: <b>{inProgress}</b></p></div>
+          </div>
+        </div>
+      </div>
+      <div className="mt-5 rounded-xl bg-surface p-4">
+        <h3 className="text-sm font-bold">Monthly problems solved</h3>
+        <div className="mt-5 flex h-36 items-end justify-between gap-2" role="img" aria-label="Monthly problems solved for the last six months">
+          {months.map((month) => <div key={month.key} className="flex h-full min-w-0 flex-1 flex-col justify-end text-center"><span className="mb-1 text-xs font-bold">{month.value}</span><div className="min-h-1 rounded-t bg-primary" style={{ height: `${Math.max(4, (month.value / trendMaximum) * 100)}%` }} /><span className="mt-2 text-xs text-muted-foreground">{month.label}</span></div>)}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PartnerDashboard({
+  user,
+  partnerIdentity,
+  flash,
+}: {
+  user: User | null;
+  partnerIdentity: PartnerIdentity | null;
+  flash: (x: string) => void;
+}) {
+  const isNgo = (partnerIdentity?.organization_type || user?.user_metadata?.["organization_type"]) === "NGO";
   const partnerName = String(
-    user?.user_metadata?.["display_name"] || (isNgo ? "Community NGO" : "Partner Organization"),
+    partnerIdentity?.name || user?.user_metadata?.["display_name"] || (isNgo ? "Community NGO" : "Partner Organization"),
   );
   const singular = isNgo ? "Volunteer" : "Skilled Participant",
     plural = `${singular}s`;
+  const getOwnedOrganization = async () => {
+    if (partnerIdentity?.id) return { organization: { id: partnerIdentity.id }, error: null };
+    if (!user || !supabase) return { organization: null, error: null };
+    const { data, error } = await supabase
+      .from("organization_accounts")
+      .select("id")
+      .eq("owner_id", user.id)
+      .maybeSingle();
+    return { organization: data, error };
+  };
   const [section, setSection] = useState("Dashboard"),
     [selectedId, setSelectedId] = useState("SS-1024"),
     [available, setAvailable] = useState(20),
@@ -2964,15 +3262,12 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
       });
   }, [user, isNgo, partnerName]);
   useEffect(() => {
-    if (!user || !supabase) return;
+    const database = supabase;
+    if (!user || !database) return;
     const loadMembers = async () => {
-      const { data: organization, error: organizationError } = await supabase
-        .from("organization_accounts")
-        .select("id")
-        .eq("owner_id", user.id)
-        .maybeSingle();
+      const { organization, error: organizationError } = await getOwnedOrganization();
       if (organizationError || !organization) return;
-      const { data, error } = await supabase
+      const { data, error } = await database
         .from("volunteers")
         .select("id,name,member_identifier,skills,availability")
         .eq("organization_id", organization.id)
@@ -2982,14 +3277,14 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
         ((data ?? []) as Array<any>).map((member) => ({
           id: member.id,
           name: member.name,
-          identifier: member.member_identifier ?? "—",
+          identifier: member.member_identifier ?? "-",
           skill: (member.skills ?? []).join(", ") || "Not specified",
           available: !["unavailable", "busy", "inactive", "off"].includes(String(member.availability ?? "available").toLowerCase()),
         })),
       );
     };
     void loadMembers();
-  }, [user, flash, plural]);
+  }, [user, partnerIdentity?.id, flash, plural]);
   useEffect(() => {
     const database = supabase;
     if (!user || !database) return;
@@ -3003,13 +3298,9 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
           ? "Work in Progress"
           : status === "completed" || status === "verified"
             ? "Solved"
-            : "Couldn't Solve — Reassigned";
+            : "Couldn't Solve - Reassigned";
     const loadAssignedTasks = async () => {
-      const { data: organization, error: orgError } = await database
-        .from("organization_accounts")
-        .select("id")
-        .eq("owner_id", user.id)
-        .maybeSingle();
+      const { organization, error: orgError } = await getOwnedOrganization();
       if (orgError || !organization) return;
       const { data, error } = await database
         .from("problem_assignments")
@@ -3043,8 +3334,8 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
             people: (assignment.problem_tasks ?? []).map((item: any) => item.volunteers?.name).filter(Boolean),
             taskIds: (assignment.problem_tasks ?? []).map((item: any) => item.id),
             remarks: assignment.completion_note ?? assignment.unable_reason ?? undefined,
-            // Supports assignments created before the deadline migration was applied.
-            acceptanceDeadline: assignment.acceptance_deadline ?? new Date(new Date(assignment.created_at).getTime() + 48 * 60 * 60 * 1000).toISOString(),
+            acceptanceDeadline: assignment.acceptance_deadline,
+            assignedAt: assignment.created_at,
           };
         }),
       );
@@ -3068,7 +3359,7 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
     return () => {
       if (channel) void database.removeChannel(channel);
     };
-  }, [user, flash]);
+  }, [user, partnerIdentity?.id, flash]);
   if (!user) return <Forbidden />;
   const task: PartnerTask =
     tasks.find((item) => item.id === selectedId) ??
@@ -3077,9 +3368,9 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
       title: "No assigned tasks",
       description: "New algorithmic assignments will appear here automatically.",
       category: "Community service",
-      location: "—",
-      coordinates: "—",
-      reported: "—",
+      location: "-",
+      coordinates: "-",
+      reported: "-",
       priority: "Low",
       status: "Pending",
       people: [],
@@ -3110,11 +3401,7 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
       return;
     }
     if (!user || !supabase) return;
-    const { data: organization, error: organizationError } = await supabase
-      .from("organization_accounts")
-      .select("id")
-      .eq("owner_id", user.id)
-      .maybeSingle();
+    const { organization, error: organizationError } = await getOwnedOrganization();
     if (organizationError || !organization) return flash("Your organization profile is still being prepared. Please retry.");
     const record = {
       name: memberName.trim(),
@@ -3138,12 +3425,12 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
   };
   const tone = (s: PartnerTaskStatus) =>
     s === "Solved"
-      ? "bg-emerald-100 text-emerald-800"
+      ? "bg-[#0B5D2A] text-white"
       : s.includes("Couldn't")
         ? "bg-rose-100 text-rose-800"
         : s === "Pending"
-          ? "bg-amber-100 text-amber-800"
-          : "bg-sky-100 text-sky-800";
+          ? "bg-[#F6FBF8] text-[#0B5D2A]"
+          : "bg-[#EAF7EF] text-[#0B5D2A]";
   const filtered =
     section === "Active Tasks"
       ? tasks.filter((t) => ["Accepted", "People Assigned", "Work in Progress"].includes(t.status))
@@ -3206,9 +3493,9 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
     "Couldn't Solve",
   ];
   return (
-    <div className="min-h-screen bg-surface">
-      <div className="mx-auto flex max-w-[1600px]">
-        <aside className="sticky top-0 hidden h-screen w-68 shrink-0 border-r border-border bg-card p-5 lg:block">
+    <div className="dashboard-shell min-h-screen bg-surface">
+      <div className="dashboard-frame mx-auto flex max-w-[1600px]">
+        <aside className="app-sidebar sticky top-0 hidden h-screen w-68 shrink-0 border-r border-border bg-card p-5 lg:block">
           <div className="flex items-center gap-3 px-2">
             <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground">
               <Building2 size={20} />
@@ -3239,7 +3526,7 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
             ))}
           </nav>
         </aside>
-        <main className="min-w-0 flex-1 p-4 sm:p-7">
+        <main className="dashboard-main min-w-0 flex-1 p-4 sm:p-7">
           <header className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <p className="text-sm font-medium text-primary">
@@ -3265,8 +3552,13 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
                 />
                 <DashboardStat
                   label={`Currently Available ${plural}`}
-                  value={available}
+                  value={members.filter((member) => member.available).length}
                   icon={<BadgeCheck size={18} />}
+                />
+                <DashboardStat
+                  label="Total Problems Assigned"
+                  value={tasks.length}
+                  icon={<ClipboardCheck size={18} />}
                 />
                 <DashboardStat
                   label="Active Tasks"
@@ -3298,6 +3590,7 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
                   icon={<Repeat2 size={18} />}
                 />
               </div>
+              <PartnerAnalytics tasks={tasks} partnerName={partnerName} isNgo={isNgo} />
               <h2 className="mt-8 text-xl font-bold">Recent Assigned Tasks</h2>
               <PartnerTaskCards
                 tasks={tasks.filter((task) => task.status !== "Solved")}
@@ -3350,7 +3643,7 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
                               if (error) flash(error.message);
                               else setMembers((all) => all.map((x) => x.id === m.id ? { ...x, available: !x.available } : x));
                             })}
-                            className={`rounded-full px-2.5 py-1 text-xs font-bold ${m.available ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-700"}`}
+                            className={`rounded-full px-2.5 py-1 text-xs font-bold ${m.available ? "bg-[#EAF7EF] text-[#0B5D2A]" : "bg-slate-100 text-slate-700"}`}
                           >
                             {m.available ? "Available" : "Unavailable"}
                           </button>
@@ -3409,14 +3702,14 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
                 onClick={() => setSection("Assigned Tasks")}
                 className="text-sm font-bold text-primary"
               >
-                ← Back to assigned tasks
+                Back to assigned tasks
               </button>
               <div className="mt-4 grid gap-6 xl:grid-cols-[1.2fr_.8fr]">
                 <article className="card-surface p-6">
                   <div className="flex flex-wrap justify-between gap-3">
                     <div>
                       <p className="text-xs font-bold text-primary">
-                        {task.id} · {task.category.toUpperCase()}
+                        {task.id} | {task.category.toUpperCase()}
                       </p>
                       <h2 className="mt-2 text-2xl font-bold">{task.title}</h2>
                     </div>
@@ -3428,7 +3721,7 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
                   </div>
                   <h3 className="mt-7 font-bold">Problem Information</h3>
                   <p className="mt-2 leading-7 text-muted-foreground">{task.description}</p>
-                  {task.status === "Pending" && <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3"><p className="text-sm font-bold">Task acceptance deadline</p><p className="mt-1"><AcceptanceCountdown deadline={task.acceptanceDeadline} /></p></div>}
+                  {task.status === "Pending" && <div className="mt-4 rounded-lg border border-[#DDEBE2] bg-[#F6FBF8] p-3"><p className="text-sm font-bold">Task acceptance deadline</p><p className="mt-1"><AcceptanceCountdown deadline={task.acceptanceDeadline} /></p></div>}
                   <div className="mt-5 grid gap-3 sm:grid-cols-2">
                     <Info
                       label="Problem location"
@@ -3483,15 +3776,15 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
                           </button>
                           <button
                             onClick={() => setFinishModal("solved")}
-                            className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white"
+                            className="rounded-lg bg-[#0B5D2A] px-4 py-2.5 text-sm font-bold text-white"
                           >
-                            ✓ Solved
+                            Solved
                           </button>
                           <button
                             onClick={() => setFinishModal("failed")}
                             className="rounded-lg border border-destructive px-4 py-2.5 text-sm font-bold text-destructive"
                           >
-                            ✕ Couldn't Solve
+                            Couldn't Solve
                           </button>
                         </>
                       )}
@@ -3610,7 +3903,7 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
         </Modal>
       )}
       {assignModal && (
-        <Modal title={`Assign ${plural} · ${task.id}`} close={() => setAssignModal(false)}>
+        <Modal title={`Assign ${plural} | ${task.id}`} close={() => setAssignModal(false)}>
           {members
             .filter((m) => m.available)
             .map((m) => (
@@ -3632,7 +3925,7 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
                 <div>
                   <b className="text-sm">{m.name}</b>
                   <p className="text-xs text-muted-foreground">
-                    {m.identifier} · {m.skill} · Available
+                    {m.identifier} | {m.skill} | Available
                   </p>
                 </div>
               </label>
@@ -3698,7 +3991,7 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
                   setFinishModal(null);
                   flash("Task marked SOLVED and completion evidence saved.");
                 })()}
-                className="mt-5 w-full rounded-lg bg-emerald-600 py-3 font-bold text-white"
+                className="mt-5 w-full rounded-lg bg-[#0B5D2A] py-3 font-bold text-white"
               >
                 Submit Completed Task
               </button>
@@ -3731,7 +4024,7 @@ function PartnerDashboard({ user, flash }: { user: User | null; flash: (x: strin
               <button
                 onClick={() => {
                   update(task.id, {
-                    status: "Couldn't Solve — Reassigned",
+                    status: "Couldn't Solve - Reassigned",
                     remarks: `${reason}. ${remarks}`,
                   });
                   setFinishModal(null);
@@ -3772,14 +4065,14 @@ function PartnerTaskCards({
           >
             <div className="min-w-0">
               <p className="text-xs font-bold text-primary">
-                {task.id} · {task.category}
+                {task.id} | {task.category}
               </p>
               <h3 className="mt-1 font-bold">{task.title}</h3>
               <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{task.description}</p>
               {task.status === "Pending" && <p className="mt-2"><AcceptanceCountdown deadline={task.acceptanceDeadline} /></p>}
               <p className="mt-2 text-xs text-muted-foreground">
                 <MapPin className="mr-1 inline" size={13} />
-                {task.location} · GPS {task.coordinates} · {task.reported}
+                {task.location} | GPS {task.coordinates} | {task.reported}
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -3903,10 +4196,10 @@ function CoordinatorDashboard({ user, flash }: { user: User | null; flash: (x: s
           <div className="card-surface p-6">
             <div className="flex justify-between gap-3">
               <div>
-                <span className="text-xs font-bold text-primary">SS-2026-0041 · WATER</span>
+                <span className="text-xs font-bold text-primary">SS-2026-0041 | WATER</span>
                 <h2 className="mt-2 text-xl font-bold">Unsafe drinking water near Ward 5</h2>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  <MapPin className="mr-1 inline" size={14} /> Ranchi · 1.2 km away · 48 residents
+                  <MapPin className="mr-1 inline" size={14} /> Ranchi | 1.2 km away | 48 residents
                   affected
                 </p>
               </div>
@@ -3937,7 +4230,7 @@ function CoordinatorDashboard({ user, flash }: { user: User | null; flash: (x: s
                   <div>
                     <b className="text-sm">{t.title}</b>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {t.person} · due {t.deadline}
+                      {t.person} | due {t.deadline}
                     </p>
                   </div>
                   <span
@@ -3984,7 +4277,7 @@ function CoordinatorDashboard({ user, flash }: { user: User | null; flash: (x: s
             )}
             <div className="mt-5 rounded-lg bg-accent-soft p-3 text-xs text-accent">
               <Sparkles className="mr-1 inline" size={14} /> Suggested partner: Jharkhand Water
-              Initiative — field lab and repair team available.
+              Initiative - field lab and repair team available.
             </div>
           </aside>
         </div>
@@ -4001,7 +4294,7 @@ function CoordinatorDashboard({ user, flash }: { user: User | null; flash: (x: s
                 <p className="text-xs text-muted-foreground">Environmental Engineering</p>
               </div>
             </div>
-            <p className="mt-4 text-sm">Water testing · Field survey · Available this week</p>
+            <p className="mt-4 text-sm">Water testing | Field survey | Available this week</p>
           </div>
           <div className="card-surface p-5">
             <div className="flex items-center gap-3">
@@ -4013,7 +4306,7 @@ function CoordinatorDashboard({ user, flash }: { user: User | null; flash: (x: s
                 <p className="text-xs text-muted-foreground">Civil Engineering</p>
               </div>
             </div>
-            <p className="mt-4 text-sm">Documentation · GIS mapping · Available weekends</p>
+            <p className="mt-4 text-sm">Documentation | GIS mapping | Available weekends</p>
           </div>
           <label className="card-surface grid cursor-pointer place-items-center p-5 text-center">
             <FileSpreadsheet className="text-primary" />
@@ -4039,7 +4332,7 @@ function CoordinatorDashboard({ user, flash }: { user: User | null; flash: (x: s
               <span className="text-xs font-bold text-primary">TASK EVIDENCE SUBMITTED</span>
               <h2 className="mt-2 text-xl font-bold">Household survey and water samples</h2>
               <p className="mt-2 text-sm text-muted-foreground">
-                Submitted by Aditi Kumari · Photos, sample sheet, and completion notes attached.
+                Submitted by Aditi Kumari | Photos, sample sheet, and completion notes attached.
               </p>
             </div>
             <div className="flex gap-2">
@@ -4231,7 +4524,7 @@ function CoordinatorDashboardLegacy({
           <div className="mt-4 space-y-2">
             {people.map((person) => (
               <p key={person.id} className="rounded bg-surface p-2">
-                <b>{person.name}</b> · {person.skills.join(", ")}
+                <b>{person.name}</b> | {person.skills.join(", ")}
               </p>
             ))}
           </div>
@@ -4247,7 +4540,7 @@ function CoordinatorDashboardLegacy({
               <option value="">Choose a problem</option>
               {challenges.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.public_id} — {c.title}
+                  {c.public_id} - {c.title}
                 </option>
               ))}
             </select>
@@ -4333,7 +4626,37 @@ function FundingTransparency({ user, profile, flash, embedded = false }: { user:
   const addSource = async () => { if (!user || !donor.trim() || Number(amount) <= 0 || !purpose.trim()) return flash("Enter a valid funding source, amount, and purpose."); const { error } = await supabase!.from("funding_sources").insert({ category, donor_name: donor.trim(), amount: Number(amount), received_on: new Date().toISOString().slice(0, 10), purpose: purpose.trim(), created_by: user.id }); if (error) return flash(error.message); setDonor(""); setAmount(""); setPurpose(""); flash("Funding source recorded as pending verification."); await load(); };
   const addTransaction = async () => { if (!user || !projectId || Number(transactionAmount) <= 0 || !transactionPurpose.trim()) return flash("Select a project and enter a valid amount and purpose."); const { error } = await supabase!.from("financial_transactions").insert({ project_id: projectId, funding_source_id: transactionSourceId || null, transaction_type: transactionType, amount: Number(transactionAmount), occurred_on: new Date().toISOString().slice(0, 10), purpose: transactionPurpose.trim(), created_by: user.id }); if (error) return flash(error.message); setTransactionAmount(""); setTransactionPurpose(""); flash("Financial ledger entry recorded as pending verification."); await load(); };
   const verify = async (table: "funding_sources" | "financial_transactions", id: string) => { const { error } = await supabase!.from(table).update({ status: "verified", verified_by: user?.id ?? null, verified_at: new Date().toISOString() }).eq("id", id); if (error) flash(error.message); else { flash("Financial record verified and published."); await load(); } };
-  return <section className="container-page py-12"><span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">PUBLIC FINANCIAL TRANSPARENCY</span><h1 className="mt-4 text-3xl font-bold">Every Rupee Has a Source. Every Rupee Has a Purpose.</h1><p className="mt-2 max-w-3xl text-muted-foreground">Verified funding, project allocations, and expenditure records are published here for public accountability.</p><div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><DashboardStat label="Funds received" value={format(totalReceived)} icon={<Building2 size={18} />}/><DashboardStat label="Funds utilized" value={format(totalSpent)} icon={<Activity size={18} />}/><DashboardStat label="Funds available" value={format(totalReceived - totalSpent)} icon={<BadgeCheck size={18} />}/><DashboardStat label="Verified entries" value={sources.length + transactions.length} icon={<ClipboardCheck size={18} />}/></div><div className="mt-7 grid gap-5 lg:grid-cols-2"><section className="card-surface p-6"><h2 className="text-xl font-bold">Funding sources</h2><div className="mt-5 space-y-3">{sources.map((source) => <article key={source.id} className="rounded-lg bg-surface p-4"><div className="flex justify-between gap-3"><div><b>{source.donor_name}</b><p className="mt-1 text-xs capitalize text-muted-foreground">{source.category.replaceAll("_", " ")} · {new Date(source.received_on).toLocaleDateString()}</p></div><b className="text-primary">{format(Number(source.amount))}</b></div><p className="mt-2 text-sm text-muted-foreground">{source.purpose}</p>{admin && source.status === "pending" && <button onClick={() => void verify("funding_sources", source.id)} className="mt-2 text-xs font-bold text-primary">Verify & publish</button>}</article>)}{!sources.length && <p className="text-sm text-muted-foreground">No verified funding entries have been published.</p>}</div></section><section className="card-surface p-6"><h2 className="text-xl font-bold">Project financial timeline</h2><div className="mt-5 space-y-3">{transactions.map((transaction) => <article key={transaction.id} className="rounded-lg bg-surface p-4"><div className="flex justify-between gap-3"><div><b>{transaction.projects?.title ?? "Project"}</b><p className="mt-1 text-xs capitalize text-muted-foreground">{transaction.transaction_type} · {new Date(transaction.occurred_on).toLocaleDateString()}</p></div><b className={transaction.transaction_type === "expenditure" ? "text-destructive" : "text-primary"}>{format(Number(transaction.amount))}</b></div><p className="mt-2 text-sm text-muted-foreground">{transaction.purpose}</p>{admin && transaction.status === "pending" && <button onClick={() => void verify("financial_transactions", transaction.id)} className="mt-2 text-xs font-bold text-primary">Verify & publish</button>}</article>)}{!transactions.length && <p className="text-sm text-muted-foreground">No verified project transactions have been published.</p>}</div></section></div>{admin && <section className="card-surface mt-7 p-6"><h2 className="text-xl font-bold">Admin funding portal</h2><p className="mt-1 text-sm text-muted-foreground">New financial records remain pending until verified; every change is audit logged.</p><div className="mt-5 grid gap-5 lg:grid-cols-2"><div className="rounded-lg bg-surface p-4"><h3 className="font-bold">Record funding source</h3><div className="mt-3 grid gap-2"><select value={category} onChange={(e) => setCategory(e.target.value)} className="rounded border border-input bg-background p-2"><option value="government">Government</option><option value="industry_csr">Industry / CSR</option><option value="samajsetu_trust">SamajSetu Trust</option><option value="university">University</option><option value="ngo">NGO</option><option value="other_approved">Other approved</option></select><input value={donor} onChange={(e) => setDonor(e.target.value)} placeholder="Donor / organization" className="rounded border border-input p-2"/><input value={amount} onChange={(e) => setAmount(e.target.value)} type="number" min="1" placeholder="Amount in ₹" className="rounded border border-input p-2"/><textarea value={purpose} onChange={(e) => setPurpose(e.target.value)} placeholder="Purpose / restrictions" className="rounded border border-input p-2"/><button onClick={() => void addSource()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Add funding source</button></div></div><div className="rounded-lg bg-surface p-4"><h3 className="font-bold">Record project ledger entry</h3><div className="mt-3 grid gap-2"><select value={projectId} onChange={(e) => setProjectId(e.target.value)} className="rounded border border-input bg-background p-2"><option value="">Select project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}</select><select value={transactionType} onChange={(e) => setTransactionType(e.target.value)} className="rounded border border-input bg-background p-2"><option value="approval">Budget approved</option><option value="release">Funds released</option><option value="expenditure">Expenditure</option><option value="adjustment">Approved adjustment</option></select><input value={transactionAmount} onChange={(e) => setTransactionAmount(e.target.value)} type="number" min="1" placeholder="Amount in ₹" className="rounded border border-input p-2"/><textarea value={transactionPurpose} onChange={(e) => setTransactionPurpose(e.target.value)} placeholder="Purpose / expenditure detail" className="rounded border border-input p-2"/><button onClick={() => void addTransaction()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Add ledger entry</button></div></div></div></section>}</section>;
+  return <section className="container-page py-12"><span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">PUBLIC FINANCIAL TRANSPARENCY</span><h1 className="mt-4 text-3xl font-bold">Every Rupee Has a Source. Every Rupee Has a Purpose.</h1><p className="mt-2 max-w-3xl text-muted-foreground">Verified funding, project allocations, and expenditure records are published here for public accountability.</p><div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><DashboardStat label="Funds received" value={format(totalReceived)} icon={<Building2 size={18} />}/><DashboardStat label="Funds utilized" value={format(totalSpent)} icon={<Activity size={18} />}/><DashboardStat label="Funds available" value={format(totalReceived - totalSpent)} icon={<BadgeCheck size={18} />}/><DashboardStat label="Verified entries" value={sources.length + transactions.length} icon={<ClipboardCheck size={18} />}/></div><div className="mt-7 grid gap-5 lg:grid-cols-2"><section className="card-surface p-6"><h2 className="text-xl font-bold">Funding sources</h2><div className="mt-5 space-y-3">{sources.map((source) => <article key={source.id} className="rounded-lg bg-surface p-4"><div className="flex justify-between gap-3"><div><b>{cleanLegacyText(source.donor_name)}</b><p className="mt-1 text-xs capitalize text-muted-foreground">{source.category.replaceAll("_", " ")} | {new Date(source.received_on).toLocaleDateString()}</p></div><b className="text-primary">{format(Number(source.amount))}</b></div><p className="mt-2 text-sm text-muted-foreground">{cleanLegacyText(source.purpose)}</p>{admin && source.status === "pending" && <button onClick={() => void verify("funding_sources", source.id)} className="mt-2 text-xs font-bold text-primary">Verify & publish</button>}</article>)}{!sources.length && <p className="text-sm text-muted-foreground">No verified funding entries have been published.</p>}</div></section><section className="card-surface p-6"><h2 className="text-xl font-bold">Project financial timeline</h2><div className="mt-5 space-y-3">{transactions.map((transaction) => <article key={transaction.id} className="rounded-lg bg-surface p-4"><div className="flex justify-between gap-3"><div><b>{transaction.projects?.title ?? "Project"}</b><p className="mt-1 text-xs capitalize text-muted-foreground">{transaction.transaction_type} | {new Date(transaction.occurred_on).toLocaleDateString()}</p></div><b className={transaction.transaction_type === "expenditure" ? "text-destructive" : "text-primary"}>{format(Number(transaction.amount))}</b></div><p className="mt-2 text-sm text-muted-foreground">{cleanLegacyText(transaction.purpose)}</p>{admin && transaction.status === "pending" && <button onClick={() => void verify("financial_transactions", transaction.id)} className="mt-2 text-xs font-bold text-primary">Verify & publish</button>}</article>)}{!transactions.length && <p className="text-sm text-muted-foreground">No verified project transactions have been published.</p>}</div></section></div>{admin && <section className="card-surface mt-7 p-6"><h2 className="text-xl font-bold">Admin funding portal</h2><p className="mt-1 text-sm text-muted-foreground">New financial records remain pending until verified; every change is audit logged.</p><div className="mt-5 grid gap-5 lg:grid-cols-2"><div className="rounded-lg bg-surface p-4"><h3 className="font-bold">Record funding source</h3><div className="mt-3 grid gap-2"><select value={category} onChange={(e) => setCategory(e.target.value)} className="rounded border border-input bg-background p-2"><option value="government">Government</option><option value="industry_csr">Industry / CSR</option><option value="samajsetu_trust">SamajSetu Trust</option><option value="university">University</option><option value="ngo">NGO</option><option value="other_approved">Other approved</option></select><input value={donor} onChange={(e) => setDonor(e.target.value)} placeholder="Donor / organization" className="rounded border border-input p-2"/><input value={amount} onChange={(e) => setAmount(e.target.value)} type="number" min="1" placeholder="Amount in Rs." className="rounded border border-input p-2"/><textarea value={purpose} onChange={(e) => setPurpose(e.target.value)} placeholder="Purpose / restrictions" className="rounded border border-input p-2"/><button onClick={() => void addSource()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Add funding source</button></div></div><div className="rounded-lg bg-surface p-4"><h3 className="font-bold">Record project ledger entry</h3><div className="mt-3 grid gap-2"><select value={projectId} onChange={(e) => setProjectId(e.target.value)} className="rounded border border-input bg-background p-2"><option value="">Select project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}</select><select value={transactionType} onChange={(e) => setTransactionType(e.target.value)} className="rounded border border-input bg-background p-2"><option value="approval">Budget approved</option><option value="release">Funds released</option><option value="expenditure">Expenditure</option><option value="adjustment">Approved adjustment</option></select><input value={transactionAmount} onChange={(e) => setTransactionAmount(e.target.value)} type="number" min="1" placeholder="Amount in Rs." className="rounded border border-input p-2"/><textarea value={transactionPurpose} onChange={(e) => setTransactionPurpose(e.target.value)} placeholder="Purpose / expenditure detail" className="rounded border border-input p-2"/><button onClick={() => void addTransaction()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Add ledger entry</button></div></div></div></section>}</section>;
+}
+
+function FundingTransparencyV2({ user, profile, flash, embedded = false }: { user: User | null; profile: Profile | null; flash: (message: string) => void; embedded?: boolean }) {
+  const admin = !embedded && profile?.role === "admin";
+  const [sources, setSources] = useState<any[]>([]), [category, setCategory] = useState("government"), [donor, setDonor] = useState(""), [amount, setAmount] = useState(""), [purpose, setPurpose] = useState(""), [selectedId, setSelectedId] = useState(""), [utilized, setUtilized] = useState(""), [utilizationDescription, setUtilizationDescription] = useState("");
+  const format = (value: number) => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(value || 0);
+  const load = async () => {
+    if (!supabase) return;
+    const { data, error } = await supabase.from("funding_sources").select("id,category,donor_name,amount,utilized_amount,utilization_description,received_on,purpose,status").order("received_on", { ascending: false });
+    if (error) return flash(error.message);
+    setSources(((data ?? []).filter((item: any) => admin || item.status === "verified")) as any[]);
+  };
+  useEffect(() => { void load(); }, [admin]);
+  const verified = sources.filter((source) => source.status === "verified");
+  const totalReceived = verified.reduce((sum, source) => sum + Number(source.amount), 0);
+  const totalUtilized = verified.reduce((sum, source) => sum + Number(source.utilized_amount), 0);
+  const addSource = async () => {
+    if (!user || !donor.trim() || Number(amount) <= 0 || !purpose.trim()) return flash("Enter a funding source, received amount, and purpose.");
+    const { error } = await supabase!.from("funding_sources").insert({ category, donor_name: donor.trim(), amount: Number(amount), received_on: new Date().toISOString().slice(0, 10), purpose: purpose.trim(), created_by: user.id });
+    if (error) return flash(error.message);
+    setDonor(""); setAmount(""); setPurpose(""); flash("Funding record added as pending verification."); await load();
+  };
+  const updateUtilization = async () => {
+    if (!selectedId || Number(utilized) < 0) return flash("Choose a funding source and enter a valid utilized amount.");
+    const { error } = await supabase!.rpc("update_funding_utilization", { source_uuid: selectedId, next_utilized: Number(utilized), description: utilizationDescription });
+    if (error) return flash(error.message);
+    setUtilized(""); setUtilizationDescription(""); flash("Fund utilization updated."); await load();
+  };
+  const verify = async (id: string) => { const { error } = await supabase!.from("funding_sources").update({ status: "verified", verified_by: user?.id ?? null, verified_at: new Date().toISOString() }).eq("id", id); if (error) flash(error.message); else { flash("Funding record verified and published."); await load(); } };
+  return <section id="financial-transparency" className="funding-transparency container-page py-10"><span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">PUBLIC FINANCIAL TRANSPARENCY</span><h1 className="mt-4 text-3xl font-bold">Public funds, clearly accounted for.</h1><p className="mt-2 max-w-3xl text-muted-foreground">Verified funding records show what was received, utilized, and still available to the community.</p><div className="mt-6 grid gap-3 sm:grid-cols-3"><DashboardStat label="Total funds received" value={format(totalReceived)} icon={<Building2 size={18} />} /><DashboardStat label="Total funds utilized" value={format(totalUtilized)} icon={<Activity size={18} />} /><DashboardStat label="Remaining funds" value={format(totalReceived - totalUtilized)} icon={<BadgeCheck size={18} />} /></div><div className="funding-records mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">{sources.map((source) => { const remaining = Number(source.amount) - Number(source.utilized_amount); return <article key={source.id} className="card-surface p-5"><div className="flex items-start justify-between gap-3"><div><h2 className="font-bold">{cleanLegacyText(source.donor_name)}</h2><p className="mt-1 text-xs capitalize text-muted-foreground">{source.category.replaceAll("_", " ")} | {new Date(source.received_on).toLocaleDateString()}</p></div>{admin && source.status === "pending" && <button onClick={() => void verify(source.id)} className="text-xs font-bold text-primary">Verify & publish</button>}</div><p className="mt-3 text-sm text-muted-foreground">{cleanLegacyText(source.purpose)}</p><div className="mt-4 grid grid-cols-3 gap-2 text-sm"><p><b className="block text-primary">{format(Number(source.amount))}</b><span className="text-xs text-muted-foreground">Received</span></p><p><b className="block text-accent">{format(Number(source.utilized_amount))}</b><span className="text-xs text-muted-foreground">Utilized</span></p><p><b className="block">{format(remaining)}</b><span className="text-xs text-muted-foreground">Remaining</span></p></div>{source.utilization_description && <p className="mt-3 rounded-lg bg-surface p-3 text-xs text-muted-foreground">Utilization: {source.utilization_description}</p>}</article>; })}</div>{!sources.length && <p className="card-surface mt-6 p-6 text-muted-foreground">No verified funding records have been published.</p>}{admin && <section className="card-surface mt-7 p-6"><h2 className="text-xl font-bold">Admin fund management</h2><p className="mt-1 text-sm text-muted-foreground">Funding and utilization changes are audit logged and publish to citizens only after verification.</p><div className="mt-5 grid gap-5 lg:grid-cols-2"><div className="rounded-xl bg-surface p-4"><h3 className="font-bold">Add funding record</h3><div className="mt-3 grid gap-2"><select value={category} onChange={(event) => setCategory(event.target.value)} className="rounded border border-input bg-background p-2"><option value="government">Government</option><option value="industry_csr">CSR</option><option value="samajsetu_trust">SamajSetu Charitable Trust</option><option value="ngo">NGO contribution</option><option value="other_approved">Other verified source</option></select><input value={donor} onChange={(event) => setDonor(event.target.value)} placeholder="Department / organization name" className="rounded border border-input p-2"/><input value={amount} onChange={(event) => setAmount(event.target.value)} type="number" min="1" placeholder="Amount received in Rs." className="rounded border border-input p-2"/><textarea value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder="Purpose" className="rounded border border-input p-2"/><button onClick={() => void addSource()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Add funding record</button></div></div><div className="rounded-xl bg-surface p-4"><h3 className="font-bold">Update utilized amount</h3><div className="mt-3 grid gap-2"><select value={selectedId} onChange={(event) => setSelectedId(event.target.value)} className="rounded border border-input bg-background p-2"><option value="">Select funding source</option>{sources.map((source) => <option key={source.id} value={source.id}>{cleanLegacyText(source.donor_name)} - {format(Number(source.amount))}</option>)}</select><input value={utilized} onChange={(event) => setUtilized(event.target.value)} type="number" min="0" placeholder="Total amount utilized in Rs." className="rounded border border-input p-2"/><textarea value={utilizationDescription} onChange={(event) => setUtilizationDescription(event.target.value)} placeholder="Utilization description" className="rounded border border-input p-2"/><button onClick={() => void updateUtilization()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Save utilized amount</button></div></div></div></section>}</section>;
 }
 
 function ProjectWorkspace({ user, profile, flash }: { user: User | null; profile: Profile | null; flash: (message: string) => void }) {
@@ -4358,7 +4681,7 @@ function ProjectWorkspace({ user, profile, flash }: { user: User | null; profile
   const addImpact = async () => { if (!selected || !impact.trim() || !unit.trim()) return; const { error } = await supabase!.from("impact_observations").insert({ project_id: selected.id, metric: impact.trim(), unit: unit.trim(), source: "Project workspace", verification_status: "unverified" }); if (error) flash(error.message); else { setImpact(""); setUnit(""); await load(); } };
   const createPilot = async () => { if (!selected || !pilotLocation.trim()) return; const { error } = await supabase!.from("pilots").upsert({ project_id: selected.id, location_text: pilotLocation.trim(), status: "planned" }, { onConflict: "project_id" }); if (error) flash(error.message); else { setPilotLocation(""); await load(); } };
   const addFeedback = async () => { if (!selected || !feedback.trim()) return; const { error } = await supabase!.from("community_feedback").insert({ project_id: selected.id, author_id: user.id, verdict, comment: feedback.trim() }); if (error) flash(error.message); else { setFeedback(""); await load(); } };
-  return <section className="container-page py-12"><h1 className="text-3xl font-bold">Innovation projects</h1><p className="mt-2 text-muted-foreground">Deliver verified challenges through milestones, prototypes, pilots, and measured impact.</p>{staff && <div className="card-surface mt-6 grid gap-3 p-5 md:grid-cols-2"><select value={challengeId} onChange={(e) => setChallengeId(e.target.value)} className="rounded-lg border border-input bg-background p-3"><option value="">Verified challenge</option>{challenges.map((item) => <option key={item.id} value={item.id}>{item.public_id} · {item.title}</option>)}</select><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Project title" className="rounded-lg border border-input p-3"/><textarea value={objective} onChange={(e) => setObjective(e.target.value)} placeholder="Project objective" className="min-h-24 rounded-lg border border-input p-3"/><button onClick={() => void create()} className="rounded-lg bg-primary px-4 py-3 font-bold text-primary-foreground">Convert to innovation project</button></div>}<div className="mt-7 grid gap-5 lg:grid-cols-[.8fr_1.2fr]"><div className="space-y-3">{projects.length ? projects.map((project) => <button key={project.id} onClick={() => setSelected(project)} className={`card-surface w-full p-5 text-left ${selected?.id === project.id ? "border-primary" : ""}`}><b>{project.title}</b><p className="mt-1 text-sm text-muted-foreground">{project.challenges?.public_id} · {project.status}</p></button>) : <p className="card-surface p-5 text-muted-foreground">No projects yet.</p>}</div><div className="card-surface p-6">{selected ? <><h2 className="text-2xl font-bold">{selected.title}</h2><p className="mt-2 text-muted-foreground">{selected.objective}</p><div className="mt-6 grid gap-5 md:grid-cols-2"><section><h3 className="font-bold">Milestones</h3><div className="mt-3 space-y-2">{(selected.milestones ?? []).map((item: any) => <p key={item.id} className="rounded bg-surface p-2 text-sm">{item.title} · {item.status}</p>)}</div>{staff && <div className="mt-3 flex gap-2"><input value={milestone} onChange={(e) => setMilestone(e.target.value)} placeholder="Milestone" className="min-w-0 rounded border border-input p-2 text-sm"/><button onClick={() => void addMilestone()} className="rounded bg-primary px-3 text-sm font-bold text-primary-foreground">Add</button></div>}</section><section><h3 className="font-bold">Prototype versions</h3>{(selected.prototypes ?? []).map((item: any) => <p key={item.id} className="mt-2 rounded bg-surface p-2 text-sm">{item.version}{item.repository_url && ` · ${item.repository_url}`}</p>)}{staff && <div className="mt-3 space-y-2"><input value={prototype} onChange={(e) => setPrototype(e.target.value)} placeholder="Version, e.g. V1" className="w-full rounded border border-input p-2 text-sm"/><input value={repository} onChange={(e) => setRepository(e.target.value)} placeholder="Repository URL (optional)" className="w-full rounded border border-input p-2 text-sm"/><button onClick={() => void addPrototype()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Record prototype</button></div>}</section><section><h3 className="font-bold">Pilot</h3>{selected.pilots?.[0] ? <p className="mt-2 rounded bg-surface p-2 text-sm">{selected.pilots[0].location_text} · {selected.pilots[0].status}</p> : <p className="mt-2 text-sm text-muted-foreground">No pilot proposed.</p>}{staff && <div className="mt-3 flex gap-2"><input value={pilotLocation} onChange={(e) => setPilotLocation(e.target.value)} placeholder="Pilot location" className="min-w-0 rounded border border-input p-2 text-sm"/><button onClick={() => void createPilot()} className="rounded bg-primary px-3 text-sm font-bold text-primary-foreground">Save</button></div>}</section><section><h3 className="font-bold">Impact observations</h3>{(selected.impact_observations ?? []).map((item: any) => <p key={item.id} className="mt-2 rounded bg-surface p-2 text-sm">{item.metric} · {item.observed ?? "Pending"} {item.unit}</p>)}{staff && <div className="mt-3 flex gap-2"><input value={impact} onChange={(e) => setImpact(e.target.value)} placeholder="Metric" className="min-w-0 rounded border border-input p-2 text-sm"/><input value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="Unit" className="w-20 rounded border border-input p-2 text-sm"/><button onClick={() => void addImpact()} className="rounded bg-primary px-3 text-sm font-bold text-primary-foreground">Add</button></div>}</section></div><section className="mt-6 border-t border-border pt-5"><h3 className="font-bold">Community feedback</h3>{(selected.community_feedback ?? []).map((item: any) => <p key={item.id} className="mt-2 rounded bg-surface p-2 text-sm">{item.verdict.replaceAll("_", " ")} · {item.comment}</p>)}<div className="mt-3 flex flex-wrap gap-2"><select value={verdict} onChange={(e) => setVerdict(e.target.value)} className="rounded border border-input bg-background p-2 text-sm"><option value="solved">Solved</option><option value="partially_solved">Partially solved</option><option value="not_solved">Not solved</option></select><input value={feedback} onChange={(e) => setFeedback(e.target.value)} placeholder="Share outcome feedback" className="min-w-48 flex-1 rounded border border-input p-2 text-sm"/><button onClick={() => void addFeedback()} className="rounded bg-primary px-3 text-sm font-bold text-primary-foreground">Submit</button></div></section></> : <p className="text-muted-foreground">Select a project to open its workspace.</p>}</div></div></section>;
+  return <section className="container-page py-12"><h1 className="text-3xl font-bold">Innovation projects</h1><p className="mt-2 text-muted-foreground">Deliver verified challenges through milestones, prototypes, pilots, and measured impact.</p>{staff && <div className="card-surface mt-6 grid gap-3 p-5 md:grid-cols-2"><select value={challengeId} onChange={(e) => setChallengeId(e.target.value)} className="rounded-lg border border-input bg-background p-3"><option value="">Verified challenge</option>{challenges.map((item) => <option key={item.id} value={item.id}>{item.public_id} | {item.title}</option>)}</select><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Project title" className="rounded-lg border border-input p-3"/><textarea value={objective} onChange={(e) => setObjective(e.target.value)} placeholder="Project objective" className="min-h-24 rounded-lg border border-input p-3"/><button onClick={() => void create()} className="rounded-lg bg-primary px-4 py-3 font-bold text-primary-foreground">Convert to innovation project</button></div>}<div className="mt-7 grid gap-5 lg:grid-cols-[.8fr_1.2fr]"><div className="space-y-3">{projects.length ? projects.map((project) => <button key={project.id} onClick={() => setSelected(project)} className={`card-surface w-full p-5 text-left ${selected?.id === project.id ? "border-primary" : ""}`}><b>{project.title}</b><p className="mt-1 text-sm text-muted-foreground">{project.challenges?.public_id} | {project.status}</p></button>) : <p className="card-surface p-5 text-muted-foreground">No projects yet.</p>}</div><div className="card-surface p-6">{selected ? <><h2 className="text-2xl font-bold">{selected.title}</h2><p className="mt-2 text-muted-foreground">{selected.objective}</p><div className="mt-6 grid gap-5 md:grid-cols-2"><section><h3 className="font-bold">Milestones</h3><div className="mt-3 space-y-2">{(selected.milestones ?? []).map((item: any) => <p key={item.id} className="rounded bg-surface p-2 text-sm">{item.title} | {item.status}</p>)}</div>{staff && <div className="mt-3 flex gap-2"><input value={milestone} onChange={(e) => setMilestone(e.target.value)} placeholder="Milestone" className="min-w-0 rounded border border-input p-2 text-sm"/><button onClick={() => void addMilestone()} className="rounded bg-primary px-3 text-sm font-bold text-primary-foreground">Add</button></div>}</section><section><h3 className="font-bold">Prototype versions</h3>{(selected.prototypes ?? []).map((item: any) => <p key={item.id} className="mt-2 rounded bg-surface p-2 text-sm">{item.version}{item.repository_url && ` | ${item.repository_url}`}</p>)}{staff && <div className="mt-3 space-y-2"><input value={prototype} onChange={(e) => setPrototype(e.target.value)} placeholder="Version, e.g. V1" className="w-full rounded border border-input p-2 text-sm"/><input value={repository} onChange={(e) => setRepository(e.target.value)} placeholder="Repository URL (optional)" className="w-full rounded border border-input p-2 text-sm"/><button onClick={() => void addPrototype()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Record prototype</button></div>}</section><section><h3 className="font-bold">Pilot</h3>{selected.pilots?.[0] ? <p className="mt-2 rounded bg-surface p-2 text-sm">{selected.pilots[0].location_text} | {selected.pilots[0].status}</p> : <p className="mt-2 text-sm text-muted-foreground">No pilot proposed.</p>}{staff && <div className="mt-3 flex gap-2"><input value={pilotLocation} onChange={(e) => setPilotLocation(e.target.value)} placeholder="Pilot location" className="min-w-0 rounded border border-input p-2 text-sm"/><button onClick={() => void createPilot()} className="rounded bg-primary px-3 text-sm font-bold text-primary-foreground">Save</button></div>}</section><section><h3 className="font-bold">Impact observations</h3>{(selected.impact_observations ?? []).map((item: any) => <p key={item.id} className="mt-2 rounded bg-surface p-2 text-sm">{item.metric} | {item.observed ?? "Pending"} {item.unit}</p>)}{staff && <div className="mt-3 flex gap-2"><input value={impact} onChange={(e) => setImpact(e.target.value)} placeholder="Metric" className="min-w-0 rounded border border-input p-2 text-sm"/><input value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="Unit" className="w-20 rounded border border-input p-2 text-sm"/><button onClick={() => void addImpact()} className="rounded bg-primary px-3 text-sm font-bold text-primary-foreground">Add</button></div>}</section></div><section className="mt-6 border-t border-border pt-5"><h3 className="font-bold">Community feedback</h3>{(selected.community_feedback ?? []).map((item: any) => <p key={item.id} className="mt-2 rounded bg-surface p-2 text-sm">{item.verdict.replaceAll("_", " ")} | {item.comment}</p>)}<div className="mt-3 flex flex-wrap gap-2"><select value={verdict} onChange={(e) => setVerdict(e.target.value)} className="rounded border border-input bg-background p-2 text-sm"><option value="solved">Solved</option><option value="partially_solved">Partially solved</option><option value="not_solved">Not solved</option></select><input value={feedback} onChange={(e) => setFeedback(e.target.value)} placeholder="Share outcome feedback" className="min-w-48 flex-1 rounded border border-input p-2 text-sm"/><button onClick={() => void addFeedback()} className="rounded bg-primary px-3 text-sm font-bold text-primary-foreground">Submit</button></div></section></> : <p className="text-muted-foreground">Select a project to open its workspace.</p>}</div></div></section>;
 }
 
 function Notifications({ user, go }: { user: User | null; go: (x: Screen) => void }) {
@@ -4380,7 +4703,7 @@ function Notifications({ user, go }: { user: User | null; go: (x: Screen) => voi
     const { error } = await supabase!.from("notifications").update({ read_at: new Date().toISOString() }).eq("id", id);
     if (!error) setItems((current) => current.map((item) => item.id === id ? { ...item, read_at: new Date().toISOString() } : item));
   };
-  return <section className="container-page max-w-3xl py-12"><h1 className="text-3xl font-bold">Notifications</h1><p className="mt-2 text-muted-foreground">Assignment and workflow updates are stored here.</p><div className="mt-7 space-y-3">{loading ? <p>Loading…</p> : !items.length ? <p className="card-surface p-6 text-muted-foreground">You have no notifications yet.</p> : items.map((item) => <article key={item.id} className={`card-surface flex gap-4 p-5 ${item.read_at ? "opacity-70" : "border-primary/30"}`}><Bell className="mt-1 shrink-0 text-primary" size={18} /><div className="min-w-0 flex-1"><p className="font-bold">{item.title}</p>{item.body && <p className="mt-1 text-sm text-muted-foreground">{item.body}</p>}<p className="mt-2 text-xs text-muted-foreground">{new Date(item.created_at).toLocaleString()}</p></div>{!item.read_at && <button onClick={() => void markRead(item.id)} className="h-fit text-xs font-bold text-primary">Mark read</button>}</article>)}</div></section>;
+  return <section className="container-page max-w-3xl py-12"><h1 className="text-3xl font-bold">Notifications</h1><p className="mt-2 text-muted-foreground">Assignment and workflow updates are stored here.</p><div className="mt-7 space-y-3">{loading ? <p>Loading...</p> : !items.length ? <p className="card-surface p-6 text-muted-foreground">You have no notifications yet.</p> : items.map((item) => <article key={item.id} className={`card-surface flex gap-4 p-5 ${item.read_at ? "opacity-70" : "border-primary/30"}`}><Bell className="mt-1 shrink-0 text-primary" size={18} /><div className="min-w-0 flex-1"><p className="font-bold">{item.title}</p>{item.body && <p className="mt-1 text-sm text-muted-foreground">{item.body}</p>}<p className="mt-2 text-xs text-muted-foreground">{new Date(item.created_at).toLocaleString()}</p></div>{!item.read_at && <button onClick={() => void markRead(item.id)} className="h-fit text-xs font-bold text-primary">Mark read</button>}</article>)}</div></section>;
 }
 
 function MyReports({ user, go }: { user: User | null; go: (x: Screen) => void }) {
@@ -4421,7 +4744,7 @@ function MyReports({ user, go }: { user: User | null; go: (x: Screen) => void })
       <h1 className="text-3xl font-bold">My reports</h1>
       <div className="mt-7 space-y-3">
         {loading ? (
-          <p>Loading…</p>
+          <p>Loading...</p>
         ) : data.length === 0 ? (
           <p className="text-muted-foreground">You have not submitted a report yet.</p>
         ) : (
@@ -4430,7 +4753,7 @@ function MyReports({ user, go }: { user: User | null; go: (x: Screen) => void })
               <b className="text-xs text-primary">{r.challenges?.public_id || "REPORT"}</b>
               <p className="mt-2 font-bold">{r.challenges?.title || r.description}</p>
               <p className="mt-2 text-sm text-muted-foreground">
-                {r.district} · Submitted {new Date(r.created_at).toLocaleDateString()}
+                {r.district} | Submitted {new Date(r.created_at).toLocaleDateString()}
               </p>
               <div className="mt-3 flex gap-2 text-xs font-bold">
                 <span className="rounded-full bg-surface px-2 py-1">
@@ -4575,23 +4898,51 @@ function AdminLogin({ complete }: { complete: () => void }) {
           onClick={() => void signIn()}
           className="mt-5 w-full rounded-lg bg-primary py-3 font-bold text-primary-foreground disabled:opacity-50"
         >
-          {busy ? "Checking access…" : "Sign in securely"}
+          {busy ? "Checking access..." : "Sign in securely"}
         </button>
       </div>
     </section>
   );
 }
 
-function AdminRedirect({ user, go }: { user: User | null; go: (x: Screen) => void }) {
+function AdminRedirect({ go }: { go: (x: Screen) => void }) {
   useEffect(() => {
-    const redirect = setTimeout(() => go(user ? "coordinator" : "admin-login"), 250);
+    const redirect = setTimeout(() => go("home"), 250);
     return () => clearTimeout(redirect);
-  }, [go, user]);
+  }, [go]);
   return (
     <section className="container-page py-20 text-center text-sm text-muted-foreground">
-      Redirecting…
+      Administrator access is required. Redirecting...
     </section>
   );
+}
+
+type PublicHoliday = { holiday_date: string; name: string };
+
+function HolidayCalendarAdmin({ flash }: { flash: (message: string) => void }) {
+  const [holidays, setHolidays] = useState<PublicHoliday[]>([]);
+  const [date, setDate] = useState("");
+  const [name, setName] = useState("");
+  const load = async () => {
+    if (!supabase) return;
+    const { data, error } = await supabase.from("public_holidays").select("holiday_date,name").order("holiday_date");
+    if (error) flash(`Could not load public holidays: ${error.message}`);
+    else setHolidays((data ?? []) as PublicHoliday[]);
+  };
+  useEffect(() => { void load(); }, []);
+  const add = async () => {
+    if (!date || !name.trim() || !supabase) return flash("Enter a holiday date and name.");
+    const { error } = await supabase.from("public_holidays").upsert({ holiday_date: date, name: name.trim() });
+    if (error) return flash(error.message);
+    setDate(""); setName(""); await load(); flash("Public holiday saved. New task deadlines will exclude it.");
+  };
+  const remove = async (holidayDate: string) => {
+    if (!supabase) return;
+    const { error } = await supabase.from("public_holidays").delete().eq("holiday_date", holidayDate);
+    if (error) return flash(error.message);
+    await load(); flash("Public holiday removed.");
+  };
+  return <section className="mt-7 max-w-3xl"><h2 className="text-2xl font-bold">Public holiday calendar</h2><p className="mt-2 text-sm text-muted-foreground">The automatic assignment deadline counts three working days. Saturdays, Sundays, and these configured public holidays are excluded.</p><div className="card-surface mt-5 p-5"><div className="grid gap-3 sm:grid-cols-[1fr_1.4fr_auto]"><input type="date" value={date} onChange={(event) => setDate(event.target.value)} className="rounded-lg border border-input bg-background p-3"/><input value={name} onChange={(event) => setName(event.target.value)} placeholder="Holiday name" className="rounded-lg border border-input p-3"/><button onClick={() => void add()} className="rounded-lg bg-primary px-4 py-3 text-sm font-bold text-primary-foreground">Add holiday</button></div></div><div className="mt-5 space-y-2">{holidays.map((holiday) => <article key={holiday.holiday_date} className="card-surface flex items-center justify-between gap-3 p-4"><div><b>{holiday.name}</b><p className="mt-1 text-sm text-muted-foreground">{new Date(`${holiday.holiday_date}T00:00:00`).toLocaleDateString(undefined, { dateStyle: "long" })}</p></div><button onClick={() => void remove(holiday.holiday_date)} className="rounded-lg px-3 py-2 text-sm font-bold text-destructive hover:bg-destructive-soft">Remove</button></article>)}{!holidays.length && <p className="card-surface p-5 text-sm text-muted-foreground">No public holidays are configured.</p>}</div></section>;
 }
 
 function AdminControlCenter({
@@ -4692,6 +5043,7 @@ function AdminControlCenter({
     "All Tasks",
     "Task Tracking",
     "Smart Task Allocation",
+    "Public Holidays",
     "Reassignments",
     "Skilled Participants",
     "Volunteers",
@@ -4758,9 +5110,9 @@ function AdminControlCenter({
     ["Reassigned tasks", transfers.length],
   ] as const;
   return (
-    <div className="min-h-screen bg-surface">
-      <div className="mx-auto flex max-w-[1700px]">
-        <aside className="sticky top-0 hidden h-screen w-68 shrink-0 border-r border-border bg-card p-5 lg:block">
+    <div className="dashboard-shell min-h-screen bg-surface">
+      <div className="dashboard-frame mx-auto flex max-w-[1700px]">
+        <aside className="app-sidebar sticky top-0 hidden h-screen w-68 shrink-0 border-r border-border bg-card p-5 lg:block">
           <div className="flex items-center gap-3 px-2">
             <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground">
               <ShieldCheck size={20} />
@@ -4797,23 +5149,28 @@ function AdminControlCenter({
         <nav className="fixed inset-x-0 bottom-0 z-30 flex gap-1 overflow-x-auto border-t border-border bg-card p-2 shadow-[0_-4px_16px_rgba(0,0,0,.08)] lg:hidden">
           {nav.map((item) => <button key={item} onClick={() => { setSection(item); setSelected(null); }} className={`shrink-0 rounded-lg px-3 py-2 text-xs font-bold ${section === item ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>{item}</button>)}
         </nav>
-        <main className="min-w-0 flex-1 p-4 pb-20 sm:p-7 lg:pb-7">
-          <header className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <p className="text-sm font-medium text-primary">PLATFORM ADMINISTRATION</p>
-              <h1 className="mt-1 text-2xl font-bold sm:text-3xl">Admin Control Center</h1>
-            </div>
-            <div className="flex w-full max-w-md items-center gap-2 rounded-lg border border-input bg-card px-3">
+        <main className="dashboard-main min-w-0 flex-1 p-4 pb-20 sm:p-7 lg:pb-7">
+          <header className="dashboard-topbar">
+            <div className="dashboard-search flex w-full max-w-xl items-center gap-2 rounded-lg border border-input bg-card px-3">
               <Search size={16} className="text-muted-foreground" />
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search organizations, tasks, people…"
+                placeholder="Search organizations, tasks, people..."
                 className="w-full bg-transparent py-2.5 text-sm outline-none"
               />
             </div>
           </header>
-          {section === "Financial Transparency" && <FundingTransparency user={user} profile={profile} flash={flash} />}
+          <section className="dashboard-heading mt-6 flex flex-wrap items-center justify-between gap-5">
+            <div>
+              <p className="text-sm font-medium text-primary">PLATFORM ADMINISTRATION</p>
+              <h1 className="mt-1 text-2xl font-bold sm:text-3xl">Admin Control Center</h1>
+              <p className="mt-2 text-sm text-muted-foreground">Monitor activity, manage resources, and drive impact across communities.</p>
+            </div>
+            <aside className="dashboard-quote"><span aria-hidden="true">&#10047;</span><p><b>“Stronger communities,<br />a brighter tomorrow.”</b><br /><small>— SamajSetu</small></p></aside>
+          </section>
+          {section === "Financial Transparency" && <FundingTransparencyV2 user={user} profile={profile} flash={flash} />}
+          {section === "Public Holidays" && <HolidayCalendarAdmin flash={flash} />}
           {section === "Dashboard" && (
             <>
               <div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -4822,7 +5179,7 @@ function AdminControlCenter({
                     key={label}
                     label={label}
                     value={value}
-                    icon={<Activity size={18} />}
+                    icon={label.includes("Organization") ? <Building2 size={18} /> : label.includes("NGO") || label.includes("volunteer") ? <Users size={18} /> : label.includes("Completed") ? <CheckCircle2 size={18} /> : label.includes("Pending") ? <Clock3 size={18} /> : label.includes("Reassigned") ? <Repeat2 size={18} /> : label.includes("participant") ? <BadgeCheck size={18} /> : <ClipboardCheck size={18} />}
                   />
                 ))}
               </div>
@@ -4843,7 +5200,7 @@ function AdminControlCenter({
                         <span>
                           <b className="block text-sm">{task.title}</b>
                           <span className="text-xs text-muted-foreground">
-                            {task.public_id} · {task.district}
+                            {task.public_id} | {task.district}
                           </span>
                         </span>
                         <span className="text-xs font-bold text-primary">{task.stage}</span>
@@ -4914,16 +5271,16 @@ function AdminControlCenter({
                       {shownPartners.map((partner) => (
                         <tr key={partner.id} className="border-t border-border">
                           <td className="p-4 font-semibold">{partner.name}</td>
-                          <td className="p-4">{partner.contact_email ?? "—"}</td>
+                          <td className="p-4">{partner.contact_email ?? "-"}</td>
                           <td className="p-4 text-xs">
-                            {partner.locality || partner.district || "—"}
+                            {partner.locality || partner.district || "-"}
                             <br />
                             {partner.latitude != null
                               ? `${partner.latitude}, ${partner.longitude}`
                               : "GPS unavailable"}
                           </td>
-                          <td className="p-4">{partner.expertise.join(", ") || "—"}</td>
-                          <td className="p-4">{partner.capabilities.join(", ") || "—"}</td>
+                          <td className="p-4">{partner.expertise.join(", ") || "-"}</td>
+                          <td className="p-4">{partner.capabilities.join(", ") || "-"}</td>
                           <td className="p-4">
                             <span className="rounded-full bg-primary-soft px-2.5 py-1 text-xs font-bold text-primary">
                               {partner.account_status ?? "Active"}
@@ -4952,7 +5309,7 @@ function AdminControlCenter({
           {selected && (
             <section className="mt-7">
               <button onClick={() => setSelected(null)} className="text-sm font-bold text-primary">
-                ← Back to partners
+                Back to partners
               </button>
               <div className="mt-4 grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
                 <article className="card-surface p-6">
@@ -5007,11 +5364,11 @@ function AdminControlCenter({
                         return (
                           <div key={assignment.id} className="rounded-lg bg-surface p-3 text-sm">
                             <b>
-                              {challenge?.public_id ?? "Task"} ·{" "}
+                              {challenge?.public_id ?? "Task"} |{" "}
                               {challenge?.title ?? "Assigned task"}
                             </b>
                             <p className="mt-1 text-xs text-muted-foreground">
-                              {assignment.status.replaceAll("_", " ")} ·{" "}
+                              {assignment.status.replaceAll("_", " ")} |{" "}
                               {new Date(assignment.created_at).toLocaleDateString()}
                             </p>
                           </div>
@@ -5035,7 +5392,7 @@ function AdminControlCenter({
                         <div key={member.id} className="rounded-lg bg-surface p-3 text-sm">
                           <b>{member.name}</b>
                           <p className="mt-1 text-xs text-muted-foreground">
-                            {member.skills.join(", ") || "General"} ·{" "}
+                            {member.skills.join(", ") || "General"} |{" "}
                             {member.availability || "Availability not set"}
                           </p>
                         </div>
@@ -5095,11 +5452,11 @@ function AdminControlCenter({
                       <div className="flex flex-wrap items-center justify-between gap-4">
                       <div>
                         <p className="text-xs font-bold text-primary">
-                          {task.public_id} · {task.domain}
+                          {task.public_id} | {task.domain}
                         </p>
                         <h3 className="mt-1 font-bold">{task.title}</h3>
                         <p className="mt-1 text-sm text-muted-foreground">
-                          {task.district} · Reported{" "}
+                          {task.district} | Reported{" "}
                           {new Date(task.created_at).toLocaleDateString()}
                         </p>
                       </div>
@@ -5179,7 +5536,7 @@ function AdminProblemReview({ flash, refresh }: { flash: (message: string) => vo
     if (error || !data?.signedUrl) return flash(error?.message ?? "Unable to open evidence.");
     window.open(data.signedUrl, "_blank", "noopener,noreferrer");
   };
-  return <section className="mt-7"><h2 className="text-2xl font-bold">Citizen problem review</h2><p className="mt-1 text-sm text-muted-foreground">Review the complete report, exact reported location and private evidence. Assigning priority starts smart partner allocation.</p><div className="mt-5 space-y-4">{items.map((item) => <article key={`${item.challenge_id}-${item.report_id}`} className="card-surface p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-bold text-primary">{item.public_id} · {item.domain}</p><h3 className="mt-1 text-lg font-bold">{item.title}</h3><p className="mt-2 text-sm text-muted-foreground">{item.summary}</p></div><span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">Current: {item.priority_score}/100 · {item.priority_level}</span></div><div className="mt-4 grid gap-3 text-sm sm:grid-cols-2"><p><b>Submitted location:</b> {item.district}{item.block ? `, ${item.block}` : ""}{item.locality ? `, ${item.locality}` : ""}</p><p><b>Exact report GPS:</b> {item.report_latitude ?? "Not shared"}, {item.report_longitude ?? "Not shared"}</p><p><b>Citizen severity / urgency:</b> {item.severity}/4 · {item.urgency}/4</p><p><b>Affected people:</b> {item.affected_population ?? "Not provided"}</p></div>{item.report_description && <p className="mt-3 rounded-lg bg-surface p-3 text-sm"><b>Citizen description:</b> {item.report_description}</p>}{item.voice_transcript && <p className="mt-2 rounded-lg bg-surface p-3 text-sm"><b>Original voice transcript:</b> {item.voice_transcript}</p>}<div className="mt-3"><p className="text-sm font-bold">Private submitted media ({item.evidence.length})</p><div className="mt-2 flex flex-wrap gap-2">{item.evidence.map((media) => <button key={media.path} onClick={() => void evidenceUrl(media.path)} className="rounded-lg border border-input px-3 py-2 text-xs font-bold text-primary">Open {media.mime_type.split("/")[0]} · {Math.ceil(media.size_bytes / 1024)} KB</button>)}{!item.evidence.length && <p className="text-sm text-muted-foreground">No media attached.</p>}</div></div><div className="mt-4 grid gap-2 sm:grid-cols-[150px_1fr_auto]"><input value={scores[item.challenge_id] ?? String(item.priority_score)} onChange={(event) => setScores((all) => ({ ...all, [item.challenge_id]: event.target.value }))} type="number" min="0" max="100" placeholder="0–100" className="rounded-lg border border-input p-3" aria-label="Priority score"/><input value={notes[item.challenge_id] ?? ""} onChange={(event) => setNotes((all) => ({ ...all, [item.challenge_id]: event.target.value }))} placeholder="Priority rationale (optional)" className="rounded-lg border border-input p-3"/><button onClick={() => void assign(item)} disabled={busy === item.challenge_id} className="rounded-lg bg-primary px-4 py-3 text-sm font-bold text-primary-foreground disabled:opacity-50">{busy === item.challenge_id ? "Saving…" : "Assign & allocate"}</button></div></article>)}{!items.length && <p className="card-surface p-5 text-muted-foreground">No citizen reports are available for review.</p>}</div></section>;
+  return <section className="mt-7"><h2 className="text-2xl font-bold">Citizen problem review</h2><p className="mt-1 text-sm text-muted-foreground">Review the complete report, exact reported location and private evidence. Assigning priority starts smart partner allocation.</p><div className="mt-5 space-y-4">{items.map((item) => <article key={`${item.challenge_id}-${item.report_id}`} className="card-surface p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-bold text-primary">{item.public_id} | {item.domain}</p><h3 className="mt-1 text-lg font-bold">{item.title}</h3><p className="mt-2 text-sm text-muted-foreground">{item.summary}</p></div><span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">Current: {item.priority_score}/100 | {item.priority_level}</span></div><div className="mt-4 grid gap-3 text-sm sm:grid-cols-2"><p><b>Submitted location:</b> {item.district}{item.block ? `, ${item.block}` : ""}{item.locality ? `, ${item.locality}` : ""}</p><p><b>Exact report GPS:</b> {item.report_latitude ?? "Not shared"}, {item.report_longitude ?? "Not shared"}</p><p><b>Citizen severity / urgency:</b> {item.severity}/4 | {item.urgency}/4</p><p><b>Affected people:</b> {item.affected_population ?? "Not provided"}</p></div>{item.report_description && <p className="mt-3 rounded-lg bg-surface p-3 text-sm"><b>Citizen description:</b> {item.report_description}</p>}{item.voice_transcript && <p className="mt-2 rounded-lg bg-surface p-3 text-sm"><b>Original voice transcript:</b> {item.voice_transcript}</p>}<div className="mt-3"><p className="text-sm font-bold">Private submitted media ({item.evidence.length})</p><div className="mt-2 flex flex-wrap gap-2">{item.evidence.map((media) => <button key={media.path} onClick={() => void evidenceUrl(media.path)} className="rounded-lg border border-input px-3 py-2 text-xs font-bold text-primary">Open {media.mime_type.split("/")[0]} | {Math.ceil(media.size_bytes / 1024)} KB</button>)}{!item.evidence.length && <p className="text-sm text-muted-foreground">No media attached.</p>}</div></div><div className="mt-4 grid gap-2 sm:grid-cols-[150px_1fr_auto]"><input value={scores[item.challenge_id] ?? String(item.priority_score)} onChange={(event) => setScores((all) => ({ ...all, [item.challenge_id]: event.target.value }))} type="number" min="0" max="100" placeholder="0-100" className="rounded-lg border border-input p-3" aria-label="Priority score"/><input value={notes[item.challenge_id] ?? ""} onChange={(event) => setNotes((all) => ({ ...all, [item.challenge_id]: event.target.value }))} placeholder="Priority rationale (optional)" className="rounded-lg border border-input p-3"/><button onClick={() => void assign(item)} disabled={busy === item.challenge_id} className="rounded-lg bg-primary px-4 py-3 text-sm font-bold text-primary-foreground disabled:opacity-50">{busy === item.challenge_id ? "Saving..." : "Assign & allocate"}</button></div></article>)}{!items.length && <p className="card-surface p-5 text-muted-foreground">No citizen reports are available for review.</p>}</div></section>;
 }
 
 function AdminDataSection({
@@ -5300,7 +5657,7 @@ function AdminDataSection({
               {latestRankings.map((row) => (
                 <tr key={row.id} className="border-t border-border">
                   <td className="p-4 font-semibold">{challenge(row.challenge_id)?.public_id ?? "Task"}<br /><span className="font-normal text-muted-foreground">{challenge(row.challenge_id)?.title ?? ""}</span></td>
-                  <td className="p-4">{partner(row.organization_id)?.name ?? "—"}</td>
+                  <td className="p-4">{partner(row.organization_id)?.name ?? "-"}</td>
                   <td className="p-4">#{row.allocation_rank}</td><td className="p-4 font-bold text-primary">{row.suitability_score}</td>
                   <td className="p-4">{row.distance_km == null ? "GPS unavailable" : `${row.distance_km} km`}</td>
                   <td className="p-4">{row.expertise_score}%</td><td className="p-4">{row.resource_score}%</td><td className="p-4">{row.availability_score}%</td><td className="p-4">{row.performance_score}%</td><td className="p-4">{row.workload_score}%</td>
@@ -5350,8 +5707,8 @@ function AdminDataSection({
                 return (
                   <tr key={member.id} className="border-t border-border">
                     <td className="p-4 font-semibold">{member.name}</td>
-                    <td className="p-4">{partner(member.organization_id)?.name ?? "—"}</td>
-                    <td className="p-4">{member.skills.join(", ") || "—"}</td>
+                    <td className="p-4">{partner(member.organization_id)?.name ?? "-"}</td>
+                    <td className="p-4">{member.skills.join(", ") || "-"}</td>
                     <td className="p-4">{member.availability || "Not set"}</td>
                     <td className="p-4">
                       {assignment
@@ -5393,7 +5750,7 @@ function AdminDataSection({
               >
                 <div>
                   <p className="text-xs font-bold text-primary">
-                    {challenge(item.challenge_id)?.public_id ?? "TASK"} ·{" "}
+                    {challenge(item.challenge_id)?.public_id ?? "TASK"} |{" "}
                     {partner(item.organization_id)?.name ?? "Unassigned partner"}
                   </p>
                   <h3 className="mt-1 font-bold">
@@ -5402,14 +5759,14 @@ function AdminDataSection({
                   <p className="mt-1 text-sm text-muted-foreground">
                     Assigned {new Date(item.created_at).toLocaleString()}{" "}
                     {item.accepted_at
-                      ? `· Accepted ${new Date(item.accepted_at).toLocaleString()}`
-                      : "· Awaiting acceptance"}
+                      ? `| Accepted ${new Date(item.accepted_at).toLocaleString()}`
+                      : "| Awaiting acceptance"}
                   </p>
                 </div>
                 <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
                   {item.status.replaceAll("_", " ")}
                 </span>
-                {item.status === "pending" && !item.accepted_at && <AcceptanceCountdown deadline={item.acceptance_deadline ?? new Date(new Date(item.created_at).getTime() + 48 * 60 * 60 * 1000).toISOString()} />}
+                {item.status === "pending" && !item.accepted_at && <AcceptanceCountdown deadline={item.acceptance_deadline} />}
               </article>
             ))}
           {!assignments.length && (
@@ -5450,10 +5807,10 @@ function AdminDataSection({
                         : "Task"}
                     </td>
                     <td className="p-4">
-                      {assignment ? (partner(assignment.organization_id)?.name ?? "—") : "—"}
+                      {assignment ? (partner(assignment.organization_id)?.name ?? "-") : "-"}
                     </td>
                     <td className="p-4">{transfer.reason}</td>
-                    <td className="p-4">{partner(transfer.to_organization_id)?.name ?? "—"}</td>
+                    <td className="p-4">{partner(transfer.to_organization_id)?.name ?? "-"}</td>
                     <td className="p-4">{new Date(transfer.created_at).toLocaleString()}</td>
                     <td className="p-4">
                       {assignment?.status.replaceAll("_", " ") ?? "Reassigned"}
@@ -5489,7 +5846,7 @@ function AdminDataSection({
                   <div>
                     <h3 className="font-bold">{item.name}</h3>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {item.organization_type} ·{" "}
+                      {item.organization_type} |{" "}
                       {item.locality || item.district || "Location not set"}
                     </p>
                   </div>
@@ -5559,39 +5916,51 @@ function AdminDataSection({
     <section className="mt-7">
       <h2 className="text-2xl font-bold">Analytics</h2>
       <p className="mt-2 text-sm text-muted-foreground">Live platform-wide operating metrics.</p>
-      <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <DashboardStat label="Partners" value={partners.length} icon={<Building2 size={18} />} />
-        <DashboardStat label="Members" value={members.length} icon={<Users size={18} />} />
-        <DashboardStat
-          label="Assignments"
-          value={assignments.length}
-          icon={<ClipboardCheck size={18} />}
-        />
-        <DashboardStat
-          label="Average priority"
-          value={
-            tasks.length
-              ? Math.round(tasks.reduce((sum, item) => sum + item.priority_score, 0) / tasks.length)
-              : 0
-          }
-          icon={<Activity size={18} />}
-        />
-      </div>
-      <div className="mt-5 card-surface p-6">
-        <h3 className="font-bold">Task status distribution</h3>
-        <div className="mt-4 grid gap-3 sm:grid-cols-3">
-          {["reported", "validated", "impact"].map((stage) => (
-            <div key={stage} className="rounded-lg bg-surface p-4">
-              <b className="text-xl text-primary">
-                {tasks.filter((item) => item.stage === stage).length}
-              </b>
-              <p className="mt-1 text-sm capitalize text-muted-foreground">{stage}</p>
-            </div>
-          ))}
-        </div>
-      </div>
+      <AdminAnalytics assignments={assignments} partners={partners} tasks={tasks} transfers={transfers} />
     </section>
   );
+}
+
+function AdminAnalytics({
+  assignments,
+  partners,
+  tasks,
+  transfers,
+}: {
+  assignments: AdminAssignment[];
+  partners: AdminPartner[];
+  tasks: Challenge[];
+  transfers: AdminTransfer[];
+}) {
+  const partnerFor = (id: string) => partners.find((partner) => partner.id === id);
+  const challengeFor = (id: string) => tasks.find((task) => task.id === id);
+  const solved = assignments.filter((item) => ["completed", "verified"].includes(item.status));
+  const organizationAssignments = assignments.filter((item) => partnerFor(item.organization_id)?.organization_type !== "NGO");
+  const ngoAssignments = assignments.filter((item) => partnerFor(item.organization_id)?.organization_type === "NGO");
+  const organizationSolved = solved.filter((item) => partnerFor(item.organization_id)?.organization_type !== "NGO").length;
+  const ngoSolved = solved.filter((item) => partnerFor(item.organization_id)?.organization_type === "NGO").length;
+  const inProgress = assignments.filter((item) => ["accepted", "in_progress"].includes(item.status)).length;
+  const couldNotSolve = assignments.filter((item) => item.status === "unable_to_resolve").length;
+  const aggregate = (key: (assignment: AdminAssignment) => string) => {
+    const values = new Map<string, number>();
+    for (const item of solved) { const label = key(item); values.set(label, (values.get(label) ?? 0) + 1); }
+    return [...values.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value).slice(0, 8);
+  };
+  const monthLabels = Array.from({ length: 6 }, (_, index) => {
+    const date = new Date(); date.setDate(1); date.setMonth(date.getMonth() - (5 - index));
+    return { key: `${date.getFullYear()}-${date.getMonth()}`, label: date.toLocaleDateString(undefined, { month: "short" }), value: 0 };
+  });
+  for (const item of solved) {
+    const date = new Date(item.resolved_at ?? item.created_at);
+    const bucket = monthLabels.find((month) => month.key === `${date.getFullYear()}-${date.getMonth()}`);
+    if (bucket) bucket.value += 1;
+  }
+  const categoryData = aggregate((item) => challengeFor(item.challenge_id)?.domain || "Uncategorised");
+  const districtData = aggregate((item) => challengeFor(item.challenge_id)?.district || "Unspecified");
+  const maximum = Math.max(organizationSolved, ngoSolved, ...categoryData.map((item) => item.value), ...districtData.map((item) => item.value), 1);
+  const trendMaximum = Math.max(...monthLabels.map((month) => month.value), 1);
+  const HorizontalChart = ({ title, data }: { title: string; data: { label: string; value: number }[] }) => <section className="card-surface p-5"><h3 className="font-bold">{title}</h3><div className="mt-5 space-y-3">{data.length ? data.map((item) => <div key={item.label}><div className="mb-1 flex justify-between gap-3 text-sm"><span className="truncate">{item.label}</span><b>{item.value}</b></div><div className="h-3 overflow-hidden rounded-full bg-surface"><div className="h-full rounded-full bg-primary" style={{ width: `${(item.value / maximum) * 100}%` }} /></div></div>) : <p className="text-sm text-muted-foreground">No solved problems recorded yet.</p>}</div></section>;
+  return <><div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><DashboardStat label="Problems solved by organizations" value={organizationSolved} icon={<Building2 size={18} />} /><DashboardStat label="Problems solved by NGOs" value={ngoSolved} icon={<ShieldCheck size={18} />} /><DashboardStat label="Total problems solved" value={solved.length} icon={<CheckCircle2 size={18} />} /><DashboardStat label="Handled by organizations" value={organizationAssignments.length} icon={<ClipboardCheck size={18} />} /><DashboardStat label="Handled by NGOs" value={ngoAssignments.length} icon={<ClipboardCheck size={18} />} /><DashboardStat label="Currently being worked on" value={inProgress} icon={<Activity size={18} />} /><DashboardStat label="Could not be solved" value={couldNotSolve} icon={<XCircle size={18} />} /><DashboardStat label="Reassigned problems" value={transfers.length} icon={<Repeat2 size={18} />} /></div><div className="mt-5 grid gap-5 lg:grid-cols-2"><section className="card-surface p-5"><h3 className="font-bold">Organization vs NGO solved problems</h3><p className="mt-1 text-sm text-muted-foreground">Completed assignments, grouped by the assigned partner type.</p><div className="mt-5 space-y-4">{[{ label: "Organizations", value: organizationSolved, color: "bg-primary" }, { label: "NGOs", value: ngoSolved, color: "bg-accent" }].map((item) => <div key={item.label}><div className="mb-1 flex justify-between text-sm"><span>{item.label}</span><b>{item.value}</b></div><div className="h-5 overflow-hidden rounded-full bg-surface"><div className={`h-full rounded-full ${item.color}`} style={{ width: `${(item.value / maximum) * 100}%` }} /></div></div>)}</div></section><section className="card-surface p-5"><h3 className="font-bold">Monthly problems solved</h3><p className="mt-1 text-sm text-muted-foreground">Last six months, based on each assignment's resolution date.</p><div className="mt-5 flex h-38 items-end justify-between gap-2">{monthLabels.map((month) => <div key={month.key} className="flex h-full min-w-0 flex-1 flex-col justify-end text-center"><b className="mb-1 text-xs">{month.value}</b><div className="min-h-1 rounded-t bg-primary" style={{ height: `${Math.max(4, (month.value / trendMaximum) * 100)}%` }} /><span className="mt-2 text-xs text-muted-foreground">{month.label}</span></div>)}</div></section><HorizontalChart title="Category-wise problems solved" data={categoryData} /><HorizontalChart title="District-wise problems solved" data={districtData} /></div></>;
 }
 
 function SupportFunding({ flash }: { flash: (message: string) => void }) {
@@ -5619,7 +5988,7 @@ function SupportFunding({ flash }: { flash: (message: string) => void }) {
     const { error } = await supabase!.from("support_information").delete().eq("id", id);
     if (error) flash(error.message); else { await load(); flash("Support listing deleted."); }
   };
-  return <section className="mt-7"><h2 className="text-2xl font-bold">Support & Funding</h2><p className="mt-1 text-sm text-muted-foreground">Manage government schemes, CSR opportunities, NGO programs, emergency resources, and official contacts. Pending entries are never presented as official schemes.</p><div className="mt-5 grid gap-3 rounded-xl border border-border bg-card p-4 sm:grid-cols-2"><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Program or scheme title" className="rounded-lg border border-input p-2 text-sm" /><select value={type} onChange={(e) => setType(e.target.value)} className="rounded-lg border border-input bg-card p-2 text-sm"><option value="government_scheme">Government scheme</option><option value="government_assistance">Government assistance</option><option value="csr_funding">CSR funding</option><option value="ngo_program">NGO support program</option><option value="department">Relevant department</option><option value="emergency_resource">Emergency resource</option></select><input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Official application link" className="rounded-lg border border-input p-2 text-sm" /><input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Contact information" className="rounded-lg border border-input p-2 text-sm" /><button onClick={() => void add()} className="rounded-lg bg-primary px-4 py-2 text-sm font-bold text-primary-foreground">Add pending listing</button></div><div className="mt-5 space-y-3">{items.map((item) => <article key={item.id} className="card-surface flex flex-wrap items-center justify-between gap-3 p-4"><div><b>{item.title}</b><p className="mt-1 text-xs text-muted-foreground">{item.support_type.replaceAll("_", " ")} · {item.official_url || item.contact_information || "No link/contact supplied"}</p></div><div className="flex items-center gap-2"><span className={`rounded-full px-2 py-1 text-xs font-bold ${item.verification_status === "verified" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{item.verification_status}</span><button onClick={() => void updateStatus(item.id, item.verification_status === "verified" ? "pending" : "verified")} className="text-sm font-bold text-primary">{item.verification_status === "verified" ? "Mark pending" : "Verify"}</button><button onClick={() => void remove(item.id)} className="text-sm font-bold text-destructive">Delete</button></div></article>)}{!items.length && <p className="rounded-lg bg-surface p-5 text-sm text-muted-foreground">No support listings yet.</p>}</div></section>;
+  return <section className="mt-7"><h2 className="text-2xl font-bold">Support & Funding</h2><p className="mt-1 text-sm text-muted-foreground">Manage government schemes, CSR opportunities, NGO programs, emergency resources, and official contacts. Pending entries are never presented as official schemes.</p><div className="mt-5 grid gap-3 rounded-xl border border-border bg-card p-4 sm:grid-cols-2"><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Program or scheme title" className="rounded-lg border border-input p-2 text-sm" /><select value={type} onChange={(e) => setType(e.target.value)} className="rounded-lg border border-input bg-card p-2 text-sm"><option value="government_scheme">Government scheme</option><option value="government_assistance">Government assistance</option><option value="csr_funding">CSR funding</option><option value="ngo_program">NGO support program</option><option value="department">Relevant department</option><option value="emergency_resource">Emergency resource</option></select><input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Official application link" className="rounded-lg border border-input p-2 text-sm" /><input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Contact information" className="rounded-lg border border-input p-2 text-sm" /><button onClick={() => void add()} className="rounded-lg bg-primary px-4 py-2 text-sm font-bold text-primary-foreground">Add pending listing</button></div><div className="mt-5 space-y-3">{items.map((item) => <article key={item.id} className="card-surface flex flex-wrap items-center justify-between gap-3 p-4"><div><b>{item.title}</b><p className="mt-1 text-xs text-muted-foreground">{item.support_type.replaceAll("_", " ")} | {item.official_url || item.contact_information || "No link/contact supplied"}</p></div><div className="flex items-center gap-2"><span className={`rounded-full px-2 py-1 text-xs font-bold ${item.verification_status === "verified" ? "bg-[#EAF7EF] text-[#0B5D2A]" : "bg-[#F6FBF8] text-[#0B5D2A]"}`}>{item.verification_status}</span><button onClick={() => void updateStatus(item.id, item.verification_status === "verified" ? "pending" : "verified")} className="text-sm font-bold text-primary">{item.verification_status === "verified" ? "Mark pending" : "Verify"}</button><button onClick={() => void remove(item.id)} className="text-sm font-bold text-destructive">Delete</button></div></article>)}{!items.length && <p className="rounded-lg bg-surface p-5 text-sm text-muted-foreground">No support listings yet.</p>}</div></section>;
 }
 
 function Admin({ flash, refresh }: { flash: (x: string) => void; refresh: (q?: string) => void }) {
@@ -5670,7 +6039,7 @@ function Admin({ flash, refresh }: { flash: (x: string) => void; refresh: (q?: s
       </div>
       <div className="mt-7 space-y-3">
         {loading ? (
-          <p>Loading queue…</p>
+          <p>Loading queue...</p>
         ) : (
           items.map((c) => (
             <div
@@ -5680,9 +6049,9 @@ function Admin({ flash, refresh }: { flash: (x: string) => void; refresh: (q?: s
               <div>
                 <b className="text-xs text-primary">{c.public_id}</b>
                 <p className="mt-1 font-bold">{c.title}</p>
-                {analyses[c.id] && <details className="mt-3 max-w-xl rounded-lg bg-primary-soft/40 p-3 text-xs"><summary className="cursor-pointer font-bold text-primary">AI-assisted priority analysis · {analyses[c.id].analysis_status.replaceAll("_", " ")} · {analyses[c.id].confidence ?? 0}% confidence</summary><div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">{Object.entries(analyses[c.id].validated_factors).filter(([key]) => !["emergency_signal", "critical_hazard"].includes(key)).map(([key, value]) => <p key={key}><span className="text-muted-foreground">{key.replaceAll("_", " ")}</span><br /><b>{String(value)}/100</b></p>)}</div>{analyses[c.id].ai_analysis?.reasons?.length ? <ul className="mt-3 list-disc space-y-1 pl-4">{analyses[c.id].ai_analysis.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}{analyses[c.id].override_applied && <p className="mt-3 font-bold text-destructive">Critical override: {analyses[c.id].override_reason}</p>}</details>}
+                {analyses[c.id] && <details className="mt-3 max-w-xl rounded-lg bg-primary-soft/40 p-3 text-xs"><summary className="cursor-pointer font-bold text-primary">AI-assisted priority analysis | {analyses[c.id].analysis_status.replaceAll("_", " ")} | {analyses[c.id].confidence ?? 0}% confidence</summary><div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">{Object.entries(analyses[c.id].validated_factors).filter(([key]) => !["emergency_signal", "critical_hazard"].includes(key)).map(([key, value]) => <p key={key}><span className="text-muted-foreground">{key.replaceAll("_", " ")}</span><br /><b>{String(value)}/100</b></p>)}</div>{analyses[c.id].ai_analysis?.reasons?.length ? <ul className="mt-3 list-disc space-y-1 pl-4">{analyses[c.id].ai_analysis.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}{analyses[c.id].override_applied && <p className="mt-3 font-bold text-destructive">Critical override: {analyses[c.id].override_reason}</p>}</details>}
                 <p className="mt-1 text-sm text-muted-foreground">
-                  {c.district} · {c.domain} · {c.priority_score}/100
+                  {c.district} | {c.domain} | {c.priority_score}/100
                 </p>
               </div>
               <div className="flex items-center gap-3">

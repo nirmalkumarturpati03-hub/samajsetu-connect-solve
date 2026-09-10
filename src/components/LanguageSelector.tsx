@@ -38,6 +38,18 @@ export function LanguageSelector({ onLanguageChange }: { onLanguageChange: (lang
       script.async = true;
       document.body.appendChild(script);
     } else if (window.google?.translate) window.googleTranslateElementInit();
+    const hideTranslateChrome = () => {
+      document.body.style.setProperty("top", "0", "important");
+      document.documentElement.style.setProperty("top", "0", "important");
+      document.querySelectorAll<HTMLElement>("iframe.goog-te-banner-frame, .goog-te-banner-frame, .goog-te-banner, #goog-gt-tt").forEach((element) => {
+        element.style.setProperty("display", "none", "important");
+        element.style.setProperty("visibility", "hidden", "important");
+      });
+    };
+    hideTranslateChrome();
+    const observer = new MutationObserver(hideTranslateChrome);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    return () => observer.disconnect();
   }, [onLanguageChange]);
 
   const changeLanguage = (next: string) => {
