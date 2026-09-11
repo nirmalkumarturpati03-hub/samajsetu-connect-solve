@@ -2281,7 +2281,7 @@ function OrganizationDashboardLegacy({
   return (
     <div className="dashboard-shell min-h-screen bg-surface">
       <div className="dashboard-frame mx-auto flex max-w-[1600px]">
-        <aside className="app-sidebar sticky top-0 hidden h-screen w-68 shrink-0 border-r border-border bg-card p-5 lg:block">
+        <aside className="app-sidebar sticky top-0 hidden h-fit w-68 shrink-0 self-start border-r border-border bg-card p-5 lg:block">
           <div className="flex items-center gap-3 px-2">
             <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground">
               <Building2 size={20} />
@@ -3495,7 +3495,7 @@ function PartnerDashboard({
   return (
     <div className="dashboard-shell min-h-screen bg-surface">
       <div className="dashboard-frame mx-auto flex max-w-[1600px]">
-        <aside className="app-sidebar sticky top-0 hidden h-screen w-68 shrink-0 border-r border-border bg-card p-5 lg:block">
+        <aside className="app-sidebar sticky top-0 hidden h-fit w-68 shrink-0 self-start border-r border-border bg-card p-5 lg:block">
           <div className="flex items-center gap-3 px-2">
             <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground">
               <Building2 size={20} />
@@ -5112,7 +5112,7 @@ function AdminControlCenter({
   return (
     <div className="dashboard-shell min-h-screen bg-surface">
       <div className="dashboard-frame mx-auto flex max-w-[1700px]">
-        <aside className="app-sidebar sticky top-0 hidden h-screen w-68 shrink-0 border-r border-border bg-card p-5 lg:block">
+        <aside className="app-sidebar sticky top-0 hidden h-fit w-68 shrink-0 self-start border-r border-border bg-card p-5 lg:block">
           <div className="flex items-center gap-3 px-2">
             <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground">
               <ShieldCheck size={20} />

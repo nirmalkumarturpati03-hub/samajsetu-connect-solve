@@ -1093,6 +1093,7 @@
     width: 100%;
     max-width: none !important;
     margin: 0;
+    overflow: visible;
     border: 0;
     border-radius: 0;
     box-shadow: none;
@@ -1100,7 +1101,8 @@
 
   .app-sidebar {
     width: 17.7rem !important;
-    height: 100dvh !important;
+    height: fit-content !important;
+    align-self: flex-start;
     padding: 1.4rem 1rem !important;
   }
 
