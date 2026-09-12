@@ -17,9 +17,12 @@ import {
   Download,
   Eye,
   EyeOff,
+  Factory,
   FileSpreadsheet,
   FileUp,
+  GraduationCap,
   Image as ImageIcon,
+  Landmark,
   LocateFixed,
   LayoutDashboard,
   ListChecks,
@@ -34,6 +37,7 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
+  TreePine,
   Upload,
   UserRound,
   Users,
@@ -53,6 +57,7 @@ export const Route = createFileRoute("/")({ component: SamajSetu });
 type Screen =
   | "home"
   | "auth"
+  | "report-role"
   | "report"
   | "explore"
   | "my-reports"
@@ -142,6 +147,7 @@ function cleanLegacyText(value: string | null | undefined) {
 
 function SamajSetu() {
   const [screen, setScreen] = useState<Screen>("home"),
+    [selectedRole, setSelectedRole] = useState("Citizen"),
     [user, setUser] = useState<User | null>(null),
     [profile, setProfile] = useState<Profile | null>(null),
     [partnerIdentity, setPartnerIdentity] = useState<PartnerIdentity | null>(null),
@@ -322,17 +328,28 @@ function SamajSetu() {
   return (
     <main className="samaj-app min-h-screen bg-background">
       {showSplash && <LaunchScreen />}
-      <Header
-        user={user}
-        profile={profile}
-        partnerIdentity={partnerIdentity}
-        go={go}
-        setLanguage={setLanguage}
-        logout={async () => {
-          await supabase!.auth.signOut();
-          go("home");
-        }}
-      />
+      {screen !== "report-role" && (
+        <Header
+          user={user}
+          profile={profile}
+          partnerIdentity={partnerIdentity}
+          go={go}
+          setLanguage={setLanguage}
+          logout={async () => {
+            await supabase!.auth.signOut();
+            go("home");
+          }}
+        />
+      )}
+      {screen === "report-role" && (
+        <ReportRoleSelection
+          go={go}
+          onSelectRole={(role) => {
+            setSelectedRole(role);
+            go("report");
+          }}
+        />
+      )}
       {screen === "home" && <Home go={go} count={challenges.length} user={user} profile={profile} flash={flash} />}{" "}
       {screen === "auth" && (
         <Auth recovery={passwordRecovery}
@@ -358,6 +375,7 @@ function SamajSetu() {
           supportedIds={supportedIds}
           repost={repost}
           speechLanguage={voiceLocale(language)}
+          initialRole={selectedRole}
           complete={() => {
             flash("Report submitted for verification.");
             void loadChallenges();
@@ -438,14 +456,14 @@ function Header({
         </button>
         <nav className="hidden items-center gap-3 text-sm font-bold sm:flex">
           <LanguageSelector onLanguageChange={setLanguage} />
-          {user ? <><button onClick={() => navigate(dashboardScreen)} title="Open dashboard" className="text-right text-xs leading-4"><b className="block text-foreground">{identityName}</b><span className="capitalize text-muted-foreground">{identityRole}</span></button><button onClick={logout} title="Sign out" className="rounded-lg border border-border p-2"><LogOut size={16} /></button></> : <><button onClick={() => go("explore")}>Challenges</button><button onClick={() => go("auth")} className="rounded-lg border border-border px-3 py-2">Sign in / register</button><button onClick={() => navigate("report")} className="rounded-lg bg-primary px-4 py-2 text-primary-foreground">Report</button></>}
+          {user ? <><button onClick={() => navigate(dashboardScreen)} title="Open dashboard" className="text-right text-xs leading-4"><b className="block text-foreground">{identityName}</b><span className="capitalize text-muted-foreground">{identityRole}</span></button><button onClick={logout} title="Sign out" className="rounded-lg border border-border p-2"><LogOut size={16} /></button></> : <><button onClick={() => go("explore")}>Challenges</button><button onClick={() => go("auth")} className="rounded-lg border border-border px-3 py-2">Sign in / register</button><button onClick={() => navigate("report-role")} className="rounded-lg bg-primary px-4 py-2 text-primary-foreground">Report</button></>}
         </nav>
         <button onClick={() => setMenuOpen((open) => !open)} aria-label={menuOpen ? "Close navigation menu" : "Open navigation menu"} className="grid size-11 place-items-center rounded-lg border border-border sm:hidden">
           {menuOpen ? <X size={20} /> : <Menu size={20} />}
         </button>
       </div>
       {menuOpen && <nav className="container-page grid gap-1 border-t border-border py-3 text-sm font-bold sm:hidden">
-        {user ? <><button onClick={() => navigate(dashboardScreen)} className="rounded-lg bg-surface px-3 py-3 text-left"><b className="block">{identityName}</b><span className="text-xs capitalize text-muted-foreground">{identityRole}</span></button><div className="px-2 py-2"><LanguageSelector onLanguageChange={setLanguage} /></div><button onClick={() => { setMenuOpen(false); logout(); }} className="rounded-lg px-3 py-3 text-left text-destructive hover:bg-destructive-soft">Sign out</button></> : <><button onClick={() => navigate("report")} className="rounded-lg bg-primary px-3 py-3 text-left text-primary-foreground">REPORT</button><button onClick={() => navigate("explore")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">CHALLENGES</button><button onClick={() => navigate("auth")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">SIGN IN / REGISTER</button></>}
+        {user ? <><button onClick={() => navigate(dashboardScreen)} className="rounded-lg bg-surface px-3 py-3 text-left"><b className="block">{identityName}</b><span className="text-xs capitalize text-muted-foreground">{identityRole}</span></button><div className="px-2 py-2"><LanguageSelector onLanguageChange={setLanguage} /></div><button onClick={() => { setMenuOpen(false); logout(); }} className="rounded-lg px-3 py-3 text-left text-destructive hover:bg-destructive-soft">Sign out</button></> : <><button onClick={() => navigate("report-role")} className="rounded-lg bg-primary px-3 py-3 text-left text-primary-foreground">REPORT</button><button onClick={() => navigate("explore")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">CHALLENGES</button><button onClick={() => navigate("auth")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">SIGN IN / REGISTER</button></>}
       </nav>}
     </header>
   );
@@ -484,7 +502,7 @@ function Home({ go, count, user, profile, flash }: { go: (x: Screen) => void; co
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <button
-                onClick={() => go("report")}
+                onClick={() => go("report-role")}
                 className="rounded-lg bg-primary px-5 py-3 font-bold text-primary-foreground"
               >
                 Report a problem <ArrowRight className="inline" size={16} />
@@ -514,7 +532,6 @@ function Home({ go, count, user, profile, flash }: { go: (x: Screen) => void; co
         <HeroMetric icon={<BadgeCheck size={23} />} value="Human-led" label="Verification" />
         <p className="hero-metrics-quote">&quot;Real change begins when people<br />come together.&quot;<br /><span>- SamajSetu</span></p>
       </section>
-      <FundingTransparencyV2 user={user} profile={profile} flash={flash} embedded />
       <section id="featured-challenges" className="featured-challenges container-page py-14 sm:py-18">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div><p className="hero-kicker">COMMUNITY ACTION</p><h2 className="mt-3">Featured Challenges</h2><p className="mt-2 text-sm text-muted-foreground">Verified local problems where people and institutions are creating measurable change.</p></div>
@@ -632,8 +649,83 @@ function AuthLegacy({ complete }: { complete: (accountType: string) => void }) {
     </section>
   );
 }
+type PartnerKind =
+  | "University"
+  | "NGO"
+  | "Government"
+  | "Community Group"
+  | "Industry"
+  | "Urban Local Body"
+  | "Panchayati Raj Institution"
+  | "Organization";
+
+const partnerTypes: {
+  kind: PartnerKind;
+  title: string;
+  description: string;
+  action: string;
+  icon: React.ReactNode;
+}[] = [
+  {
+    kind: "University",
+    title: "University",
+    description:
+      "Register an academic team that contributes skilled researchers, student volunteers, and institutional resources.",
+    action: "Register university",
+    icon: <GraduationCap size={22} />,
+  },
+  {
+    kind: "NGO",
+    title: "NGO",
+    description:
+      "Register a non-profit team to contribute expertise and community resources.",
+    action: "Register NGO",
+    icon: <ShieldCheck size={22} />,
+  },
+  {
+    kind: "Government",
+    title: "Government",
+    description:
+      "Register a state or central department to coordinate official resources, personnel, and public services.",
+    action: "Register government",
+    icon: <Landmark size={22} />,
+  },
+  {
+    kind: "Community Group",
+    title: "Community Group",
+    description:
+      "Register a local initiative to contribute grassroots support, regional expertise, and volunteer networks.",
+    action: "Register community group",
+    icon: <Users size={22} />,
+  },
+  {
+    kind: "Industry",
+    title: "Industry",
+    description:
+      "Register a corporate entity to provide industrial resources, infrastructure, and CSR support.",
+    action: "Register industry",
+    icon: <Factory size={22} />,
+  },
+  {
+    kind: "Urban Local Body",
+    title: "Urban Local Body",
+    description:
+      "Register a municipal corporation or council to manage city-level civic response and infrastructure.",
+    action: "Register urban body",
+    icon: <Building2 size={22} />,
+  },
+  {
+    kind: "Panchayati Raj Institution",
+    title: "Panchayati Raj Institution",
+    description:
+      "Register a village or district council to mobilize rural governance and local community resources.",
+    action: "Register Panchayati Raj",
+    icon: <TreePine size={22} />,
+  },
+];
+
 function Auth({ complete, recovery = false }: { complete: (accountType: string) => void; recovery?: boolean }) {
-  const [kind, setKind] = useState<"Organization" | "NGO" | null>(null);
+  const [kind, setKind] = useState<PartnerKind | null>(null);
   const [signIn, setSignIn] = useState(false),
     [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
@@ -710,30 +802,27 @@ function Auth({ complete, recovery = false }: { complete: (accountType: string) 
           Choose the type of team you represent. You can always sign in with the same secure account.
         </p>
         <div className="mt-7 grid gap-4 sm:grid-cols-2">
-          <button
-            onClick={() => setKind("Organization")}
-            className="auth-choice rounded-2xl border border-border p-5 text-left"
-          >
-            <span className="auth-choice-icon"><Users size={22} /></span>
-            <h2 className="mt-4 text-xl font-bold">Organization</h2>
-            <p className="mt-2 text-sm leading-6 text-muted-foreground">
-              Register a response team that contributes skilled people, expertise, and resources.
-            </p>
-            <span className="auth-choice-action mt-5 inline-flex items-center gap-2 text-sm font-bold text-primary">
-              Register organization <ArrowRight size={16} />
-            </span>
-          </button>
-          <button
-            onClick={() => setKind("NGO")}
-            className="auth-choice rounded-2xl border border-border p-5 text-left"
-          >
-            <span className="auth-choice-icon"><ShieldCheck size={22} /></span>
-            <h2 className="mt-4 text-xl font-bold">NGO</h2>
-            <p className="mt-2 text-sm leading-6 text-muted-foreground">
-              Register a non-profit team to contribute expertise and community resources.
-            </p>
-            <span className="auth-choice-action mt-5 inline-flex items-center gap-2 text-sm font-bold text-primary">Register NGO <ArrowRight size={16} /></span>
-          </button>
+          {partnerTypes.map((partner, index) => (
+            <button
+              key={partner.title}
+              type="button"
+              onClick={() => setKind(partner.kind)}
+              className={`auth-choice flex flex-col justify-between rounded-2xl border border-border p-5 text-left ${
+                index === partnerTypes.length - 1 ? "sm:col-span-2" : ""
+              }`}
+            >
+              <div>
+                <span className="auth-choice-icon">{partner.icon}</span>
+                <h2 className="mt-4 text-xl font-bold">{partner.title}</h2>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  {partner.description}
+                </p>
+              </div>
+              <span className="auth-choice-action mt-5 inline-flex items-center gap-2 text-sm font-bold text-primary">
+                {partner.action} <ArrowRight size={16} />
+              </span>
+            </button>
+          ))}
         </div>
         <div className="auth-login-section mt-8 border-t border-border pt-6 text-center">
           <button
@@ -783,11 +872,11 @@ function PartnerRegistration({
   close,
   complete,
 }: {
-  kind: "Organization" | "NGO";
+  kind: PartnerKind;
   close: () => void;
   complete: (type: string) => void;
 }) {
-  const noun = kind === "NGO" ? "NGO" : "Organization";
+  const noun = kind;
   const [name, setName] = useState(""),
     [latitude, setLatitude] = useState(""),
     [longitude, setLongitude] = useState(""),
@@ -1038,6 +1127,111 @@ function PartnerRegistration({
   );
 }
 
+function ReportRoleSelection({
+  go,
+  onSelectRole,
+}: {
+  go: (x: Screen) => void;
+  onSelectRole: (role: string) => void;
+}) {
+  const categories = [
+    {
+      id: "citizen",
+      title: "Citizen",
+      description: "Individual resident, student, or community member sharing local everyday issues.",
+      icon: <UserRound size={56} strokeWidth={1.2} />,
+    },
+    {
+      id: "community-groups",
+      title: "Community Groups",
+      description: "Resident welfare associations, youth collectives, self-help groups, and neighborhood networks.",
+      icon: <Users size={56} strokeWidth={1.2} />,
+    },
+    {
+      id: "panchayati-raj",
+      title: "Panchayati Raj Institutions",
+      description: "Village Gram Panchayats, Block Samitis, and Zilla Parishads driving rural governance.",
+      icon: <TreePine size={56} strokeWidth={1.2} />,
+    },
+    {
+      id: "urban-local-bodies",
+      title: "Urban Local Bodies",
+      description: "Municipal corporations, municipalities, and town councils overseeing urban infrastructure.",
+      icon: <Building2 size={56} strokeWidth={1.2} />,
+    },
+    {
+      id: "government-departments",
+      title: "Government Departments",
+      description: "State and central departments, public utilities, and official administrative authorities.",
+      icon: <Landmark size={56} strokeWidth={1.2} />,
+    },
+  ];
+
+  return (
+    <div className="min-h-screen bg-[#F8FAF7] flex flex-col">
+      <header className="sticky top-0 z-40 border-b border-[#0B5D2A]/15 bg-white/95 backdrop-blur">
+        <div className="container-page flex h-16 items-center justify-between sm:h-17">
+          <button onClick={() => go("home")} className="flex items-center gap-3">
+            <img src="/samajsetu-community-logo.svg" alt="SamajSetu" className="h-9 w-auto sm:h-10" />
+          </button>
+          <button
+            onClick={() => go("home")}
+            className="inline-flex items-center gap-2 rounded-lg border border-[#0B5D2A]/20 bg-white px-4 py-2 text-sm font-bold text-[#132A1C] hover:bg-[#F2F7F3] hover:border-[#0B5D2A]/40 transition-colors"
+          >
+            <ChevronLeft size={16} /> Back to home
+          </button>
+        </div>
+      </header>
+
+      <main className="flex-1 flex flex-col justify-center py-10 sm:py-16 px-4 sm:px-6">
+        <div className="mx-auto max-w-3xl text-center mb-10 sm:mb-12">
+          <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary tracking-wide uppercase">
+            Step 1 of 2 · Entity Selection
+          </span>
+          <h1 className="mt-4 font-display text-3xl sm:text-4xl font-bold tracking-tight text-[#132A1C]">
+            Who is reporting this problem?
+          </h1>
+          <p className="mt-3 text-sm sm:text-base text-muted-foreground max-w-xl mx-auto leading-relaxed">
+            Select the entity that best represents you. Your report will be routed to the appropriate civic resolution pipeline with tailored verification standards.
+          </p>
+        </div>
+
+        <div className="mx-auto flex flex-wrap justify-center gap-5 sm:gap-6 max-w-5xl w-full">
+          {categories.map((cat) => (
+            <button
+              key={cat.id}
+              type="button"
+              onClick={() => onSelectRole(cat.title)}
+              className="group relative flex w-full sm:w-[calc(50%-0.75rem)] lg:w-[calc(33.333%-1rem)] max-w-[360px] min-h-[175px] flex-col justify-between overflow-hidden rounded-2xl border border-[#0B5D2A]/20 bg-white p-6 sm:p-7 text-left shadow-[0_4px_20px_rgba(11,93,42,0.04)] transition-all duration-200 hover:-translate-y-1 hover:border-[#0B5D2A] hover:shadow-[0_16px_36px_rgba(11,93,42,0.12)] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            >
+              <div className="pr-8">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-primary/75">
+                  Reporting Entity
+                </span>
+                <h2 className="mt-1 font-display text-xl font-bold tracking-tight text-[#132A1C] group-hover:text-primary transition-colors">
+                  {cat.title}
+                </h2>
+                <p className="mt-2 text-xs sm:text-sm leading-relaxed text-muted-foreground">
+                  {cat.description}
+                </p>
+              </div>
+
+              <div className="mt-6 flex items-center gap-1.5 text-xs font-bold text-primary opacity-80 group-hover:opacity-100 group-hover:translate-x-1 transition-all">
+                <span>Continue as {cat.title}</span>
+                <ArrowRight size={14} />
+              </div>
+
+              <div className="pointer-events-none absolute -bottom-2 -right-2 text-[#0B5D2A]/20 transition-all duration-200 group-hover:scale-110 group-hover:text-[#0B5D2A]/35">
+                {cat.icon}
+              </div>
+            </button>
+          ))}
+        </div>
+      </main>
+    </div>
+  );
+}
+
 function Report({
   user,
   go,
@@ -1046,6 +1240,7 @@ function Report({
   supportedIds,
   repost,
   speechLanguage,
+  initialRole = "Citizen",
 }: {
   user: User | null;
   go: (x: Screen) => void;
@@ -1054,7 +1249,12 @@ function Report({
   supportedIds: string[];
   repost: (challenge: Challenge, note?: string) => Promise<void>;
   speechLanguage: string;
+  initialRole?: string;
 }) {
+  const [role, setRole] = useState(initialRole);
+  useEffect(() => {
+    if (initialRole) setRole(initialRole);
+  }, [initialRole]);
   const [title, setTitle] = useState(""),
     [description, setDescription] = useState(""),
     [category, setCategory] = useState(""),
@@ -1311,7 +1511,7 @@ function Report({
       .from("challenges")
       .insert({
         title: title.trim(),
-        summary: `${description}${supportingInfo ? `\n\nSupporting information: ${supportingInfo}` : ""}`,
+        summary: `${description}\n\n[Reporting Entity: ${role}]${supportingInfo ? `\n\nSupporting information: ${supportingInfo}` : ""}`,
         domain,
         district: savedDistrict,
         block: savedBlock,
@@ -1336,7 +1536,7 @@ function Report({
       .insert({
         challenge_id: c.id,
         reporter_id: actor.id,
-        description,
+        description: `[Reporting Entity: ${role}]\n\n${description}`,
         district: savedDistrict,
         block: savedBlock,
         locality: savedLocality,
@@ -1434,12 +1634,30 @@ function Report({
 
   return (
     <section className="container-page max-w-3xl py-14">
-      <button onClick={() => go("home")} className="text-sm font-bold text-muted-foreground">
-        Back
-      </button>
-      <span className="rounded-full bg-accent-soft px-3 py-1 text-xs font-bold text-accent">
-        NO SIGN-IN REQUIRED
-      </span>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <button
+          onClick={() => go("report-role")}
+          className="inline-flex items-center gap-1.5 text-sm font-bold text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <ChevronLeft size={16} /> Back to role selection
+        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="rounded-full bg-accent-soft px-3 py-1 text-xs font-bold text-accent">
+            NO SIGN-IN REQUIRED
+          </span>
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
+            REPORTING AS: {role.toUpperCase()}
+            <button
+              type="button"
+              onClick={() => go("report-role")}
+              className="ml-1 text-[11px] underline opacity-85 hover:opacity-100"
+              title="Change role"
+            >
+              Change
+            </button>
+          </span>
+        </div>
+      </div>
       <h1 className="mt-5 text-3xl font-bold">Report a community problem</h1>
       <p className="mt-2 text-muted-foreground">
         Share what you see in plain language. You will receive a Problem ID and tracking link after
@@ -1985,7 +2203,7 @@ function OrganizationRegistration({
   flash: (x: string) => void;
 }) {
   const [name, setName] = useState(""),
-    [kind, setKind] = useState("Institution"),
+    [kind, setKind] = useState("University"),
     [district, setDistrict] = useState(""),
     [locality, setLocality] = useState(""),
     [contact, setContact] = useState(""),
@@ -2039,9 +2257,13 @@ function OrganizationRegistration({
           onChange={(e) => setKind(e.target.value)}
           className="rounded-lg border border-input p-3"
         >
-          <option>Institution</option>
-          <option>NGO</option>
-          <option>CSR / Industry</option>
+          <option value="University">University</option>
+          <option value="NGO">NGO</option>
+          <option value="Government">Government</option>
+          <option value="Community Group">Community Group</option>
+          <option value="Industry">Industry</option>
+          <option value="Urban Local Body">Urban Local Body</option>
+          <option value="Panchayati Raj Institution">Panchayati Raj Institution</option>
         </select>
         <div className="grid gap-3 sm:grid-cols-2">
           <input
@@ -4774,7 +4996,7 @@ function MyReports({ user, go }: { user: User | null; go: (x: Screen) => void })
 type AdminPartner = {
   id: string;
   name: string;
-  organization_type: "Organization" | "NGO";
+  organization_type: string;
   contact_email: string | null;
   district: string | null;
   locality: string | null;
