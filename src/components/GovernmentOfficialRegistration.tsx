@@ -156,6 +156,7 @@ export function GovernmentOfficialRegistration({
       const timer = setTimeout(() => setOtpTimer(otpTimer - 1), 1000);
       return () => clearTimeout(timer);
     }
+    return undefined;
   }, [otpTimer]);
 
   const handleSendOtp = () => {

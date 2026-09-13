@@ -5,7 +5,7 @@ import { createServerFn } from "@tanstack/react-start";
  * connection. The ElevenLabs API key stays exclusively on the server.
  */
 export const createElevenLabsScribeToken = createServerFn({ method: "POST" }).handler(async () => {
-  const apiKey = process.env.ELEVENLABS_API_KEY;
+  const apiKey = process.env["ELEVENLABS_API_KEY"];
   if (!apiKey) {
     throw new Error("Voice transcription is not configured. Add ELEVENLABS_API_KEY to the server environment.");
   }

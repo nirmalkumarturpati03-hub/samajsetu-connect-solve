@@ -1916,7 +1916,19 @@ function ProblemProgressTimeline({ challenge, compact = false }: { challenge: Ch
   return <section className={compact ? "mt-4" : "mt-5 rounded-xl border border-border bg-surface p-4"} aria-label="Problem progress timeline"><p className="text-sm font-bold">Progress timeline</p><ol className={`mt-3 ${compact ? "flex flex-wrap gap-2" : "space-y-3"}`}>{steps.map(([label, complete], index) => <li key={label} className={`flex items-center gap-3 text-sm ${complete ? "text-foreground" : "text-muted-foreground"}`}><span className={`grid size-6 shrink-0 place-items-center rounded-full text-xs font-bold ${complete ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground"}`}>{index + 1}</span><span className={complete ? "font-semibold" : ""}>{label}</span></li>)}</ol>{!assigned && <p className="mt-3 text-xs text-muted-foreground">Awaiting verification and partner assignment.</p>}</section>;
 }
 
-function Explorer({ challenges, load, go }: { challenges: Challenge[]; load: (q: string) => void; go: (x: Screen) => void }) {
+function Explorer({
+  challenges,
+  load,
+  supportedIds,
+  repost,
+  go,
+}: {
+  challenges: Challenge[];
+  load: (q?: string) => void | Promise<void>;
+  supportedIds?: string[];
+  repost?: (challenge: Challenge, note?: string) => Promise<void>;
+  go: (x: Screen) => void;
+}) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
   const [state, setState] = useState("all");
@@ -4982,14 +4994,15 @@ function Notifications({ user, go }: { user: User | null; go: (x: Screen) => voi
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     if (!user || !supabase) { setLoading(false); return; }
+    const client = supabase;
     const load = async () => {
-      const { data } = await supabase.from("notifications").select("id,kind,title,body,created_at,read_at").eq("recipient_id", user.id).order("created_at", { ascending: false }).limit(100);
+      const { data } = await client.from("notifications").select("id,kind,title,body,created_at,read_at").eq("recipient_id", user.id).order("created_at", { ascending: false }).limit(100);
       setItems((data ?? []) as typeof items);
       setLoading(false);
     };
     void load();
-    const channel = supabase.channel(`notifications-${user.id}`).on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications", filter: `recipient_id=eq.${user.id}` }, () => void load()).subscribe();
-    return () => { void supabase.removeChannel(channel); };
+    const channel = client.channel(`notifications-${user.id}`).on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications", filter: `recipient_id=eq.${user.id}` }, () => void load()).subscribe();
+    return () => { void client.removeChannel(channel); };
   }, [user]);
   if (!user) return <section className="container-page py-14"><h1 className="text-3xl font-bold">Notifications</h1><p className="mt-3 text-muted-foreground">Sign in to view your notifications.</p><button onClick={() => go("auth")} className="mt-5 rounded-lg bg-primary px-4 py-2 text-sm font-bold text-primary-foreground">Sign in</button></section>;
   const markRead = async (id: string) => {
@@ -6342,7 +6355,41 @@ function Admin({ flash, refresh }: { flash: (x: string) => void; refresh: (q?: s
               <div>
                 <b className="text-xs text-primary">{c.public_id}</b>
                 <p className="mt-1 font-bold">{c.title}</p>
-                {analyses[c.id] && <details className="mt-3 max-w-xl rounded-lg bg-primary-soft/40 p-3 text-xs"><summary className="cursor-pointer font-bold text-primary">AI-assisted priority analysis | {analyses[c.id].analysis_status.replaceAll("_", " ")} | {analyses[c.id].confidence ?? 0}% confidence</summary><div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">{Object.entries(analyses[c.id].validated_factors).filter(([key]) => !["emergency_signal", "critical_hazard"].includes(key)).map(([key, value]) => <p key={key}><span className="text-muted-foreground">{key.replaceAll("_", " ")}</span><br /><b>{String(value)}/100</b></p>)}</div>{analyses[c.id].ai_analysis?.reasons?.length ? <ul className="mt-3 list-disc space-y-1 pl-4">{analyses[c.id].ai_analysis.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}{analyses[c.id].override_applied && <p className="mt-3 font-bold text-destructive">Critical override: {analyses[c.id].override_reason}</p>}</details>}
+                {(() => {
+                  const analysis = analyses[c.id];
+                  if (!analysis) return null;
+                  const reasons = analysis.ai_analysis?.reasons ?? [];
+                  return (
+                    <details className="mt-3 max-w-xl rounded-lg bg-primary-soft/40 p-3 text-xs">
+                      <summary className="cursor-pointer font-bold text-primary">
+                        AI-assisted priority analysis | {analysis.analysis_status.replaceAll("_", " ")} | {analysis.confidence ?? 0}% confidence
+                      </summary>
+                      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                        {Object.entries(analysis.validated_factors ?? {})
+                          .filter(([key]) => !["emergency_signal", "critical_hazard"].includes(key))
+                          .map(([key, value]) => (
+                            <p key={key}>
+                              <span className="text-muted-foreground">{key.replaceAll("_", " ")}</span>
+                              <br />
+                              <b>{String(value)}/100</b>
+                            </p>
+                          ))}
+                      </div>
+                      {reasons.length > 0 && (
+                        <ul className="mt-3 list-disc space-y-1 pl-4">
+                          {reasons.map((reason) => (
+                            <li key={reason}>{reason}</li>
+                          ))}
+                        </ul>
+                      )}
+                      {analysis.override_applied && (
+                        <p className="mt-3 font-bold text-destructive">
+                          Critical override: {analysis.override_reason}
+                        </p>
+                      )}
+                    </details>
+                  );
+                })()}
                 <p className="mt-1 text-sm text-muted-foreground">
                   {c.district} | {c.domain} | {c.priority_score}/100
                 </p>
