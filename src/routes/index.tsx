@@ -49,6 +49,9 @@ import { MediaUpload } from "@/components/MediaUpload";
 import { LanguageSelector, voiceLocale } from "@/components/LanguageSelector";
 import { CursorParticleField } from "@/components/CursorParticleField";
 import { ProblemMap } from "@/components/ProblemMap";
+import { GovernmentOfficialRegistration } from "@/components/GovernmentOfficialRegistration";
+import { IndustryPartnerRegistration } from "@/components/IndustryPartnerRegistration";
+import { IndustryDashboard } from "@/components/IndustryDashboard";
 import { distanceKm } from "@/lib/samaj";
 import { createElevenLabsScribeToken } from "@/lib/elevenlabs.functions";
 import type { User } from "@supabase/supabase-js";
@@ -67,7 +70,8 @@ type Screen =
   | "admin"
   | "organization"
   | "coordinator"
-  | "volunteer";
+  | "volunteer"
+  | "industry-dashboard";
 type Profile = { id: string; display_name: string | null; role: string; district: string | null };
 type PartnerIdentity = { id: string; name: string; organization_type: string };
 type Challenge = {
@@ -190,35 +194,83 @@ function SamajSetu() {
     setProfile(data);
     // Accounts confirmed by email do not have a session during registration, so
     // provision their private partner record on first successful sign-in.
-    if (u.user_metadata?.["account_type"] === "organization") {
-      const meta = u.user_metadata;
-      const latitude = Number(meta["latitude"]);
-      const longitude = Number(meta["longitude"]);
-      await supabase.from("organization_accounts").upsert(
-        {
-          owner_id: u.id,
-          name: String(meta["display_name"] || u.email?.split("@")[0] || "Organization"),
-          organization_type: String(meta["organization_type"] || "Organization"),
-          contact_email: u.email ?? null,
-          latitude: Number.isFinite(latitude) ? latitude : null,
-          longitude: Number.isFinite(longitude) ? longitude : null,
-          expertise: String(meta["expertise"] || "")
-            .split(",")
-            .map((item) => item.trim())
-            .filter(Boolean),
-          capabilities: String(meta["resources"] || "")
-            .split(",")
-            .map((item) => item.trim())
-            .filter(Boolean),
-        },
-        { onConflict: "owner_id" },
-      );
-      const { data: entity } = await supabase
+    if (u.user_metadata?.["account_type"] === "organization" || u.user_metadata?.["organization_type"]) {
+      const meta = u.user_metadata || {};
+      const { data: existingEntity } = await supabase
         .from("organization_accounts")
-        .select("id,name,organization_type")
+        .select("id,name,organization_type,district,locality")
         .eq("owner_id", u.id)
         .maybeSingle();
-      setPartnerIdentity(entity ?? null);
+
+      if (existingEntity) {
+        setPartnerIdentity(existingEntity);
+      } else {
+        const latitude = Number(meta["latitude"]);
+        const longitude = Number(meta["longitude"]);
+        const orgType = String(meta["organization_type"] || "Organization");
+        const orgName = String(
+          meta["organization_name"] || meta["display_name"] || u.email?.split("@")[0] || "Organization"
+        );
+        const contactName = String(meta["representative_name"] || meta["display_name"] || "");
+        const expertiseArray = Array.isArray(meta["capabilities"])
+          ? meta["capabilities"]
+          : Array.isArray(meta["expertise"])
+          ? meta["expertise"]
+          : meta["department_sector"]
+          ? [meta["department_sector"], meta["official_category"]].filter(Boolean)
+          : String(meta["expertise"] || "")
+              .split(",")
+              .map((item) => item.trim())
+              .filter(Boolean);
+        const capabilitiesArray = Array.isArray(meta["partnership_interests"])
+          ? meta["partnership_interests"]
+          : Array.isArray(meta["capabilities"])
+          ? meta["capabilities"]
+          : meta["designation"]
+          ? [meta["designation"], meta["employee_id"]].filter(Boolean)
+          : String(meta["resources"] || "")
+              .split(",")
+              .map((item) => item.trim())
+              .filter(Boolean);
+
+        await supabase.from("organization_accounts").upsert(
+          {
+            owner_id: u.id,
+            name: orgName,
+            organization_type: orgType,
+            contact_name: contactName || null,
+            contact_email: u.email ?? null,
+            district: String(meta["district"] || ""),
+            locality: String(
+              meta["locality"] ||
+                (meta["city"]
+                  ? `${meta["city"]}, ${meta["state"] || ""}`
+                  : meta["office_unit"]
+                  ? `${meta["office_unit"]} (${meta["jurisdiction"] || ""})`
+                  : "")
+            ),
+            latitude: Number.isFinite(latitude) ? latitude : null,
+            longitude: Number.isFinite(longitude) ? longitude : null,
+            expertise: expertiseArray,
+            capabilities: capabilitiesArray,
+          },
+          { onConflict: "owner_id" },
+        );
+        const { data: entity } = await supabase
+          .from("organization_accounts")
+          .select("id,name,organization_type")
+          .eq("owner_id", u.id)
+          .maybeSingle();
+        setPartnerIdentity(entity ?? null);
+      }
+
+      // Sync role in profiles if not set
+      const orgTypeLower = String(meta["organization_type"] || "").toLowerCase();
+      if (orgTypeLower === "government" && data?.role !== "government") {
+        void supabase.from("profiles").update({ role: "government" }).eq("id", u.id);
+      } else if (orgTypeLower === "industry" && data?.role !== "industry") {
+        void supabase.from("profiles").update({ role: "industry" }).eq("id", u.id);
+      }
     } else {
       setPartnerIdentity(null);
     }
@@ -328,7 +380,7 @@ function SamajSetu() {
   return (
     <main className="samaj-app min-h-screen bg-background">
       {showSplash && <LaunchScreen />}
-      {screen !== "report-role" && (
+      {screen !== "report-role" && screen !== "industry-dashboard" && (
         <Header
           user={user}
           profile={profile}
@@ -358,6 +410,10 @@ function SamajSetu() {
             go(
               accountType === "admin"
                 ? "admin"
+                : accountType === "industry"
+                ? "industry-dashboard"
+                : accountType === "government"
+                ? "coordinator"
                 : accountType === "organization"
                 ? "coordinator"
                 : accountType === "volunteer"
@@ -398,6 +454,18 @@ function SamajSetu() {
       {screen === "projects" && <ProjectWorkspace user={user} profile={profile} flash={flash} />}{" "}
       {screen === "organization" && <OrganizationRegistration user={user} go={go} flash={flash} />}{" "}
       {screen === "coordinator" && <PartnerDashboard user={user} partnerIdentity={partnerIdentity} flash={flash} />}{" "}
+      {screen === "industry-dashboard" && (
+        <IndustryDashboard
+          user={user}
+          profile={profile}
+          partnerIdentity={partnerIdentity}
+          go={go}
+          logout={async () => {
+            await supabase!.auth.signOut();
+            go("home");
+          }}
+        />
+      )}{" "}
       {screen === "volunteer" && <VolunteerDashboard user={user} />}{" "}
       {screen === "admin-login" && <AdminLogin complete={() => go("admin")} />}
       {screen === "admin" &&
@@ -441,13 +509,17 @@ function Header({
   const [menuOpen, setMenuOpen] = useState(false);
   const navigate = (screen: Screen) => { setMenuOpen(false); go(screen); };
   const accountType = String(user?.user_metadata?.["account_type"] ?? "").trim().toLowerCase();
-  const dashboardScreen: Screen = profile?.role.trim().toLowerCase() === "admin"
+  const orgType = String(user?.user_metadata?.["organization_type"] ?? partnerIdentity?.organization_type ?? "").trim().toLowerCase();
+  const userRole = String(profile?.role ?? "").trim().toLowerCase();
+  const dashboardScreen: Screen = userRole === "admin"
     ? "admin"
-    : accountType === "volunteer"
-      ? "volunteer"
-      : ["organization", "ngo"].includes(accountType)
-        ? "coordinator"
-        : "my-reports";
+    : orgType === "industry" || accountType === "industry" || userRole === "industry"
+      ? "industry-dashboard"
+      : accountType === "volunteer"
+        ? "volunteer"
+        : ["organization", "ngo", "government", "university"].includes(accountType) || ["government", "university", "ngo"].includes(orgType) || userRole === "government"
+          ? "coordinator"
+          : "my-reports";
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur">
       <div className="container-page flex h-16 items-center justify-between sm:h-17">
@@ -653,10 +725,7 @@ type PartnerKind =
   | "University"
   | "NGO"
   | "Government"
-  | "Community Group"
   | "Industry"
-  | "Urban Local Body"
-  | "Panchayati Raj Institution"
   | "Organization";
 
 const partnerTypes: {
@@ -686,41 +755,17 @@ const partnerTypes: {
     kind: "Government",
     title: "Government",
     description:
-      "Register a state or central department to coordinate official resources, personnel, and public services.",
+      "Register verified officials from Government Departments, Urban Local Bodies (ULBs), and Panchayati Raj Institutions (PRIs).",
     action: "Register government",
     icon: <Landmark size={22} />,
   },
   {
-    kind: "Community Group",
-    title: "Community Group",
-    description:
-      "Register a local initiative to contribute grassroots support, regional expertise, and volunteer networks.",
-    action: "Register community group",
-    icon: <Users size={22} />,
-  },
-  {
     kind: "Industry",
-    title: "Industry",
+    title: "Industry & Innovation",
     description:
-      "Register a corporate entity to provide industrial resources, infrastructure, and CSR support.",
+      "Register a company, startup, MSME, or CSR entity to collaborate through mentoring, tech development, funding, and pilot deployments.",
     action: "Register industry",
     icon: <Factory size={22} />,
-  },
-  {
-    kind: "Urban Local Body",
-    title: "Urban Local Body",
-    description:
-      "Register a municipal corporation or council to manage city-level civic response and infrastructure.",
-    action: "Register urban body",
-    icon: <Building2 size={22} />,
-  },
-  {
-    kind: "Panchayati Raj Institution",
-    title: "Panchayati Raj Institution",
-    description:
-      "Register a village or district council to mobilize rural governance and local community resources.",
-    action: "Register Panchayati Raj",
-    icon: <TreePine size={22} />,
   },
 ];
 
@@ -756,7 +801,14 @@ function Auth({ complete, recovery = false }: { complete: (accountType: string) 
       }
       setBusy(false);
       const role = accountProfile.role.trim().toLowerCase();
-      complete(role === "admin" ? "admin" : (data.user.user_metadata?.["account_type"] ?? "organization"));
+      const orgType = String(data.user.user_metadata?.["organization_type"] ?? "").trim().toLowerCase();
+      if (orgType === "industry" || role === "industry") {
+        complete("industry");
+      } else if (orgType === "government" || role === "government") {
+        complete("government");
+      } else {
+        complete(role === "admin" ? "admin" : (data.user.user_metadata?.["account_type"] ?? "organization"));
+      }
     }
   };
   const requestReset = async () => {
@@ -808,7 +860,7 @@ function Auth({ complete, recovery = false }: { complete: (accountType: string) 
               type="button"
               onClick={() => setKind(partner.kind)}
               className={`auth-choice flex flex-col justify-between rounded-2xl border border-border p-5 text-left ${
-                index === partnerTypes.length - 1 ? "sm:col-span-2" : ""
+                index === partnerTypes.length - 1 && partnerTypes.length % 2 === 1 ? "sm:col-span-2" : ""
               }`}
             >
               <div>
@@ -862,7 +914,27 @@ function Auth({ complete, recovery = false }: { complete: (accountType: string) 
         </div></>}
         </div>
       </div>
-      {kind && <PartnerRegistration kind={kind} close={() => setKind(null)} complete={complete} />}
+      {kind === "Government" ? (
+        <GovernmentOfficialRegistration
+          close={() => setKind(null)}
+          onLogin={() => {
+            setKind(null);
+            setSignIn(true);
+          }}
+          complete={complete}
+        />
+      ) : kind === "Industry" ? (
+        <IndustryPartnerRegistration
+          close={() => setKind(null)}
+          onLogin={() => {
+            setKind(null);
+            setSignIn(true);
+          }}
+          complete={complete}
+        />
+      ) : kind ? (
+        <PartnerRegistration kind={kind} close={() => setKind(null)} complete={complete} />
+      ) : null}
     </section>
   );
 }
@@ -2260,10 +2332,7 @@ function OrganizationRegistration({
           <option value="University">University</option>
           <option value="NGO">NGO</option>
           <option value="Government">Government</option>
-          <option value="Community Group">Community Group</option>
           <option value="Industry">Industry</option>
-          <option value="Urban Local Body">Urban Local Body</option>
-          <option value="Panchayati Raj Institution">Panchayati Raj Institution</option>
         </select>
         <div className="grid gap-3 sm:grid-cols-2">
           <input
@@ -3420,11 +3489,13 @@ function PartnerDashboard({
   partnerIdentity: PartnerIdentity | null;
   flash: (x: string) => void;
 }) {
-  const isNgo = (partnerIdentity?.organization_type || user?.user_metadata?.["organization_type"]) === "NGO";
+  const orgType = String(partnerIdentity?.organization_type || user?.user_metadata?.["organization_type"] || "");
+  const isNgo = orgType === "NGO";
+  const isGov = orgType === "Government";
   const partnerName = String(
-    partnerIdentity?.name || user?.user_metadata?.["display_name"] || (isNgo ? "Community NGO" : "Partner Organization"),
+    partnerIdentity?.name || user?.user_metadata?.["organization_name"] || user?.user_metadata?.["display_name"] || (isNgo ? "Community NGO" : isGov ? "Government Authority" : "Partner Organization"),
   );
-  const singular = isNgo ? "Volunteer" : "Skilled Participant",
+  const singular = isNgo ? "Volunteer" : isGov ? "Official Officer" : "Skilled Participant",
     plural = `${singular}s`;
   const getOwnedOrganization = async () => {
     if (partnerIdentity?.id) return { organization: { id: partnerIdentity.id }, error: null };
