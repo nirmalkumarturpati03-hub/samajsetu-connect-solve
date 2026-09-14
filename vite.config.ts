@@ -15,7 +15,7 @@ export default defineConfig({
       // Required for an ngrok agent running outside the Vite process.
       host: "0.0.0.0",
       port: 5173,
-      strictPort: true,
+      strictPort: false,
       // Permit ngrok's generated forwarding host without allowing arbitrary hosts.
       allowedHosts: [".ngrok.app", ".ngrok-free.app", ".ngrok-free.dev"],
     },

@@ -52,6 +52,7 @@ import { ProblemMap } from "@/components/ProblemMap";
 import { GovernmentOfficialRegistration } from "@/components/GovernmentOfficialRegistration";
 import { IndustryPartnerRegistration } from "@/components/IndustryPartnerRegistration";
 import { IndustryDashboard } from "@/components/IndustryDashboard";
+import { ULBDashboard } from "@/components/ULBDashboard";
 import { distanceKm } from "@/lib/samaj";
 import { createElevenLabsScribeToken } from "@/lib/elevenlabs.functions";
 import type { User } from "@supabase/supabase-js";
@@ -71,7 +72,8 @@ type Screen =
   | "organization"
   | "coordinator"
   | "volunteer"
-  | "industry-dashboard";
+  | "industry-dashboard"
+  | "ulb-dashboard";
 type Profile = { id: string; display_name: string | null; role: string; district: string | null };
 type PartnerIdentity = { id: string; name: string; organization_type: string };
 type Challenge = {
@@ -96,6 +98,28 @@ type Challenge = {
   public_longitude?: number | null;
   assignment_status?: string | null;
   participant_count?: number;
+  technical_scope?: string | null;
+  expected_outcome?: string | null;
+  constraints?: string | null;
+  government_data?: string | null;
+  regulatory_requirements?: string | null;
+  safety_requirements?: string | null;
+  pilot_requirements?: string | null;
+  evaluation_criteria?: string | null;
+  support_needed?: string[];
+  responsible_department?: string | null;
+  scope_defined_at?: string | null;
+  rejection_reason?: string | null;
+  adoption_status?: string;
+  scaling_details?: Record<string, any>;
+  project_id?: string | null;
+  project_title?: string | null;
+  university_name?: string | null;
+  prototype_count?: number;
+  pilot_count?: number;
+  feedback_count?: number;
+  impact_count?: number;
+  funding_count?: number;
 };
 type PriorityAnalysis = {
   challenge_id: string;
@@ -466,13 +490,22 @@ function SamajSetu() {
           }}
         />
       )}{" "}
+      {screen === "ulb-dashboard" && (
+        <ULBDashboard
+          user={user}
+          profile={profile}
+          partnerIdentity={partnerIdentity}
+          go={go}
+          flash={flash}
+        />
+      )}{" "}
       {screen === "volunteer" && <VolunteerDashboard user={user} />}{" "}
       {screen === "admin-login" && <AdminLogin complete={() => go("admin")} />}
       {screen === "admin" &&
         (user && !profile ? (
           <section className="container-page py-20 text-center text-sm text-muted-foreground">Loading administrator access...</section>
         ) : isAdmin ? (
-          <AdminControlCenter user={user} profile={profile} flash={flash} refresh={loadChallenges} />
+          <AdminControlCenter user={user} profile={profile} flash={flash} refresh={loadChallenges} go={go} />
         ) : (
           <AdminRedirect go={go} />
         ))}
@@ -513,13 +546,15 @@ function Header({
   const userRole = String(profile?.role ?? "").trim().toLowerCase();
   const dashboardScreen: Screen = userRole === "admin"
     ? "admin"
-    : orgType === "industry" || accountType === "industry" || userRole === "industry"
-      ? "industry-dashboard"
-      : accountType === "volunteer"
-        ? "volunteer"
-        : ["organization", "ngo", "government", "university"].includes(accountType) || ["government", "university", "ngo"].includes(orgType) || userRole === "government"
-          ? "coordinator"
-          : "my-reports";
+    : orgType === "government" || accountType === "government" || userRole === "government"
+      ? "ulb-dashboard"
+      : orgType === "industry" || accountType === "industry" || userRole === "industry"
+        ? "industry-dashboard"
+        : accountType === "volunteer"
+          ? "volunteer"
+          : ["organization", "ngo", "university"].includes(accountType) || ["university", "ngo"].includes(orgType)
+            ? "coordinator"
+            : "my-reports";
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur">
       <div className="container-page flex h-16 items-center justify-between sm:h-17">
@@ -528,6 +563,9 @@ function Header({
         </button>
         <nav className="hidden items-center gap-3 text-sm font-bold sm:flex">
           <LanguageSelector onLanguageChange={setLanguage} />
+          <button onClick={() => navigate("ulb-dashboard")} className="rounded-lg border border-blue-200 bg-blue-50/80 px-3 py-1.5 text-xs font-bold text-blue-700 hover:bg-blue-100 transition">
+            🏙️ ULB Portal
+          </button>
           {user ? <><button onClick={() => navigate(dashboardScreen)} title="Open dashboard" className="text-right text-xs leading-4"><b className="block text-foreground">{identityName}</b><span className="capitalize text-muted-foreground">{identityRole}</span></button><button onClick={logout} title="Sign out" className="rounded-lg border border-border p-2"><LogOut size={16} /></button></> : <><button onClick={() => go("explore")}>Challenges</button><button onClick={() => go("auth")} className="rounded-lg border border-border px-3 py-2">Sign in / register</button><button onClick={() => navigate("report-role")} className="rounded-lg bg-primary px-4 py-2 text-primary-foreground">Report</button></>}
         </nav>
         <button onClick={() => setMenuOpen((open) => !open)} aria-label={menuOpen ? "Close navigation menu" : "Open navigation menu"} className="grid size-11 place-items-center rounded-lg border border-border sm:hidden">
@@ -535,6 +573,7 @@ function Header({
         </button>
       </div>
       {menuOpen && <nav className="container-page grid gap-1 border-t border-border py-3 text-sm font-bold sm:hidden">
+        <button onClick={() => navigate("ulb-dashboard")} className="rounded-lg bg-blue-50 px-3 py-3 text-left font-bold text-blue-700">🏙️ ULB MUNICIPAL PORTAL</button>
         {user ? <><button onClick={() => navigate(dashboardScreen)} className="rounded-lg bg-surface px-3 py-3 text-left"><b className="block">{identityName}</b><span className="text-xs capitalize text-muted-foreground">{identityRole}</span></button><div className="px-2 py-2"><LanguageSelector onLanguageChange={setLanguage} /></div><button onClick={() => { setMenuOpen(false); logout(); }} className="rounded-lg px-3 py-3 text-left text-destructive hover:bg-destructive-soft">Sign out</button></> : <><button onClick={() => navigate("report-role")} className="rounded-lg bg-primary px-3 py-3 text-left text-primary-foreground">REPORT</button><button onClick={() => navigate("explore")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">CHALLENGES</button><button onClick={() => navigate("auth")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">SIGN IN / REGISTER</button></>}
       </nav>}
     </header>
@@ -584,6 +623,12 @@ function Home({ go, count, user, profile, flash }: { go: (x: Screen) => void; co
                 className="rounded-lg border border-border bg-card px-5 py-3 font-bold"
               >
                 Explore challenges
+              </button>
+              <button
+                onClick={() => go("ulb-dashboard")}
+                className="rounded-lg border border-blue-500/30 bg-blue-500/10 px-5 py-3 font-bold text-blue-700 hover:bg-blue-500/20 transition"
+              >
+                🏙️ ULB Municipal Portal
               </button>
             </div>
           </div>
@@ -1304,6 +1349,66 @@ function ReportRoleSelection({
   );
 }
 
+const CORE_REPORT_DOMAINS = [
+  "Water Supply",
+  "Sanitation",
+  "Roads & Infrastructure",
+  "Healthcare",
+  "Education",
+  "Agriculture",
+] as const;
+
+interface DepartmentMapping {
+  title: string;
+  scope: string;
+  jurisdiction: string;
+}
+
+const CATEGORY_DEPARTMENT_MAP: Record<string, DepartmentMapping> = {
+  "Water Supply": {
+    title: "Department of Drinking Water and Sanitation",
+    scope:
+      "Responsible for rural and urban piped drinking water delivery, potable water quality monitoring, and maintenance of civic water supply infrastructure.\nJurisdiction covers municipal pipeline networks, district water boards, and rural Jal Jeevan Mission supply assets.",
+    jurisdiction: "District Drinking Water & Sanitation Division / Municipal Water Works",
+  },
+  "Water": {
+    title: "Department of Drinking Water and Sanitation",
+    scope:
+      "Responsible for rural and urban piped drinking water delivery, potable water quality monitoring, and maintenance of civic water supply infrastructure.\nJurisdiction covers municipal pipeline networks, district water boards, and rural Jal Jeevan Mission supply assets.",
+    jurisdiction: "District Drinking Water & Sanitation Division / Municipal Water Works",
+  },
+  "Sanitation": {
+    title: "Directorate of Swachh Bharat Mission & Municipal Sanitation",
+    scope:
+      "Oversees public sanitation complexes, community solid and liquid waste processing, and urban-rural drainage network maintenance.\nJurisdiction encompasses municipal ward sanitation, gram panchayat cleanliness operations, and civic waste treatment facilities.",
+    jurisdiction: "Municipal Public Health & Sanitation Wing / Zilla Swachhata Cell",
+  },
+  "Roads & Infrastructure": {
+    title: "Public Works Department (PWD) & Rural Road Development Agency",
+    scope:
+      "Governs road connectivity, structural bridge maintenance, pothole restorations, and integrated storm-water runoff drainage systems.\nJurisdiction includes state highways, major district thoroughfares, municipal avenues, and PMGSY village access corridors.",
+    jurisdiction: "State Public Works Department (PWD) / Rural Engineering Services",
+  },
+  "Healthcare": {
+    title: "Department of Health and Family Welfare",
+    scope:
+      "Administers primary and community healthcare facilities, essential drug supplies, disease outbreak control, and maternal care services.\nJurisdiction spans primary health centres (PHCs), urban community health clinics, and district civil medical authorities.",
+    jurisdiction: "District Chief Medical Officer (CMO) / Public Health Directorate",
+  },
+  "Education": {
+    title: "Department of School Education and Literacy",
+    scope:
+      "Manages public school physical infrastructure, drinking water and toilet facilities for students, classroom safety, and midday meal operations.\nJurisdiction extends across government and government-aided primary, secondary, and senior secondary institutions.",
+    jurisdiction: "District Education Office (DEO) / Block Education Resource Centres",
+  },
+  "Agriculture": {
+    title: "Department of Agriculture and Farmers Welfare",
+    scope:
+      "Facilitates public canal irrigation maintenance, farm drainage solutions, soil health diagnostics, and agrarian pest outbreak response.\nJurisdiction covers agricultural sub-divisions, block Krishi Vigyan Kendras (KVK), and district irrigation command areas.",
+    jurisdiction: "District Agriculture Office / Command Area Development Authority",
+  },
+};
+
 function Report({
   user,
   go,
@@ -1327,12 +1432,10 @@ function Report({
   useEffect(() => {
     if (initialRole) setRole(initialRole);
   }, [initialRole]);
+
   const [title, setTitle] = useState(""),
     [description, setDescription] = useState(""),
     [category, setCategory] = useState(""),
-    [severity, setSeverity] = useState("2"),
-    [urgency, setUrgency] = useState("2"),
-    [affectedPopulation, setAffectedPopulation] = useState(""),
     [supportingInfo, setSupportingInfo] = useState(""),
     [nearProblem, setNearProblem] = useState<"yes" | "no" | "">(""),
     [voiceTranscript, setVoiceTranscript] = useState(""),
@@ -1361,7 +1464,16 @@ function Report({
     [consentLocation, setConsentLocation] = useState(false),
     [consentMedia, setConsentMedia] = useState(false),
     [consentAi, setConsentAi] = useState(false),
-    [mediaError, setMediaError] = useState("");
+    [mediaError, setMediaError] = useState(""),
+    [stagedFiles, setStagedFiles] = useState<{
+      id: string;
+      file: File;
+      preview: string;
+      type: "image" | "video" | "audio" | "document";
+    }[]>([]);
+
+  const assignedDept = category ? CATEGORY_DEPARTMENT_MAP[category] || null : null;
+
   const voiceSession = useRef<{
     socket: WebSocket;
     stream: MediaStream;
@@ -1387,6 +1499,54 @@ function Report({
     .sort((a, b) => a.distance - b.distance)
     .slice(0, 3);
 
+  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    files.forEach((file) => {
+      if (file.size > 26214400) {
+        setError(`File size exceeds 25MB limit: ${file.name}`);
+        return;
+      }
+      const type = file.type.startsWith("image/")
+        ? "image"
+        : file.type.startsWith("video/")
+        ? "video"
+        : file.type.startsWith("audio/")
+        ? "audio"
+        : "document";
+
+      if (type === "image") {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          setStagedFiles((prev) => [
+            ...prev,
+            {
+              id: `media-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              file,
+              preview: (event.target?.result as string) || "",
+              type,
+            },
+          ]);
+        };
+        reader.readAsDataURL(file);
+      } else {
+        setStagedFiles((prev) => [
+          ...prev,
+          {
+            id: `media-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            file,
+            preview: "",
+            type,
+          },
+        ]);
+      }
+    });
+    e.target.value = "";
+  };
+
+  const removeStagedFile = (id: string) => {
+    setStagedFiles((prev) => prev.filter((item) => item.id !== id));
+  };
+
   const getProblemGps = () => {
     if (!navigator.geolocation) return setError("GPS is not supported on this device. Enter the problem location manually.");
     navigator.geolocation.getCurrentPosition(
@@ -1403,6 +1563,7 @@ function Report({
       { enableHighAccuracy: true, timeout: 12000 },
     );
   };
+
   const stopVoiceResources = () => {
     const session = voiceSession.current;
     if (!session) return;
@@ -1413,6 +1574,7 @@ function Report({
     void session.context.close();
     voiceSession.current = null;
   };
+
   const updateLiveTranscript = (field: "title" | "description") => {
     const transcript = [voiceCommittedText.current, voicePartialText.current].filter(Boolean).join(" ").trim();
     const fullText = [voiceBaseText.current, transcript].filter(Boolean).join(voiceBaseText.current && transcript ? " " : "");
@@ -1489,6 +1651,7 @@ function Report({
       setVoiceError(cause?.name === "NotAllowedError" ? "Microphone permission was blocked. Allow it in your browser site settings, then try again." : cause?.message || "We could not start live transcription. Please try again.");
     }
   };
+
   const stopVoiceTranscription = () => {
     const session = voiceSession.current;
     if (!session) return;
@@ -1503,7 +1666,9 @@ function Report({
       setVoiceRecording(null);
     }
   };
+
   useEffect(() => () => stopVoiceResources(), []);
+
   const findDuplicates = async () => {
     if (!supabase) return [] as { challenge_id: string; public_id: string; title: string; duplicate_score: number }[];
     const duplicateArgs = {
@@ -1515,7 +1680,6 @@ function Report({
       problem_district: nearProblem === "yes" ? null : district.trim() || null,
       problem_locality: nearProblem === "yes" ? null : locality.trim() || null,
     };
-    // Prefer the locality-aware function, but retain compatibility until its migration is applied.
     let result = await supabase.rpc("find_possible_duplicates_v2", duplicateArgs);
     if (result.error) {
       result = await supabase.rpc("find_possible_duplicates", {
@@ -1527,10 +1691,9 @@ function Report({
       });
     }
     return ((result.data ?? []) as { challenge_id: string; public_id: string; title: string; duplicate_score: number }[])
-      // 55 includes a strong title/context match in the same locality while
-      // still requiring the citizen to explicitly choose "different" to proceed.
       .filter((item) => item.duplicate_score >= 55);
   };
+
   const review = async () => {
     setError("");
     if (!nearProblem) return setError("Please select whether you are currently near the problem location.");
@@ -1547,8 +1710,6 @@ function Report({
   const submit = async () => {
     if (!supabase) return;
     setBusy(true);
-    // Check again immediately before creating a record. This catches a report made
-    // by another citizen while this form was open.
     if (!duplicateDecision) {
       const matches = await findDuplicates();
       if (matches.length > 0) {
@@ -1560,8 +1721,6 @@ function Report({
     }
     let actor = user;
     if (!actor) {
-      // The interface intentionally hides anonymous sessions. Reuse one when
-      // it exists instead of repeatedly signing a citizen in.
       const current = await supabase.auth.getUser();
       actor = current.data.user;
       if (!actor) {
@@ -1574,11 +1733,12 @@ function Report({
         }
       }
     }
+
     const domain = category;
-    const population = affectedPopulation.trim() ? Number(affectedPopulation) : null;
     const savedDistrict = nearProblem === "yes" ? "GPS-detected location" : district.trim();
     const savedBlock = nearProblem === "yes" ? null : block.trim() || null;
     const savedLocality = nearProblem === "yes" ? null : locality.trim() || null;
+
     const { data: c, error: ce } = await supabase
       .from("challenges")
       .insert({
@@ -1588,9 +1748,9 @@ function Report({
         district: savedDistrict,
         block: savedBlock,
         locality: savedLocality,
-        severity: Number(severity),
-        urgency: Number(urgency),
-        affected_population: Number.isFinite(population) ? population : null,
+        severity: 2,
+        urgency: 2,
+        affected_population: null,
         evidence_quality: 1,
         created_by: actor.id,
         public_latitude: latitude,
@@ -1598,11 +1758,13 @@ function Report({
       })
       .select("id,public_id")
       .single();
+
     if (ce || !c) {
       setError(ce?.message ?? "Unable to save challenge.");
       setBusy(false);
       return;
     }
+
     const { data: r, error: re } = await supabase
       .from("reports")
       .insert({
@@ -1616,23 +1778,80 @@ function Report({
         longitude,
         voice_transcript: voiceTranscript.trim() || null,
         category: domain,
-        severity: Number(severity),
-        urgency: Number(urgency),
-        affected_population: Number.isFinite(population) ? population : null,
+        severity: 2,
+        urgency: 2,
+        affected_population: null,
         consent_location: consentLocation,
         consent_media: consentMedia,
         consent_ai_processing: consentAi,
       })
       .select("id")
       .single();
-    setBusy(false);
+
     if (re || !r) {
       setError(re?.message ?? "Unable to save report.");
+      setBusy(false);
       return;
     }
+
+    // Upload any staged files directly to Supabase storage & evidence table
+    if (stagedFiles.length > 0) {
+      for (const media of stagedFiles) {
+        try {
+          const mimeType = media.file.type || (media.type === "image" ? "image/jpeg" : "application/octet-stream");
+          const fileExtension = media.file.name.split(".").pop() || (media.type === "image" ? "jpg" : "bin");
+          const storagePath = `${actor.id}/${r.id}/${Date.now()}-${Math.random().toString(36).slice(2, 9)}.${fileExtension}`;
+          const { error: uploadError } = await supabase.storage
+            .from("evidence")
+            .upload(storagePath, media.file, {
+              contentType: mimeType,
+              cacheControl: "3600",
+              upsert: false,
+            });
+
+          if (!uploadError) {
+            await supabase.from("evidence").insert({
+              report_id: r.id,
+              storage_path: storagePath,
+              mime_type: mimeType,
+              size_bytes: media.file.size,
+            });
+
+            if ((media.type === "image" || media.type === "video") && c.id) {
+              const previewPath = `${actor.id}/${c.id}/${Date.now()}-${Math.random().toString(36).slice(2, 11)}.${fileExtension}`;
+              const { error: previewUploadError } = await supabase.storage
+                .from("challenge-previews")
+                .upload(previewPath, media.file, {
+                  contentType: mimeType,
+                  cacheControl: "3600",
+                  upsert: false,
+                });
+              if (!previewUploadError) {
+                await supabase.rpc("add_challenge_media", {
+                  challenge_uuid: c.id,
+                  media_path: previewPath,
+                  media_mime_type: mimeType,
+                });
+                if (media.type === "image") {
+                  await supabase.rpc("set_challenge_preview", {
+                    challenge_uuid: c.id,
+                    preview_path: previewPath,
+                  });
+                }
+              }
+            }
+          }
+        } catch {
+          // Continue with remaining files
+        }
+      }
+    }
+
+    setBusy(false);
     setReportId(r.id);
     setChallengeId(c.id);
     setPublicId(c.public_id);
+
     const { data: support } = await supabase
       .from("support_information")
       .select("id,title,support_type,official_url,contact_information")
@@ -1653,13 +1872,11 @@ function Report({
             setTitle("");
             setDescription("");
             setCategory("");
-            setSeverity("2");
-            setUrgency("2");
-            setAffectedPopulation("");
             setSupportingInfo("");
             setDistrict("");
             setBlock("");
             setLocality("");
+            setStagedFiles([]);
           }}
           className="text-sm font-bold text-muted-foreground"
         >
@@ -1677,10 +1894,24 @@ function Report({
           <span className="ml-2 break-all text-primary">samajsetu.in/track/{publicId}</span>
         </div>
         <p className="mt-2 text-muted-foreground">
-          Attach photos, videos, or audio recordings to strengthen your report and help verify the
-          problem.
+          Attach additional photos, videos, or audio recordings to strengthen your report and help verify the problem.
         </p>
-        {supportSuggestions.length > 0 && <section className="card-surface mt-5 p-5"><h2 className="font-bold">Verified support that may help</h2><p className="mt-1 text-sm text-muted-foreground">Matched to this report's category or district. Confirm eligibility and documents with the provider.</p><div className="mt-3 space-y-2">{supportSuggestions.map((item) => <div key={item.id} className="rounded-lg bg-surface p-3 text-sm"><b>{item.title}</b><p className="mt-1 text-xs text-muted-foreground">{item.support_type.replaceAll("_", " ")}</p>{item.official_url && <a href={item.official_url} target="_blank" rel="noreferrer" className="mt-1 inline-block font-bold text-primary">Official application link</a>}{item.contact_information && <p className="mt-1">{item.contact_information}</p>}</div>)}</div></section>}
+        {supportSuggestions.length > 0 && (
+          <section className="card-surface mt-5 p-5">
+            <h2 className="font-bold">Verified support that may help</h2>
+            <p className="mt-1 text-sm text-muted-foreground">Matched to this report's category or district. Confirm eligibility and documents with the provider.</p>
+            <div className="mt-3 space-y-2">
+              {supportSuggestions.map((item) => (
+                <div key={item.id} className="rounded-lg bg-surface p-3 text-sm">
+                  <b>{item.title}</b>
+                  <p className="mt-1 text-xs text-muted-foreground">{item.support_type.replaceAll("_", " ")}</p>
+                  {item.official_url && <a href={item.official_url} target="_blank" rel="noreferrer" className="mt-1 inline-block font-bold text-primary">Official application link</a>}
+                  {item.contact_information && <p className="mt-1">{item.contact_information}</p>}
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
         <div className="card-surface mt-7 p-6">
           <MediaUpload
             reportId={reportId}
@@ -1705,7 +1936,8 @@ function Report({
   }
 
   return (
-    <section className="container-page max-w-3xl py-14">
+    <section className="container-page max-w-6xl py-10">
+      {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <button
           onClick={() => go("report-role")}
@@ -1730,190 +1962,526 @@ function Report({
           </span>
         </div>
       </div>
-      <h1 className="mt-5 text-3xl font-bold">Report a community problem</h1>
-      <p className="mt-2 text-muted-foreground">
-        Share what you see in plain language. You will receive a Problem ID and tracking link after
-        submission.
-      </p>
-      <div className="card-surface mt-7 p-6">
-        <div className="relative">
-          <label className="sr-only" htmlFor="problem-title">Problem title</label>
-          <input
-            id="problem-title"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="Problem title *"
-            className="w-full rounded-lg border border-input p-3 pr-14"
-          />
-          <button type="button" onClick={() => voiceRecording === "title" ? stopVoiceTranscription() : startVoiceTranscription("title")} disabled={voiceRecording === "description"} aria-label={voiceRecording === "title" ? "Stop dictating problem title" : "Dictate problem title"} title={voiceRecording === "title" ? "Stop listening" : "Start listening"} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-2 text-primary hover:bg-primary-soft disabled:opacity-50"><Mic size={19} className={voiceRecording === "title" ? "animate-pulse" : ""} /></button>
-        </div>
-        <div className="relative mt-3">
-          <label className="sr-only" htmlFor="problem-description">Problem description</label>
-          <textarea
-            id="problem-description"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="What is happening? Who is affected?"
-            className="min-h-36 w-full rounded-lg border border-input p-3 pr-14"
-          />
-          <button type="button" onClick={() => voiceRecording === "description" ? stopVoiceTranscription() : startVoiceTranscription("description")} disabled={voiceRecording === "title"} aria-label={voiceRecording === "description" ? "Stop dictating problem description" : "Dictate problem description"} title={voiceRecording === "description" ? "Stop listening" : "Start listening"} className="absolute right-2 top-3 rounded-full p-2 text-primary hover:bg-primary-soft disabled:opacity-50"><Mic size={19} className={voiceRecording === "description" ? "animate-pulse" : ""} /></button>
-        </div>
-        {(voiceRecording || voiceError) && <div className="mt-3 rounded-lg bg-primary-soft/40 p-3 text-sm"><p className="font-medium text-primary">{voiceRecording ? `Listening for the problem ${voiceRecording}. Live transcription appears as you speak; click the microphone again to stop listening.` : null}</p>{voiceError && <p className="text-destructive">{voiceError}</p>}<p className="mt-1 text-xs text-muted-foreground">ElevenLabs transcribes in your selected language. Review the live transcript before submitting.</p></div>}
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <label className="text-sm font-bold">Category
-            <select value={category} onChange={(event) => setCategory(event.target.value)} className="mt-1 w-full rounded-lg border border-input bg-background p-3 font-normal">
-              <option value="">Select category *</option>
-              {["Water", "Healthcare", "Education", "Agriculture", "Sanitation", "Environment", "Accessibility", "Urban Infrastructure", "Public Services", "Rural Livelihoods"].map((item) => <option key={item}>{item}</option>)}
-            </select>
-          </label>
-          <label className="text-sm font-bold">Affected people (optional)
-            <input value={affectedPopulation} onChange={(event) => setAffectedPopulation(event.target.value)} type="number" min="0" placeholder="Estimated number" className="mt-1 w-full rounded-lg border border-input p-3 font-normal" />
-          </label>
-          <label className="text-sm font-bold">Severity
-            <select value={severity} onChange={(event) => setSeverity(event.target.value)} className="mt-1 w-full rounded-lg border border-input bg-background p-3 font-normal"><option value="1">Minor</option><option value="2">Moderate</option><option value="3">High</option><option value="4">Critical</option></select>
-          </label>
-          <label className="text-sm font-bold">Urgency
-            <select value={urgency} onChange={(event) => setUrgency(event.target.value)} className="mt-1 w-full rounded-lg border border-input bg-background p-3 font-normal"><option value="1">Low</option><option value="2">Medium</option><option value="3">High</option><option value="4">Critical</option></select>
-          </label>
-        </div>
-        <div className="mt-4 rounded-xl border border-primary/20 bg-primary-soft/40 p-4">
-          <p className="font-bold">Are you currently near the location where the problem exists? <span className="text-destructive">*</span></p>
-          <div className="mt-3 flex flex-wrap gap-3">
-            {(["yes", "no"] as const).map((value) => (
-              <label key={value} className="flex items-center gap-2 rounded-lg bg-card px-3 py-2 text-sm font-semibold">
-                <input type="radio" name="near-problem" checked={nearProblem === value} onChange={() => { setNearProblem(value); setError(""); if (value === "yes") { setDistrict(""); setBlock(""); setLocality(""); getProblemGps(); } else { setLatitude(null); setLongitude(null); setLocationLabel("Enter the problem location manually below. Your current GPS will not be requested."); } }} />
-                {value === "yes" ? "Yes, I am nearby" : "No, I am elsewhere"}
-              </label>
-            ))}
-          </div>
-          {nearProblem === "yes" && <div className="mt-3 text-sm"><button type="button" onClick={getProblemGps} className="font-bold text-primary"><LocateFixed className="mr-1 inline" size={16} /> Get / retry GPS location</button>{latitude != null && longitude != null && <p className="mt-2 font-mono text-xs">Latitude: {latitude.toFixed(6)} | Longitude: {longitude.toFixed(6)}</p>}</div>}
-        </div>
-        <div className="mt-3 rounded-lg bg-surface p-3 text-xs text-muted-foreground">
-          <label className="flex items-start gap-2"><input type="checkbox" checked={consentLocation} onChange={(event) => setConsentLocation(event.target.checked)} /> I consent to authorised verifiers and assigned partners using my exact location. Public discovery uses an approximate location only.</label>
-        </div>
-        {nearProblem === "no" && <><div className="mt-5 flex items-center justify-between gap-3">
-          <label className="text-sm font-bold">Problem location</label>
-          <span className="text-xs text-muted-foreground">Manual entry</span>
-        </div>
-        <div className="mt-2 grid gap-3 sm:grid-cols-3">
-          <input
-            value={district}
-            onChange={(e) => setDistrict(e.target.value)}
-            placeholder="District *"
-            className="rounded-lg border border-input p-3 text-sm"
-          />
-          <input
-            value={block}
-            onChange={(e) => setBlock(e.target.value)}
-            placeholder="Block"
-            className="rounded-lg border border-input p-3 text-sm"
-          />
-          <input
-            value={locality}
-            onChange={(e) => setLocality(e.target.value)}
-            placeholder="Village / city"
-            className="rounded-lg border border-input p-3 text-sm"
-          />
-        </div></>}
-        <textarea
-          value={supportingInfo}
-          onChange={(e) => setSupportingInfo(e.target.value)}
-          placeholder="Supporting information (optional)"
-          className="mt-3 min-h-24 w-full rounded-lg border border-input p-3"
-        />
-        <div className="mt-4 space-y-2 rounded-lg bg-surface p-3 text-xs text-muted-foreground">
-          <label className="flex items-start gap-2"><input type="checkbox" checked={consentMedia} onChange={(event) => setConsentMedia(event.target.checked)} /> I consent to secure storage and authorised review of any evidence I upload.</label>
-          <label className="flex items-start gap-2"><input type="checkbox" checked={consentAi} onChange={(event) => setConsentAi(event.target.checked)} /> I consent to optional future AI-assisted analysis. It will never replace my original report.</label>
-        </div>
-        {locationLabel && (
-          <span className="ml-3 text-sm font-medium text-accent">{locationLabel}</span>
-        )}
-        {(showNearby || locality.length > 2) && nearby.length > 0 && (
-          <div className="mt-5 rounded-xl border border-primary/20 bg-primary-soft/40 p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="font-bold">Possible matches nearby</p>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Avoid duplicate reports by supporting an existing problem.
-                </p>
-              </div>
-              <Navigation className="text-primary" size={20} />
+
+      <div className="mt-5">
+        <h1 className="text-3xl font-bold">Report a community problem</h1>
+        <p className="mt-2 text-muted-foreground">
+          Share what you see in plain language. You will receive a Problem ID and tracking link after submission.
+        </p>
+      </div>
+
+      {/* 70:30 Two-Column Layout */}
+      <div className="mt-7 grid grid-cols-1 lg:grid-cols-10 gap-8 items-start">
+        {/* Left/Center Column (70% width: 7 of 10 cols) */}
+        <div className="lg:col-span-7 card-surface p-6 sm:p-7 space-y-5">
+          {/* Problem Title */}
+          <div>
+            <label htmlFor="problem-title" className="block text-sm font-bold mb-1.5">
+              Problem Title <span className="text-destructive">*</span>
+            </label>
+            <div className="relative">
+              <input
+                id="problem-title"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Problem title *"
+                className="w-full rounded-lg border border-input bg-background p-3 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+              />
+              <button
+                type="button"
+                onClick={() => (voiceRecording === "title" ? stopVoiceTranscription() : startVoiceTranscription("title"))}
+                disabled={voiceRecording === "description"}
+                aria-label={voiceRecording === "title" ? "Stop dictating problem title" : "Dictate problem title"}
+                title={voiceRecording === "title" ? "Stop listening" : "Start listening"}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-2 text-primary hover:bg-primary-soft disabled:opacity-50 transition-colors"
+              >
+                <Mic size={18} className={voiceRecording === "title" ? "animate-pulse text-destructive" : ""} />
+              </button>
             </div>
-            <div className="mt-3 space-y-2">
-              {nearby.map(({ challenge, distance }) => (
-                <div
-                  key={challenge.id}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-card p-3"
-                >
-                  <div>
-                    <b className="text-sm">{challenge.title}</b>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      <MapPin className="mr-1 inline" size={12} />
-                      {distance.toFixed(1)} km away | {challenge.stage.replaceAll("_", " ")}
-                    </p>
-                  </div>
-                  <button
-                    disabled={supportedIds.includes(challenge.id)}
-                    onClick={() =>
-                      void repost(challenge, "Also affected - submitted from report flow.")
-                    }
-                    className="rounded-lg border border-primary px-3 py-2 text-xs font-bold text-primary disabled:opacity-50"
-                  >
-                    {supportedIds.includes(challenge.id) ? "Supporting" : "I am also affected"}
-                  </button>
-                </div>
+          </div>
+
+          {/* Description */}
+          <div>
+            <label htmlFor="problem-description" className="block text-sm font-bold mb-1.5">
+              Description <span className="text-destructive">*</span>
+            </label>
+            <div className="relative">
+              <textarea
+                id="problem-description"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="What is happening? Who is affected?"
+                rows={4}
+                className="w-full rounded-lg border border-input bg-background p-3 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-primary resize-y"
+              />
+              <button
+                type="button"
+                onClick={() => (voiceRecording === "description" ? stopVoiceTranscription() : startVoiceTranscription("description"))}
+                disabled={voiceRecording === "title"}
+                aria-label={voiceRecording === "description" ? "Stop dictating problem description" : "Dictate problem description"}
+                title={voiceRecording === "description" ? "Stop listening" : "Start listening"}
+                className="absolute right-2 top-3 rounded-full p-2 text-primary hover:bg-primary-soft disabled:opacity-50 transition-colors"
+              >
+                <Mic size={18} className={voiceRecording === "description" ? "animate-pulse text-destructive" : ""} />
+              </button>
+            </div>
+          </div>
+
+          {(voiceRecording || voiceError) && (
+            <div className="rounded-lg bg-primary-soft/40 p-3 text-sm">
+              <p className="font-medium text-primary">
+                {voiceRecording ? `Listening for the problem ${voiceRecording}. Live transcription appears as you speak; click the microphone again to stop listening.` : null}
+              </p>
+              {voiceError && <p className="text-destructive">{voiceError}</p>}
+              <p className="mt-1 text-xs text-muted-foreground">
+                ElevenLabs transcribes in your selected language. Review the live transcript before submitting.
+              </p>
+            </div>
+          )}
+
+          {/* Category Dropdown */}
+          <div>
+            <label htmlFor="category-select" className="block text-sm font-bold mb-1.5">
+              Category <span className="text-destructive">*</span>
+            </label>
+            <select
+              id="category-select"
+              value={category}
+              onChange={(event) => setCategory(event.target.value)}
+              className="w-full rounded-lg border border-input bg-background p-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary font-normal"
+            >
+              <option value="">Select category *</option>
+              {CORE_REPORT_DOMAINS.map((domain) => (
+                <option key={domain} value={domain}>
+                  {domain}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Location Section */}
+          <div className="rounded-xl border border-primary/20 bg-primary-soft/40 p-4 space-y-3">
+            <p className="font-bold text-sm">
+              Are you currently near the location where the problem exists? <span className="text-destructive">*</span>
+            </p>
+            <div className="flex flex-wrap gap-3">
+              {(["yes", "no"] as const).map((value) => (
+                <label key={value} className="flex items-center gap-2 rounded-lg bg-card px-3.5 py-2 text-sm font-semibold border border-border cursor-pointer hover:border-primary/50 transition-colors">
+                  <input
+                    type="radio"
+                    name="near-problem"
+                    checked={nearProblem === value}
+                    onChange={() => {
+                      setNearProblem(value);
+                      setError("");
+                      if (value === "yes") {
+                        setDistrict("");
+                        setBlock("");
+                        setLocality("");
+                        getProblemGps();
+                      } else {
+                        setLatitude(null);
+                        setLongitude(null);
+                        setLocationLabel("Enter the problem location manually below. Your current GPS will not be requested.");
+                      }
+                    }}
+                  />
+                  {value === "yes" ? "Yes, I am nearby" : "No, I am elsewhere"}
+                </label>
               ))}
             </div>
-          </div>
-        )}
-        <p className="mt-5 rounded-lg bg-surface p-3 text-sm text-muted-foreground">
-          <ShieldCheck className="mr-2 inline text-accent" size={16} />
-          Sensitive evidence and exact locations stay private.
-        </p>
-        {reviewing && (
-          <div className="mt-5 rounded-xl border border-primary bg-primary-soft/40 p-5">
-            <h2 className="text-lg font-bold">Review Report</h2>
-            <div className="mt-3 space-y-2 text-sm">
-              <p><b>Problem:</b> {title} - {description}</p>
-              <p><b>Category:</b> {category} | <b>Severity:</b> {severity}/4 | <b>Urgency:</b> {urgency}/4</p>
-              {voiceTranscript && <p><b>Voice transcription:</b> {voiceTranscript}</p>}
-              <p><b>Near the problem:</b> {nearProblem === "yes" ? "Yes" : "No"}</p>
-              {nearProblem === "yes" && latitude != null && <p><b>Reporter GPS:</b> {latitude.toFixed(6)}, {longitude?.toFixed(6)}</p>}
-              <p><b>Problem location:</b> {district}, {block}, {locality}</p>
-              {supportingInfo && <p><b>Supporting information:</b> {supportingInfo}</p>}
+
+            {nearProblem === "yes" && (
+              <div className="mt-2 text-sm space-y-1.5">
+                <button
+                  type="button"
+                  onClick={getProblemGps}
+                  className="font-bold text-primary hover:underline inline-flex items-center gap-1"
+                >
+                  <LocateFixed size={16} /> Get / retry GPS location
+                </button>
+                {latitude != null && longitude != null && (
+                  <p className="font-mono text-xs text-muted-foreground">
+                    Latitude: {latitude.toFixed(6)} | Longitude: {longitude.toFixed(6)}
+                  </p>
+                )}
+                {locationLabel && (
+                  <p className="text-xs font-medium text-accent">{locationLabel}</p>
+                )}
+              </div>
+            )}
+
+            {nearProblem === "no" && (
+              <div className="mt-3 space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-bold text-foreground">Problem location (manual entry)</span>
+                  <span className="text-muted-foreground">All fields required</span>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <input
+                    value={district}
+                    onChange={(e) => setDistrict(e.target.value)}
+                    placeholder="District *"
+                    className="rounded-lg border border-input bg-background p-2.5 text-sm"
+                  />
+                  <input
+                    value={block}
+                    onChange={(e) => setBlock(e.target.value)}
+                    placeholder="Block / Mandal *"
+                    className="rounded-lg border border-input bg-background p-2.5 text-sm"
+                  />
+                  <input
+                    value={locality}
+                    onChange={(e) => setLocality(e.target.value)}
+                    placeholder="Village / City *"
+                    className="rounded-lg border border-input bg-background p-2.5 text-sm"
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="pt-2 border-t border-primary/10">
+              <label className="flex items-start gap-2 text-xs text-muted-foreground cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={consentLocation}
+                  onChange={(event) => setConsentLocation(event.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>I consent to authorised verifiers and assigned partners using my exact location. Public discovery uses an approximate location only.</span>
+              </label>
             </div>
-            {duplicateMatches.length > 0 && !duplicateDecision && <div className="mt-4 rounded-lg border border-[#DDEBE2] bg-[#F6FBF8] p-3 text-sm"><b>A problem with similar problem is already reported.</b><p className="mt-1">Choose repost if this is the same issue. It adds your support to the existing problem without creating a duplicate.</p>{duplicateMatches.map((item) => <div key={item.challenge_id} className="mt-3 flex flex-wrap items-center justify-between gap-2"><p><b>{item.public_id}</b> | {item.title} ({Math.round(item.duplicate_score)}% match)</p><button type="button" onClick={() => { const match = challenges.find((challenge) => challenge.id === item.challenge_id); if (match) void repost(match); }} className="rounded-lg border border-primary px-3 py-2 text-xs font-bold text-primary">This is the same problem - repost</button></div>)}<button type="button" onClick={() => setDuplicateDecision(true)} className="mt-3 rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground">These are different - continue reporting</button></div>}
-            {(duplicateMatches.length === 0 || duplicateDecision) && <button onClick={() => void submit()} disabled={busy} className="mt-5 rounded-lg bg-primary px-5 py-3 font-bold text-primary-foreground disabled:opacity-50">{busy ? "Submitting..." : "Submit Report"}</button>}
-            <button onClick={() => setReviewing(false)} className="ml-3 text-sm font-bold text-primary">Edit report</button>
           </div>
-        )}
-        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
-        <button
-          disabled={busy || reviewing}
-          onClick={review}
-          className="mt-6 rounded-lg bg-primary px-5 py-3 font-bold text-primary-foreground disabled:opacity-50"
-        >
-          {busy ? "Saving..." : "Submit for review"}
-        </button>
+
+          {/* Supporting Information Section */}
+          <div className="space-y-3 pt-2">
+            <label className="block text-sm font-bold">Supporting Information</label>
+            <textarea
+              value={supportingInfo}
+              onChange={(e) => setSupportingInfo(e.target.value)}
+              placeholder="Supporting information (optional)"
+              rows={3}
+              className="w-full rounded-lg border border-input bg-background p-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary resize-y"
+            />
+
+            {/* File/photo upload area */}
+            <div className="rounded-xl border border-dashed border-border bg-surface/30 p-4 transition-colors hover:border-primary/40">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <div className="flex items-center gap-2">
+                  <Paperclip size={16} className="text-primary" />
+                  <span className="text-xs font-bold text-foreground">Attach photos or evidence (optional)</span>
+                </div>
+                <span className="text-[11px] text-muted-foreground">Max 25MB per file</span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2.5">
+                <label className="inline-flex items-center gap-2 rounded-lg bg-card border border-border px-3.5 py-2 text-xs font-semibold text-foreground hover:bg-surface cursor-pointer transition-colors shadow-xs">
+                  <Upload size={14} className="text-primary" />
+                  <span>Choose files / photos</span>
+                  <input
+                    type="file"
+                    multiple
+                    accept="image/*,.pdf,video/*,audio/*"
+                    onChange={handleFileInput}
+                    className="sr-only"
+                  />
+                </label>
+
+                <label className="inline-flex items-center gap-2 rounded-lg bg-card border border-border px-3.5 py-2 text-xs font-semibold text-foreground hover:bg-surface cursor-pointer transition-colors shadow-xs">
+                  <ImageIcon size={14} className="text-primary" />
+                  <span>Take photo</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    onChange={handleFileInput}
+                    className="sr-only"
+                  />
+                </label>
+              </div>
+
+              {stagedFiles.length > 0 && (
+                <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-2 pt-2 border-t border-border/50">
+                  {stagedFiles.map((m) => (
+                    <div
+                      key={m.id}
+                      className="group relative flex items-center gap-2 rounded-lg border border-border bg-card p-2 text-xs shadow-xs"
+                    >
+                      {m.type === "image" && m.preview ? (
+                        <img src={m.preview} alt="Upload preview" className="size-10 rounded object-cover shrink-0" />
+                      ) : (
+                        <div className="size-10 rounded bg-primary-soft text-primary grid place-items-center shrink-0">
+                          <Paperclip size={16} />
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-medium text-[11px]">{m.file.name}</p>
+                        <p className="text-[10px] text-muted-foreground">{Math.round(m.file.size / 1024)} KB</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeStagedFile(m.id)}
+                        className="rounded-full p-1 text-muted-foreground hover:bg-destructive-soft hover:text-destructive transition-colors"
+                        title="Remove file"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Data consent checkboxes */}
+            <div className="space-y-2 rounded-lg bg-surface p-3 text-xs text-muted-foreground">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={consentMedia}
+                  onChange={(event) => setConsentMedia(event.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>I consent to secure storage and authorised review of any evidence I upload.</span>
+              </label>
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={consentAi}
+                  onChange={(event) => setConsentAi(event.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>I consent to optional future AI-assisted analysis. It will never replace my original report.</span>
+              </label>
+            </div>
+
+            {error && <p className="text-sm text-destructive font-medium">{error}</p>}
+
+            {/* Submit for review CTA button */}
+            <button
+              type="button"
+              disabled={busy || reviewing}
+              onClick={review}
+              className="mt-2 w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-6 py-3.5 text-sm font-bold text-primary-foreground hover:opacity-95 disabled:opacity-50 transition-opacity"
+            >
+              {busy ? "Saving..." : "Submit for review"}
+            </button>
+          </div>
+
+          {(showNearby || locality.length > 2) && nearby.length > 0 && (
+            <div className="mt-5 rounded-xl border border-primary/20 bg-primary-soft/40 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-bold">Possible matches nearby</p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Avoid duplicate reports by supporting an existing problem.
+                  </p>
+                </div>
+                <Navigation className="text-primary" size={20} />
+              </div>
+              <div className="mt-3 space-y-2">
+                {nearby.map(({ challenge, distance }) => (
+                  <div
+                    key={challenge.id}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-card p-3"
+                  >
+                    <div>
+                      <b className="text-sm">{challenge.title}</b>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        <MapPin className="mr-1 inline" size={12} />
+                        {distance.toFixed(1)} km away | {challenge.stage.replaceAll("_", " ")}
+                      </p>
+                    </div>
+                    <button
+                      disabled={supportedIds.includes(challenge.id)}
+                      onClick={() =>
+                        void repost(challenge, "Also affected - submitted from report flow.")
+                      }
+                      className="rounded-lg border border-primary px-3 py-2 text-xs font-bold text-primary disabled:opacity-50"
+                    >
+                      {supportedIds.includes(challenge.id) ? "Supporting" : "I am also affected"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <p className="rounded-lg bg-surface p-3 text-xs text-muted-foreground">
+            <ShieldCheck className="mr-2 inline text-accent" size={16} />
+            Sensitive evidence and exact locations stay private.
+          </p>
+
+          {/* Review Report Modal / Box */}
+          {reviewing && (
+            <div className="rounded-xl border border-primary bg-primary-soft/40 p-5">
+              <h2 className="text-lg font-bold">Review Report</h2>
+              <div className="mt-3 space-y-2 text-sm">
+                <p><b>Problem:</b> {title} - {description}</p>
+                <p><b>Category:</b> {category} {assignedDept && <span className="text-muted-foreground font-normal">({assignedDept.title})</span>}</p>
+                {voiceTranscript && <p><b>Voice transcription:</b> {voiceTranscript}</p>}
+                <p><b>Near the problem:</b> {nearProblem === "yes" ? "Yes" : "No"}</p>
+                {nearProblem === "yes" && latitude != null && <p><b>Reporter GPS:</b> {latitude.toFixed(6)}, {longitude?.toFixed(6)}</p>}
+                {nearProblem === "no" && <p><b>Problem location:</b> {district}, {block}, {locality}</p>}
+                {supportingInfo && <p><b>Supporting information:</b> {supportingInfo}</p>}
+                {stagedFiles.length > 0 && <p><b>Attached evidence:</b> {stagedFiles.length} file(s) staged for upload</p>}
+              </div>
+              {duplicateMatches.length > 0 && !duplicateDecision && (
+                <div className="mt-4 rounded-lg border border-[#DDEBE2] bg-[#F6FBF8] p-3 text-sm">
+                  <b>A problem with similar details has already been reported.</b>
+                  <p className="mt-1">Choose repost if this is the same issue. It adds your support to the existing problem without creating a duplicate.</p>
+                  {duplicateMatches.map((item) => (
+                    <div key={item.challenge_id} className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                      <p><b>{item.public_id}</b> | {item.title} ({Math.round(item.duplicate_score)}% match)</p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const match = challenges.find((challenge) => challenge.id === item.challenge_id);
+                          if (match) void repost(match);
+                        }}
+                        className="rounded-lg border border-primary px-3 py-2 text-xs font-bold text-primary"
+                      >
+                        This is the same problem - repost
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setDuplicateDecision(true)}
+                    className="mt-3 rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground"
+                  >
+                    These are different - continue reporting
+                  </button>
+                </div>
+              )}
+              {(duplicateMatches.length === 0 || duplicateDecision) && (
+                <button
+                  onClick={() => void submit()}
+                  disabled={busy}
+                  className="mt-5 rounded-lg bg-primary px-5 py-3 font-bold text-primary-foreground disabled:opacity-50"
+                >
+                  {busy ? "Submitting..." : "Submit Report"}
+                </button>
+              )}
+              <button
+                onClick={() => setReviewing(false)}
+                className="ml-3 text-sm font-bold text-primary"
+              >
+                Edit report
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Dynamic Right Sidebar: 30% width (3 of 10 cols on lg) */}
+        <aside className="lg:col-span-3 lg:sticky lg:top-6 space-y-4">
+          {assignedDept ? (
+            <div className="card-surface p-5 border border-primary/30 bg-gradient-to-br from-card via-surface/30 to-primary-soft/20 shadow-sm rounded-xl transition-all duration-200">
+              <div className="flex items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 border border-primary/20 px-2.5 py-1 text-[11px] font-bold tracking-wider text-primary uppercase">
+                  <Sparkles size={13} className="text-primary animate-pulse" />
+                  AI Assigned Department
+                </span>
+              </div>
+              <h3 className="mt-3 text-base font-bold text-foreground leading-snug">
+                {assignedDept.title}
+              </h3>
+              <div className="mt-3 pt-3 border-t border-border text-xs text-muted-foreground leading-relaxed whitespace-pre-line">
+                {assignedDept.scope}
+              </div>
+              <div className="mt-4 rounded-lg bg-surface/80 p-2.5 text-[11px] text-muted-foreground flex items-start gap-2">
+                <Building2 size={14} className="mt-0.5 shrink-0 text-primary" />
+                <span>Jurisdiction: {assignedDept.jurisdiction}</span>
+              </div>
+            </div>
+          ) : (
+            <div className="card-surface p-5 border border-dashed border-border/80 rounded-xl text-center text-muted-foreground/80 py-8">
+              <Building2 size={28} className="mx-auto mb-2 text-muted-foreground/50" />
+              <p className="text-xs font-semibold text-foreground/80">AI Assigned Department</p>
+              <p className="mt-1 text-[11px] leading-relaxed">
+                Select a category from the form to view the mapped civic authority and its jurisdictional scope.
+              </p>
+            </div>
+          )}
+        </aside>
       </div>
     </section>
   );
 }
 function ProblemProgressTimeline({ challenge, compact = false }: { challenge: Challenge; compact?: boolean }) {
-  const status = challenge.assignment_status ?? "";
-  const assigned = Boolean(status) || ["matched", "project", "prototype", "pilot", "impact"].includes(challenge.stage);
-  const accepted = ["accepted", "in_progress", "completed", "verified", "unable_to_resolve"].includes(status);
-  const participants = (challenge.participant_count ?? 0) > 0;
-  const working = ["in_progress", "completed", "verified", "unable_to_resolve"].includes(status);
-  const finished = ["completed", "verified", "unable_to_resolve"].includes(status) || challenge.stage === "impact";
-  const steps = [
-    ["Task Assigned", assigned],
-    ["Task Accepted", accepted],
-    ["Skilled Participants Assigned", participants],
-    ["Work in Progress", working],
-    [status === "unable_to_resolve" ? "Couldn't Solve - reassignment" : "Solved / Resolution", finished],
-  ] as const;
-  return <section className={compact ? "mt-4" : "mt-5 rounded-xl border border-border bg-surface p-4"} aria-label="Problem progress timeline"><p className="text-sm font-bold">Progress timeline</p><ol className={`mt-3 ${compact ? "flex flex-wrap gap-2" : "space-y-3"}`}>{steps.map(([label, complete], index) => <li key={label} className={`flex items-center gap-3 text-sm ${complete ? "text-foreground" : "text-muted-foreground"}`}><span className={`grid size-6 shrink-0 place-items-center rounded-full text-xs font-bold ${complete ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground"}`}>{index + 1}</span><span className={complete ? "font-semibold" : ""}>{label}</span></li>)}</ol>{!assigned && <p className="mt-3 text-xs text-muted-foreground">Awaiting verification and partner assignment.</p>}</section>;
+  const verified = ["validated", "matched", "project", "prototype", "pilot", "impact"].includes(challenge.stage) ||
+    ["officially_verified", "community_verified"].includes(challenge.verification);
+  const scoped = Boolean(challenge.technical_scope && challenge.technical_scope.trim().length > 0);
+  const universityAssigned = Boolean(challenge.project_id || challenge.university_name || ["project", "prototype", "pilot", "impact"].includes(challenge.stage));
+  const prototypeReady = (challenge.prototype_count ?? 0) > 0 || ["prototype", "pilot", "impact"].includes(challenge.stage);
+  const testingValidated = prototypeReady && ["prototype", "pilot", "impact"].includes(challenge.stage);
+  const industryJoined = (challenge.funding_count ?? 0) > 0;
+  const pilotApproved = (challenge.pilot_count ?? 0) > 0 || ["pilot", "impact"].includes(challenge.stage);
+  const pilotDeployed = ["pilot", "impact"].includes(challenge.stage);
+  const govtAdopted = ["adoption_recommended", "scaling_approved", "scaling_in_progress", "scaled"].includes(challenge.adoption_status ?? "") || challenge.stage === "impact";
+  const scaling = ["scaling_approved", "scaling_in_progress", "scaled"].includes(challenge.adoption_status ?? "");
+  const impactMeasured = (challenge.impact_count ?? 0) > 0 || challenge.adoption_status === "scaled";
+
+  const stages = [
+    { num: "01", name: "Challenge Submitted", done: true, current: !verified },
+    { num: "02", name: "Government Validation", done: verified, current: verified && !scoped },
+    { num: "03", name: "Technical Scope Defined", done: scoped, current: scoped && !universityAssigned },
+    { num: "04", name: "University Collaboration", done: universityAssigned, current: universityAssigned && !prototypeReady },
+    { num: "05", name: "Prototype Development", done: prototypeReady, current: prototypeReady && !testingValidated },
+    { num: "06", name: "Testing & Validation", done: testingValidated, current: testingValidated && !industryJoined },
+    { num: "07", name: "Industry / CSR Support", done: industryJoined, current: industryJoined && !pilotApproved },
+    { num: "08", name: "Government Pilot Approval", done: pilotApproved, current: pilotApproved && !pilotDeployed },
+    { num: "09", name: "Pilot Deployment", done: pilotDeployed, current: pilotDeployed && !govtAdopted },
+    { num: "10", name: "Government Adoption", done: govtAdopted, current: govtAdopted && !scaling },
+    { num: "11", name: "Scaling", done: scaling, current: scaling && !impactMeasured },
+    { num: "12", name: "Measured Impact", done: impactMeasured, current: impactMeasured },
+  ];
+
+  return (
+    <section className={compact ? "mt-4" : "mt-5 rounded-xl border border-border bg-surface p-4"} aria-label="Civic innovation lifecycle progress">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Civic Innovation Lifecycle</p>
+        <span className="text-[11px] font-semibold text-primary">
+          {stages.filter((s) => s.done).length} / 12 stages
+        </span>
+      </div>
+      <ol className={`mt-3 ${compact ? "grid grid-cols-2 gap-2" : "space-y-2.5"}`}>
+        {stages.map((stage) => {
+          const statusIcon = stage.done ? "✓" : stage.current ? "●" : "○";
+          return (
+            <li
+              key={stage.num}
+              className={`flex items-center gap-2.5 text-xs ${
+                stage.done
+                  ? "text-foreground font-semibold"
+                  : stage.current
+                  ? "text-primary font-bold"
+                  : "text-muted-foreground"
+              }`}
+            >
+              <span
+                className={`grid size-5 shrink-0 place-items-center rounded-full text-[10px] font-bold ${
+                  stage.done
+                    ? "bg-primary text-primary-foreground"
+                    : stage.current
+                    ? "bg-primary/20 text-primary border border-primary"
+                    : "bg-card text-muted-foreground/60 border border-border"
+                }`}
+              >
+                {statusIcon}
+              </span>
+              <span className="truncate">
+                <span className="opacity-60 mr-1.5">{stage.num}</span>
+                {stage.name}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+      {!verified && (
+        <p className="mt-3 text-[11px] text-muted-foreground">Awaiting government review and technical scoping.</p>
+      )}
+    </section>
+  );
 }
 
 function Explorer({
@@ -1941,45 +2509,421 @@ function Explorer({
   const visibleChallenges = challenges
     .filter((item) => category === "all" || item.domain === category)
     .filter((item) => state === "all" || item.stage === state || item.assignment_status === state)
-    .sort((a, b) => sort === "newest" ? +new Date(b.created_at) - +new Date(a.created_at) : sort === "oldest" ? +new Date(a.created_at) - +new Date(b.created_at) : b.priority_score - a.priority_score);
-  const mediaFor = (challenge: Challenge) => challenge.media?.length ? challenge.media : challenge.preview_image_path ? [{ path: challenge.preview_image_path, type: "image/jpeg" }] : [];
-  const mediaUrl = (path: string) => supabase?.storage.from("challenge-previews").getPublicUrl(path).data.publicUrl ?? "";
-  const priorityLabel = (challenge: Challenge) => challenge.priority_level ?? (challenge.priority_score >= 75 ? "HIGH" : challenge.priority_score >= 50 ? "MEDIUM" : "LOW");
+    .sort((a, b) =>
+      sort === "newest"
+        ? +new Date(b.created_at) - +new Date(a.created_at)
+        : sort === "oldest"
+        ? +new Date(a.created_at) - +new Date(b.created_at)
+        : b.priority_score - a.priority_score
+    );
+  const mediaFor = (challenge: Challenge) =>
+    challenge.media?.length
+      ? challenge.media
+      : challenge.preview_image_path
+      ? [{ path: challenge.preview_image_path, type: "image/jpeg" }]
+      : [];
+  const mediaUrl = (path: string) =>
+    supabase?.storage.from("challenge-previews").getPublicUrl(path).data.publicUrl ?? "";
+  const priorityLabel = (challenge: Challenge) =>
+    challenge.priority_level ??
+    (challenge.priority_score >= 75 ? "HIGH" : challenge.priority_score >= 50 ? "MEDIUM" : "LOW");
   const locateDevice = () => {
     if (!navigator.geolocation) return setLocationError("Location is not supported on this device.");
     setLocationError("");
     navigator.geolocation.getCurrentPosition(
       (position) => setDevicePosition({ lat: position.coords.latitude, lng: position.coords.longitude }),
       () => setLocationError("Location access was not granted. Problem markers are still available."),
-      { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 },
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 }
     );
   };
-  const openProblem = (challenge: Challenge) => { setMediaIndex(0); setSelected(challenge); };
-  return <section className="container-page py-8 sm:py-12">
-    <div className="flex flex-wrap items-start justify-between gap-4">
-      <div><h1 className="text-3xl font-bold">Explore Problems</h1><p className="mt-1 text-sm text-muted-foreground">Discover real-world challenges and be a part of the solution.</p></div>
-      <button onClick={() => go("report")} className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground"><Plus size={16} /> Report a Problem</button>
-    </div>
-    <div className="mt-6 grid gap-3 md:grid-cols-[minmax(0,1.5fr)_minmax(10rem,.9fr)_minmax(10rem,.9fr)_minmax(10rem,.9fr)]">
-      <label className="relative"><Search className="absolute left-3 top-3 text-muted-foreground" size={17} /><input value={query} onChange={(event) => { setQuery(event.target.value); void load(event.target.value); }} placeholder="Search problems..." className="w-full rounded-lg border border-input bg-card py-2.5 pl-10 pr-3 text-sm" /></label>
-      <select value={category} onChange={(event) => setCategory(event.target.value)} className="rounded-lg border border-input bg-card px-3 py-2.5 text-sm"><option value="all">All Categories</option>{categories.map((item) => <option key={item} value={item}>{item}</option>)}</select>
-      <select value={state} onChange={(event) => setState(event.target.value)} className="rounded-lg border border-input bg-card px-3 py-2.5 text-sm"><option value="all">All States</option><option value="reported">Reported</option><option value="matched">Matched</option><option value="in_progress">In progress</option><option value="impact">Resolved</option></select>
-      <select value={sort} onChange={(event) => setSort(event.target.value)} className="rounded-lg border border-input bg-card px-3 py-2.5 text-sm"><option value="priority">Sort by priority</option><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select>
-    </div>
-    <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-      {visibleChallenges.map((challenge) => {
-        const thumbnail = mediaFor(challenge)[0];
-        const priority = priorityLabel(challenge);
-        return <button key={challenge.id} onClick={() => openProblem(challenge)} className="group overflow-hidden rounded-xl border border-border bg-card text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-card">
-          <div className="relative aspect-[1.8] bg-surface">{thumbnail ? thumbnail.type.startsWith("video/") ? <video src={mediaUrl(thumbnail.path)} muted preload="metadata" className="h-full w-full object-cover" /> : <img src={mediaUrl(thumbnail.path)} alt="" className="h-full w-full object-cover" loading="lazy" /> : <div className="grid h-full place-items-center text-muted-foreground"><ImageIcon size={28} /></div>}<span className={`absolute right-2 top-2 rounded-full px-2 py-1 text-[10px] font-bold text-white ${priority === "HIGH" || priority === "CRITICAL" ? "bg-destructive" : priority === "MEDIUM" ? "bg-[#d9902f]" : "bg-primary"}`}>{priority[0] + priority.slice(1).toLowerCase()} Priority</span></div>
-          <div className="p-3"><h2 className="line-clamp-2 font-bold leading-5 group-hover:text-primary">{challenge.title}</h2><p className="mt-2 flex items-center gap-1 text-xs text-muted-foreground"><MapPin size={13} /> {challenge.district}</p><div className="mt-3 flex items-center justify-between text-[11px] text-muted-foreground"><span className="inline-flex items-center gap-1"><BadgeCheck size={12} className="text-primary" /> {challenge.domain}</span><span>{new Date(challenge.created_at).toLocaleDateString()}</span></div></div>
-        </button>;
-      })}
-      {!visibleChallenges.length && <p className="card-surface col-span-full p-8 text-center text-muted-foreground">No problems match these filters.</p>}
-    </div>
-    <section className="mt-10 overflow-hidden rounded-xl border border-border bg-card"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-border p-4"><div><h2 className="font-bold">Problem map</h2><p className="mt-1 text-xs text-muted-foreground">Select a marker to view that problem&apos;s complete public details.</p></div><button onClick={locateDevice} className="inline-flex items-center gap-2 rounded-lg border border-primary px-3 py-2 text-xs font-bold text-primary"><LocateFixed size={15} /> {devicePosition ? "Location updated" : "Use my location"}</button></div><ProblemMap problems={visibleChallenges} devicePosition={devicePosition} onProblemSelect={(problem) => { const match = challenges.find((item) => item.id === problem.id); if (match) openProblem(match); }} />{locationError && <p className="px-4 py-3 text-sm text-destructive">{locationError}</p>}</section>
-    {selected && (() => { const media = mediaFor(selected); const activeMedia = media[mediaIndex]; return <div className="fixed inset-0 z-[2000] grid place-items-end bg-ink/50 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-label="Problem details"><article className="card-surface max-h-[92dvh] w-full max-w-4xl overflow-y-auto p-5 sm:p-7"><div className="flex items-start justify-between gap-4"><div><span className="rounded-full bg-primary-soft px-2 py-1 text-xs font-bold text-primary">{selected.public_id}</span><h2 className="mt-3 text-2xl font-bold">{selected.title}</h2></div><button onClick={() => setSelected(null)} className="grid size-10 shrink-0 place-items-center rounded-lg border border-border" aria-label="Close problem details"><X size={18} /></button></div><div className="mt-6 grid gap-6 lg:grid-cols-[1.1fr_.9fr]"><div>{activeMedia ? <div className="relative aspect-video overflow-hidden rounded-xl bg-black">{activeMedia.type.startsWith("video/") ? <video src={mediaUrl(activeMedia.path)} controls className="h-full w-full object-contain" /> : <img src={mediaUrl(activeMedia.path)} alt={`Evidence for ${selected.title}`} className="h-full w-full object-cover" />}{media.length > 1 && <div className="absolute inset-x-3 bottom-3 flex justify-between"><button onClick={() => setMediaIndex((index) => (index - 1 + media.length) % media.length)} className="rounded-full bg-black/65 p-2 text-white" aria-label="Previous media"><ChevronLeft size={18} /></button><button onClick={() => setMediaIndex((index) => (index + 1) % media.length)} className="rounded-full bg-black/65 p-2 text-white" aria-label="Next media"><ChevronRight size={18} /></button></div>}</div> : <div className="grid aspect-video place-items-center rounded-xl bg-surface text-sm text-muted-foreground">No public media submitted</div>}<h3 className="mt-5 font-bold">Problem details</h3><p className="mt-2 text-sm leading-6 text-muted-foreground">{selected.summary}</p><div className="mt-5 grid gap-3 text-sm sm:grid-cols-2"><p><b>Category</b><br />{selected.domain}</p><p><b>Location</b><br />{selected.district}</p><p><b>Reported</b><br />{new Date(selected.created_at).toLocaleDateString()}</p><p><b>People affected</b><br />{selected.affected_population ?? "Not reported"}</p><p><b>Verification</b><br />{selected.verification.replaceAll("_", " ")}</p><p><b>Community support</b><br />{selected.reports + selected.reposts} reports and reposts</p></div>{selected.comments?.length ? <section className="mt-5 border-t border-border pt-4"><h3 className="font-bold">Community updates</h3><div className="mt-3 space-y-2">{selected.comments.map((comment) => <p key={comment.id} className="rounded-lg bg-surface px-3 py-2 text-sm">{comment.note}</p>)}</div></section> : null}</div><aside><div className="rounded-xl bg-primary-soft/40 p-4"><p className="text-xs font-bold text-primary">CURRENT STATUS</p><p className="mt-1 font-bold capitalize">{(selected.assignment_status ?? selected.stage).replaceAll("_", " ")}</p><p className="mt-3 text-sm"><b>Priority:</b> {priorityLabel(selected)} ({selected.priority_score}/100)</p></div><ProblemProgressTimeline challenge={selected} /></aside></div></article></div>; })()}
-  </section>;
+  const openProblem = (challenge: Challenge) => {
+    setMediaIndex(0);
+    setSelected(challenge);
+  };
+
+  return (
+    <section className="container-page py-8 sm:py-12">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold">Explore Problems</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Discover real-world civic challenges validated by government and engineered by universities.
+          </p>
+        </div>
+        <button
+          onClick={() => go("report")}
+          className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground"
+        >
+          <Plus size={16} /> Report a Problem
+        </button>
+      </div>
+      <div className="mt-6 grid gap-3 md:grid-cols-[minmax(0,1.5fr)_minmax(10rem,.9fr)_minmax(10rem,.9fr)_minmax(10rem,.9fr)]">
+        <label className="relative">
+          <Search className="absolute left-3 top-3 text-muted-foreground" size={17} />
+          <input
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              void load(event.target.value);
+            }}
+            placeholder="Search problems..."
+            className="w-full rounded-lg border border-input bg-card py-2.5 pl-10 pr-3 text-sm"
+          />
+        </label>
+        <select
+          value={category}
+          onChange={(event) => setCategory(event.target.value)}
+          className="rounded-lg border border-input bg-card px-3 py-2.5 text-sm"
+        >
+          <option value="all">All Categories</option>
+          {categories.map((item) => (
+            <option key={item} value={item}>
+              {item}
+            </option>
+          ))}
+        </select>
+        <select
+          value={state}
+          onChange={(event) => setState(event.target.value)}
+          className="rounded-lg border border-input bg-card px-3 py-2.5 text-sm"
+        >
+          <option value="all">All States</option>
+          <option value="reported">Reported</option>
+          <option value="validated">Validated & Scoped</option>
+          <option value="project">University Project</option>
+          <option value="prototype">Prototype</option>
+          <option value="pilot">Pilot</option>
+          <option value="impact">Resolved / Scaled</option>
+        </select>
+        <select
+          value={sort}
+          onChange={(event) => setSort(event.target.value)}
+          className="rounded-lg border border-input bg-card px-3 py-2.5 text-sm"
+        >
+          <option value="priority">Sort by priority</option>
+          <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
+        </select>
+      </div>
+
+      <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {visibleChallenges.map((challenge) => {
+          const thumbnail = mediaFor(challenge)[0];
+          const priority = priorityLabel(challenge);
+          return (
+            <button
+              key={challenge.id}
+              onClick={() => openProblem(challenge)}
+              className="group overflow-hidden rounded-xl border border-border bg-card text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-card flex flex-col justify-between"
+            >
+              <div>
+                <div className="relative aspect-[1.8] bg-surface">
+                  {thumbnail ? (
+                    thumbnail.type.startsWith("video/") ? (
+                      <video src={mediaUrl(thumbnail.path)} muted preload="metadata" className="h-full w-full object-cover" />
+                    ) : (
+                      <img src={mediaUrl(thumbnail.path)} alt="" className="h-full w-full object-cover" loading="lazy" />
+                    )
+                  ) : (
+                    <div className="grid h-full place-items-center text-muted-foreground">
+                      <ImageIcon size={28} />
+                    </div>
+                  )}
+                  <span
+                    className={`absolute right-2 top-2 rounded-full px-2 py-1 text-[10px] font-bold text-white ${
+                      priority === "HIGH" || priority === "CRITICAL"
+                        ? "bg-destructive"
+                        : priority === "MEDIUM"
+                        ? "bg-[#d9902f]"
+                        : "bg-primary"
+                    }`}
+                  >
+                    {priority[0] + priority.slice(1).toLowerCase()} Priority
+                  </span>
+                </div>
+
+                <div className="p-3.5 space-y-2">
+                  <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                    <span className="font-bold text-primary">{challenge.public_id}</span>
+                    <span className="flex items-center gap-1">
+                      <MapPin size={12} /> {challenge.district}
+                    </span>
+                  </div>
+                  <h2 className="line-clamp-2 font-bold leading-5 group-hover:text-primary">{challenge.title}</h2>
+                  <p className="line-clamp-2 text-xs text-muted-foreground">{challenge.summary}</p>
+                </div>
+              </div>
+
+              {/* Real Quad-helix Metadata */}
+              <div className="p-3.5 pt-0 border-t border-border/60 text-[11px] space-y-1.5 mt-2">
+                <div className="flex justify-between items-center text-muted-foreground">
+                  <span>Govt Validation:</span>
+                  <span className="font-semibold text-foreground capitalize">
+                    {challenge.verification.replaceAll("_", " ")}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center text-muted-foreground">
+                  <span>Technical Scope:</span>
+                  <span className={challenge.technical_scope ? "font-semibold text-primary" : "text-muted-foreground"}>
+                    {challenge.technical_scope ? "Defined" : "Pending definition"}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center text-muted-foreground">
+                  <span>University:</span>
+                  <span className="font-medium text-foreground truncate max-w-[140px]">
+                    {challenge.university_name || "Awaiting university collaboration"}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center text-muted-foreground">
+                  <span>Stage:</span>
+                  <span className="font-bold text-foreground capitalize">
+                    {challenge.stage.replaceAll("_", " ")}
+                  </span>
+                </div>
+              </div>
+            </button>
+          );
+        })}
+        {!visibleChallenges.length && (
+          <p className="card-surface col-span-full p-8 text-center text-muted-foreground">
+            No problems match these filters.
+          </p>
+        )}
+      </div>
+
+      <section className="mt-10 overflow-hidden rounded-xl border border-border bg-card">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border p-4">
+          <div>
+            <h2 className="font-bold">Problem map</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Select a marker to view that problem&apos;s complete public details.
+            </p>
+          </div>
+          <button
+            onClick={locateDevice}
+            className="inline-flex items-center gap-2 rounded-lg border border-primary px-3 py-2 text-xs font-bold text-primary"
+          >
+            <LocateFixed size={15} /> {devicePosition ? "Location updated" : "Use my location"}
+          </button>
+        </div>
+        <ProblemMap
+          problems={visibleChallenges}
+          devicePosition={devicePosition}
+          onProblemSelect={(problem) => {
+            const match = challenges.find((item) => item.id === problem.id);
+            if (match) openProblem(match);
+          }}
+        />
+        {locationError && <p className="px-4 py-3 text-sm text-destructive">{locationError}</p>}
+      </section>
+
+      {/* Real Quad-Helix Problem Details Modal */}
+      {selected &&
+        (() => {
+          const media = mediaFor(selected);
+          const activeMedia = media[mediaIndex];
+          return (
+            <div
+              className="fixed inset-0 z-[2000] grid place-items-end bg-ink/50 p-3 sm:place-items-center"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Problem details"
+            >
+              <article className="card-surface max-h-[92dvh] w-full max-w-4xl overflow-y-auto p-5 sm:p-7">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <span className="rounded-full bg-primary-soft px-2.5 py-1 text-xs font-bold text-primary">
+                      {selected.public_id}
+                    </span>
+                    <h2 className="mt-3 text-2xl font-bold">{selected.title}</h2>
+                  </div>
+                  <button
+                    onClick={() => setSelected(null)}
+                    className="grid size-10 shrink-0 place-items-center rounded-lg border border-border"
+                    aria-label="Close problem details"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <div className="mt-6 grid gap-6 lg:grid-cols-[1.1fr_.9fr]">
+                  <div className="space-y-5">
+                    {activeMedia ? (
+                      <div className="relative aspect-video overflow-hidden rounded-xl bg-black">
+                        {activeMedia.type.startsWith("video/") ? (
+                          <video src={mediaUrl(activeMedia.path)} controls className="h-full w-full object-contain" />
+                        ) : (
+                          <img
+                            src={mediaUrl(activeMedia.path)}
+                            alt={`Evidence for ${selected.title}`}
+                            className="h-full w-full object-cover"
+                          />
+                        )}
+                        {media.length > 1 && (
+                          <div className="absolute inset-x-3 bottom-3 flex justify-between">
+                            <button
+                              onClick={() => setMediaIndex((index) => (index - 1 + media.length) % media.length)}
+                              className="rounded-full bg-black/65 p-2 text-white"
+                              aria-label="Previous media"
+                            >
+                              <ChevronLeft size={18} />
+                            </button>
+                            <button
+                              onClick={() => setMediaIndex((index) => (index + 1) % media.length)}
+                              className="rounded-full bg-black/65 p-2 text-white"
+                              aria-label="Next media"
+                            >
+                              <ChevronRight size={18} />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="grid aspect-video place-items-center rounded-xl bg-surface text-sm text-muted-foreground">
+                        No public media submitted
+                      </div>
+                    )}
+
+                    <div>
+                      <h3 className="font-bold text-base">Problem Overview</h3>
+                      <p className="mt-2 text-sm leading-6 text-muted-foreground">{selected.summary}</p>
+                    </div>
+
+                    <div className="grid gap-3 text-sm sm:grid-cols-2 rounded-xl bg-surface p-4 border border-border">
+                      <p>
+                        <b>Category:</b> {selected.domain}
+                      </p>
+                      <p>
+                        <b>Location:</b> {selected.district}
+                      </p>
+                      <p>
+                        <b>Reported:</b> {new Date(selected.created_at).toLocaleDateString()}
+                      </p>
+                      <p>
+                        <b>People affected:</b> {selected.affected_population ?? "Not reported"}
+                      </p>
+                      <p>
+                        <b>Verification:</b> {selected.verification.replaceAll("_", " ")}
+                      </p>
+                      <p>
+                        <b>Department:</b> {selected.responsible_department || "Awaiting routing"}
+                      </p>
+                    </div>
+
+                    {/* Government Domain Context & Technical Scope */}
+                    <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 space-y-3">
+                      <div className="flex items-center gap-2 text-primary font-bold text-sm">
+                        <ShieldCheck size={17} />
+                        <h4>Government Technical Scope & Constraints</h4>
+                      </div>
+
+                      {selected.technical_scope ? (
+                        <div className="space-y-2 text-xs leading-relaxed text-foreground">
+                          <p>
+                            <b>Technical Scope:</b> {selected.technical_scope}
+                          </p>
+                          {selected.expected_outcome && (
+                            <p>
+                              <b>Expected Outcome:</b> {selected.expected_outcome}
+                            </p>
+                          )}
+                          {selected.constraints && (
+                            <p>
+                              <b>Operational Constraints:</b> {selected.constraints}
+                            </p>
+                          )}
+                          {selected.regulatory_requirements && (
+                            <p>
+                              <b>Regulatory Criteria:</b> {selected.regulatory_requirements}
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">
+                          Government reviewer has not yet defined technical scope specifications.
+                        </p>
+                      )}
+
+                      <div className="pt-2 border-t border-primary/10 text-xs">
+                        <b>Attached Government Datasets:</b>{" "}
+                        {selected.government_data ? (
+                          <span className="text-foreground">{selected.government_data}</span>
+                        ) : (
+                          <span className="text-muted-foreground italic">No government dataset has been attached yet.</span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* University & Innovation Project Status */}
+                    <div className="rounded-xl border border-border bg-card p-4 space-y-2 text-xs">
+                      <div className="flex items-center gap-2 font-bold text-sm text-foreground">
+                        <GraduationCap size={16} />
+                        <h4>University Innovation Team</h4>
+                      </div>
+                      <p>
+                        <b>Higher Education Institution:</b>{" "}
+                        {selected.university_name || (
+                          <span className="text-muted-foreground italic">Awaiting university collaboration</span>
+                        )}
+                      </p>
+                      <p>
+                        <b>Innovation Project:</b>{" "}
+                        {selected.project_title || (
+                          <span className="text-muted-foreground italic">
+                            No active university project has been created for this challenge yet.
+                          </span>
+                        )}
+                      </p>
+                      {selected.support_needed && selected.support_needed.length > 0 && (
+                        <p>
+                          <b>Industry Support Needed:</b>{" "}
+                          <span className="font-semibold text-blue-700">{selected.support_needed.join(", ")}</span>
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Impact Section */}
+                    <div className="rounded-xl border border-border bg-card p-4 space-y-2 text-xs">
+                      <h4 className="font-bold text-sm text-foreground">Verified Societal Outcomes</h4>
+                      <p className="text-muted-foreground italic">
+                        {selected.adoption_status === "scaled"
+                          ? "Solution deployed and scaled at district level."
+                          : "Impact data not yet recorded."}
+                      </p>
+                    </div>
+
+                    {selected.comments?.length ? (
+                      <section className="border-t border-border pt-4">
+                        <h3 className="font-bold text-sm">Community updates</h3>
+                        <div className="mt-3 space-y-2">
+                          {selected.comments.map((comment) => (
+                            <p key={comment.id} className="rounded-lg bg-surface px-3 py-2 text-xs">
+                              {comment.note}
+                            </p>
+                          ))}
+                        </div>
+                      </section>
+                    ) : null}
+                  </div>
+
+                  <aside className="space-y-4">
+                    <div className="rounded-xl bg-primary-soft/40 p-4">
+                      <p className="text-xs font-bold text-primary">CURRENT STAGE</p>
+                      <p className="mt-1 font-bold capitalize">{selected.stage.replaceAll("_", " ")}</p>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        <b>Priority:</b> {priorityLabel(selected)} ({selected.priority_score}/100)
+                      </p>
+                    </div>
+
+                    <ProblemProgressTimeline challenge={selected} />
+                  </aside>
+                </div>
+              </article>
+            </div>
+          );
+        })()}
+    </section>
+  );
 }
 
 function ExplorerLegacy({
@@ -4966,27 +5910,539 @@ function FundingTransparencyV2({ user, profile, flash, embedded = false }: { use
 
 function ProjectWorkspace({ user, profile, flash }: { user: User | null; profile: Profile | null; flash: (message: string) => void }) {
   const staff = ["admin", "government", "university_admin", "faculty"].includes(profile?.role ?? "");
-  const [projects, setProjects] = useState<any[]>([]), [challenges, setChallenges] = useState<any[]>([]), [selected, setSelected] = useState<any | null>(null);
-  const [title, setTitle] = useState(""), [objective, setObjective] = useState(""), [challengeId, setChallengeId] = useState("");
-  const [milestone, setMilestone] = useState(""), [prototype, setPrototype] = useState(""), [repository, setRepository] = useState(""), [impact, setImpact] = useState(""), [unit, setUnit] = useState(""), [pilotLocation, setPilotLocation] = useState(""), [verdict, setVerdict] = useState("solved"), [feedback, setFeedback] = useState("");
+  const [projects, setProjects] = useState<any[]>([]),
+    [challenges, setChallenges] = useState<any[]>([]),
+    [selected, setSelected] = useState<any | null>(null);
+  const [title, setTitle] = useState(""),
+    [objective, setObjective] = useState(""),
+    [challengeId, setChallengeId] = useState("");
+  const [milestone, setMilestone] = useState(""),
+    [prototype, setPrototype] = useState(""),
+    [repository, setRepository] = useState(""),
+    [impact, setImpact] = useState(""),
+    [unit, setUnit] = useState(""),
+    [pilotLocation, setPilotLocation] = useState(""),
+    [verdict, setVerdict] = useState("solved"),
+    [feedback, setFeedback] = useState("");
+  const [newMemberRole, setNewMemberRole] = useState("Student Member"),
+    [newMemberName, setNewMemberName] = useState("");
+
   const load = async () => {
     if (!supabase) return;
     const [projectResult, challengeResult] = await Promise.all([
-      supabase.from("projects").select("id,title,objective,expected_outcome,status,health_score,created_at,challenges(public_id,title),milestones(id,title,status,due_date),prototypes(id,version,description,repository_url),pilots(id,location_text,status,starts_on,ends_on),community_feedback(id,verdict,comment,created_at),impact_observations(id,metric,unit,baseline,target,observed,verification_status)").order("created_at", { ascending: false }),
-      supabase.from("challenges").select("id,public_id,title").in("verification", ["community_verified", "officially_verified"]).order("created_at", { ascending: false }),
+      supabase
+        .from("projects")
+        .select(`
+          id, title, objective, expected_outcome, status, health_score, created_at,
+          challenges (
+            id, public_id, title, domain, district, technical_scope, expected_outcome, constraints, government_data, support_needed
+          ),
+          milestones (id, title, status, due_date),
+          prototypes (id, version, description, repository_url),
+          pilots (id, location_text, status, starts_on, ends_on, pilot_conditions, monitoring_requirements),
+          community_feedback (id, verdict, comment, created_at),
+          impact_observations (id, metric, unit, baseline, target, observed, verification_status),
+          funding_commitments (id, amount, status, source_type, created_at),
+          project_members (profile_id, role, status)
+        `)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("challenges")
+        .select("id, public_id, title, domain, district, technical_scope, support_needed")
+        .in("verification", ["community_verified", "officially_verified"])
+        .order("created_at", { ascending: false }),
     ]);
-    setProjects((projectResult.data ?? []) as any[]); setChallenges((challengeResult.data ?? []) as any[]);
-    if (selected) setSelected((projectResult.data ?? []).find((item: any) => item.id === selected.id) ?? null);
+    setProjects((projectResult.data ?? []) as any[]);
+    setChallenges((challengeResult.data ?? []) as any[]);
+    if (selected) {
+      setSelected((projectResult.data ?? []).find((item: any) => item.id === selected.id) ?? null);
+    }
   };
-  useEffect(() => { void load(); }, []);
-  if (!user) return <section className="container-page py-12"><h1 className="text-3xl font-bold">Innovation projects</h1><p className="mt-3 text-muted-foreground">Sign in to view projects.</p></section>;
-  const create = async () => { if (!challengeId || !title.trim() || !objective.trim()) return flash("Select a verified challenge, title, and objective."); const { error } = await supabase!.rpc("create_innovation_project", { challenge_uuid: challengeId, project_title: title.trim(), project_objective: objective.trim(), outcome: null }); if (error) return flash(error.message); setTitle(""); setObjective(""); setChallengeId(""); flash("Innovation project created."); await load(); };
-  const addMilestone = async () => { if (!selected || !milestone.trim()) return; const { error } = await supabase!.from("milestones").insert({ project_id: selected.id, title: milestone.trim() }); if (error) flash(error.message); else { setMilestone(""); await load(); } };
-  const addPrototype = async () => { if (!selected || !prototype.trim()) return; const { error } = await supabase!.from("prototypes").insert({ project_id: selected.id, version: prototype.trim(), repository_url: repository.trim() || null, created_by: user.id }); if (error) flash(error.message); else { setPrototype(""); setRepository(""); await load(); } };
-  const addImpact = async () => { if (!selected || !impact.trim() || !unit.trim()) return; const { error } = await supabase!.from("impact_observations").insert({ project_id: selected.id, metric: impact.trim(), unit: unit.trim(), source: "Project workspace", verification_status: "unverified" }); if (error) flash(error.message); else { setImpact(""); setUnit(""); await load(); } };
-  const createPilot = async () => { if (!selected || !pilotLocation.trim()) return; const { error } = await supabase!.from("pilots").upsert({ project_id: selected.id, location_text: pilotLocation.trim(), status: "planned" }, { onConflict: "project_id" }); if (error) flash(error.message); else { setPilotLocation(""); await load(); } };
-  const addFeedback = async () => { if (!selected || !feedback.trim()) return; const { error } = await supabase!.from("community_feedback").insert({ project_id: selected.id, author_id: user.id, verdict, comment: feedback.trim() }); if (error) flash(error.message); else { setFeedback(""); await load(); } };
-  return <section className="container-page py-12"><h1 className="text-3xl font-bold">Innovation projects</h1><p className="mt-2 text-muted-foreground">Deliver verified challenges through milestones, prototypes, pilots, and measured impact.</p>{staff && <div className="card-surface mt-6 grid gap-3 p-5 md:grid-cols-2"><select value={challengeId} onChange={(e) => setChallengeId(e.target.value)} className="rounded-lg border border-input bg-background p-3"><option value="">Verified challenge</option>{challenges.map((item) => <option key={item.id} value={item.id}>{item.public_id} | {item.title}</option>)}</select><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Project title" className="rounded-lg border border-input p-3"/><textarea value={objective} onChange={(e) => setObjective(e.target.value)} placeholder="Project objective" className="min-h-24 rounded-lg border border-input p-3"/><button onClick={() => void create()} className="rounded-lg bg-primary px-4 py-3 font-bold text-primary-foreground">Convert to innovation project</button></div>}<div className="mt-7 grid gap-5 lg:grid-cols-[.8fr_1.2fr]"><div className="space-y-3">{projects.length ? projects.map((project) => <button key={project.id} onClick={() => setSelected(project)} className={`card-surface w-full p-5 text-left ${selected?.id === project.id ? "border-primary" : ""}`}><b>{project.title}</b><p className="mt-1 text-sm text-muted-foreground">{project.challenges?.public_id} | {project.status}</p></button>) : <p className="card-surface p-5 text-muted-foreground">No projects yet.</p>}</div><div className="card-surface p-6">{selected ? <><h2 className="text-2xl font-bold">{selected.title}</h2><p className="mt-2 text-muted-foreground">{selected.objective}</p><div className="mt-6 grid gap-5 md:grid-cols-2"><section><h3 className="font-bold">Milestones</h3><div className="mt-3 space-y-2">{(selected.milestones ?? []).map((item: any) => <p key={item.id} className="rounded bg-surface p-2 text-sm">{item.title} | {item.status}</p>)}</div>{staff && <div className="mt-3 flex gap-2"><input value={milestone} onChange={(e) => setMilestone(e.target.value)} placeholder="Milestone" className="min-w-0 rounded border border-input p-2 text-sm"/><button onClick={() => void addMilestone()} className="rounded bg-primary px-3 text-sm font-bold text-primary-foreground">Add</button></div>}</section><section><h3 className="font-bold">Prototype versions</h3>{(selected.prototypes ?? []).map((item: any) => <p key={item.id} className="mt-2 rounded bg-surface p-2 text-sm">{item.version}{item.repository_url && ` | ${item.repository_url}`}</p>)}{staff && <div className="mt-3 space-y-2"><input value={prototype} onChange={(e) => setPrototype(e.target.value)} placeholder="Version, e.g. V1" className="w-full rounded border border-input p-2 text-sm"/><input value={repository} onChange={(e) => setRepository(e.target.value)} placeholder="Repository URL (optional)" className="w-full rounded border border-input p-2 text-sm"/><button onClick={() => void addPrototype()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Record prototype</button></div>}</section><section><h3 className="font-bold">Pilot</h3>{selected.pilots?.[0] ? <p className="mt-2 rounded bg-surface p-2 text-sm">{selected.pilots[0].location_text} | {selected.pilots[0].status}</p> : <p className="mt-2 text-sm text-muted-foreground">No pilot proposed.</p>}{staff && <div className="mt-3 flex gap-2"><input value={pilotLocation} onChange={(e) => setPilotLocation(e.target.value)} placeholder="Pilot location" className="min-w-0 rounded border border-input p-2 text-sm"/><button onClick={() => void createPilot()} className="rounded bg-primary px-3 text-sm font-bold text-primary-foreground">Save</button></div>}</section><section><h3 className="font-bold">Impact observations</h3>{(selected.impact_observations ?? []).map((item: any) => <p key={item.id} className="mt-2 rounded bg-surface p-2 text-sm">{item.metric} | {item.observed ?? "Pending"} {item.unit}</p>)}{staff && <div className="mt-3 flex gap-2"><input value={impact} onChange={(e) => setImpact(e.target.value)} placeholder="Metric" className="min-w-0 rounded border border-input p-2 text-sm"/><input value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="Unit" className="w-20 rounded border border-input p-2 text-sm"/><button onClick={() => void addImpact()} className="rounded bg-primary px-3 text-sm font-bold text-primary-foreground">Add</button></div>}</section></div><section className="mt-6 border-t border-border pt-5"><h3 className="font-bold">Community feedback</h3>{(selected.community_feedback ?? []).map((item: any) => <p key={item.id} className="mt-2 rounded bg-surface p-2 text-sm">{item.verdict.replaceAll("_", " ")} | {item.comment}</p>)}<div className="mt-3 flex flex-wrap gap-2"><select value={verdict} onChange={(e) => setVerdict(e.target.value)} className="rounded border border-input bg-background p-2 text-sm"><option value="solved">Solved</option><option value="partially_solved">Partially solved</option><option value="not_solved">Not solved</option></select><input value={feedback} onChange={(e) => setFeedback(e.target.value)} placeholder="Share outcome feedback" className="min-w-48 flex-1 rounded border border-input p-2 text-sm"/><button onClick={() => void addFeedback()} className="rounded bg-primary px-3 text-sm font-bold text-primary-foreground">Submit</button></div></section></> : <p className="text-muted-foreground">Select a project to open its workspace.</p>}</div></div></section>;
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  if (!user) {
+    return (
+      <section className="container-page py-12">
+        <h1 className="text-3xl font-bold">University Innovation Projects</h1>
+        <p className="mt-3 text-muted-foreground">Sign in to view engineering prototypes and lab projects.</p>
+      </section>
+    );
+  }
+
+  const create = async () => {
+    if (!challengeId || !title.trim() || !objective.trim()) {
+      return flash("Select a verified challenge, title, and objective.");
+    }
+    const { error } = await supabase!.rpc("create_innovation_project", {
+      challenge_uuid: challengeId,
+      project_title: title.trim(),
+      project_objective: objective.trim(),
+      outcome: null,
+    });
+    if (error) return flash(error.message);
+    setTitle("");
+    setObjective("");
+    setChallengeId("");
+    flash("University innovation project created successfully.");
+    await load();
+  };
+
+  const addMilestone = async () => {
+    if (!selected || !milestone.trim()) return;
+    const { error } = await supabase!.from("milestones").insert({
+      project_id: selected.id,
+      title: milestone.trim(),
+    });
+    if (error) flash(error.message);
+    else {
+      setMilestone("");
+      await load();
+    }
+  };
+
+  const addPrototype = async () => {
+    if (!selected || !prototype.trim()) return;
+    const { error } = await supabase!.from("prototypes").insert({
+      project_id: selected.id,
+      version: prototype.trim(),
+      repository_url: repository.trim() || null,
+      created_by: user.id,
+    });
+    if (error) flash(error.message);
+    else {
+      setPrototype("");
+      setRepository("");
+      flash("Prototype version recorded in university repository.");
+      await load();
+    }
+  };
+
+  const addMember = async () => {
+    if (!selected || !newMemberName.trim()) return;
+    const { error } = await supabase!.from("project_members").insert({
+      project_id: selected.id,
+      profile_id: user.id,
+      role: `${newMemberRole}: ${newMemberName.trim()}`,
+      status: "active",
+    });
+    if (error) flash(error.message);
+    else {
+      setNewMemberName("");
+      flash("Multidisciplinary team member added.");
+      await load();
+    }
+  };
+
+  const addImpact = async () => {
+    if (!selected || !impact.trim() || !unit.trim()) return;
+    const { error } = await supabase!.from("impact_observations").insert({
+      project_id: selected.id,
+      metric: impact.trim(),
+      unit: unit.trim(),
+      source: "University Lab Validation",
+      verification_status: "unverified",
+    });
+    if (error) flash(error.message);
+    else {
+      setImpact("");
+      setUnit("");
+      await load();
+    }
+  };
+
+  const createPilot = async () => {
+    if (!selected || !pilotLocation.trim()) return;
+    const { error } = await supabase!.from("pilots").upsert(
+      {
+        project_id: selected.id,
+        location_text: pilotLocation.trim(),
+        status: "planned",
+      },
+      { onConflict: "project_id" }
+    );
+    if (error) flash(error.message);
+    else {
+      setPilotLocation("");
+      flash("Pilot proposed for government review and site approval.");
+      await load();
+    }
+  };
+
+  const addFeedback = async () => {
+    if (!selected || !feedback.trim()) return;
+    const { error } = await supabase!.from("community_feedback").insert({
+      project_id: selected.id,
+      author_id: user.id,
+      verdict,
+      comment: feedback.trim(),
+    });
+    if (error) flash(error.message);
+    else {
+      setFeedback("");
+      await load();
+    }
+  };
+
+  return (
+    <section className="container-page py-12 space-y-8">
+      <div>
+        <h1 className="text-3xl font-extrabold">University Innovation & Engineering Workspace</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Higher Education Institutions develop multidisciplinary engineering prototypes against government-scoped societal challenges.
+        </p>
+      </div>
+
+      {staff && (
+        <div className="card-surface p-6 space-y-4 border border-border">
+          <div className="flex items-center gap-2 font-bold text-sm text-primary">
+            <GraduationCap size={18} />
+            <h2>Initiate University Innovation Project</h2>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <select
+              value={challengeId}
+              onChange={(e) => setChallengeId(e.target.value)}
+              className="rounded-lg border border-input bg-background p-3 text-sm"
+            >
+              <option value="">Select a Government-Validated Challenge</option>
+              {challenges.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.public_id} | {item.title} ({item.domain})
+                </option>
+              ))}
+            </select>
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Project Title (e.g. IoT Acoustic Pipeline Leak Detector)"
+              className="rounded-lg border border-input p-3 text-sm"
+            />
+          </div>
+          <textarea
+            value={objective}
+            onChange={(e) => setObjective(e.target.value)}
+            placeholder="Engineering Objective, Multidisciplinary Team Composition & Methodology"
+            className="min-h-24 w-full rounded-lg border border-input p-3 text-sm"
+          />
+          <button
+            onClick={() => void create()}
+            className="rounded-lg bg-primary px-5 py-3 text-sm font-bold text-primary-foreground shadow-xs"
+          >
+            Create Innovation Project
+          </button>
+        </div>
+      )}
+
+      <div className="grid gap-6 lg:grid-cols-[.85fr_1.15fr]">
+        <div className="space-y-3">
+          <h3 className="font-bold text-sm text-muted-foreground uppercase tracking-wider">Active University Projects</h3>
+          {projects.length ? (
+            projects.map((project) => (
+              <button
+                key={project.id}
+                onClick={() => setSelected(project)}
+                className={`card-surface w-full p-5 text-left transition-all ${
+                  selected?.id === project.id ? "border-primary ring-1 ring-primary" : "hover:border-border"
+                }`}
+              >
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                  <span className="font-bold text-primary">{project.challenges?.public_id}</span>
+                  <span className="capitalize font-semibold">{project.status}</span>
+                </div>
+                <b className="mt-1 block text-base leading-snug">{project.title}</b>
+                <p className="mt-1 text-xs text-muted-foreground line-clamp-2">{project.objective}</p>
+              </button>
+            ))
+          ) : (
+            <p className="card-surface p-6 text-sm text-muted-foreground">
+              No active university project has been created for this challenge yet.
+            </p>
+          )}
+        </div>
+
+        <div className="card-surface p-6 border border-border">
+          {selected ? (
+            <div className="space-y-6">
+              <div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-bold text-primary">
+                    {selected.challenges?.public_id}
+                  </span>
+                  <span className="capitalize text-xs font-bold px-2 py-0.5 rounded bg-surface border border-border">
+                    Status: {selected.status}
+                  </span>
+                </div>
+                <h2 className="mt-2 text-2xl font-bold">{selected.title}</h2>
+                <p className="mt-1 text-sm text-muted-foreground leading-relaxed">{selected.objective}</p>
+              </div>
+
+              {/* Government Domain Context Card */}
+              <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 space-y-2 text-xs">
+                <div className="flex items-center gap-1.5 font-bold text-primary text-sm">
+                  <ShieldCheck size={16} />
+                  <span>Government Technical Scope & Context</span>
+                </div>
+                {selected.challenges?.technical_scope ? (
+                  <p>
+                    <b>Technical Scope:</b> {selected.challenges.technical_scope}
+                  </p>
+                ) : (
+                  <p className="text-muted-foreground italic">No technical scope specified by government yet.</p>
+                )}
+                {selected.challenges?.constraints && (
+                  <p>
+                    <b>Operational Constraints:</b> {selected.challenges.constraints}
+                  </p>
+                )}
+                <p>
+                  <b>Attached Government Datasets:</b>{" "}
+                  {selected.challenges?.government_data ? (
+                    <span>{selected.challenges.government_data}</span>
+                  ) : (
+                    <span className="text-muted-foreground italic">No government dataset has been attached yet.</span>
+                  )}
+                </p>
+              </div>
+
+              {/* Multidisciplinary Team */}
+              <div className="rounded-xl border border-border bg-card p-4 space-y-3 text-xs">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-bold text-sm flex items-center gap-1.5">
+                    <Users size={16} /> Multidisciplinary Team & Mentors
+                  </h3>
+                  <span className="text-muted-foreground">{selected.project_members?.length || 0} participants</span>
+                </div>
+                <div className="space-y-1.5">
+                  {(selected.project_members ?? []).map((m: any, i: number) => (
+                    <p key={i} className="rounded bg-surface p-2 text-xs flex justify-between">
+                      <span className="font-semibold">{m.role}</span>
+                      <span className="capitalize text-muted-foreground">{m.status}</span>
+                    </p>
+                  ))}
+                  {(!selected.project_members || selected.project_members.length === 0) && (
+                    <p className="text-muted-foreground italic">No team members assigned yet.</p>
+                  )}
+                </div>
+                {staff && (
+                  <div className="flex gap-2 pt-2 border-t border-border">
+                    <select
+                      value={newMemberRole}
+                      onChange={(e) => setNewMemberRole(e.target.value)}
+                      className="rounded border border-input bg-background p-2 text-xs"
+                    >
+                      <option value="Faculty Mentor">Faculty Mentor</option>
+                      <option value="Student Member (Lead)">Student Member (Lead)</option>
+                      <option value="Student Member (Engineering)">Student Member (Engineering)</option>
+                      <option value="Student Member (Software/AI)">Student Member (Software/AI)</option>
+                      <option value="Student Member (Research)">Student Member (Research)</option>
+                    </select>
+                    <input
+                      value={newMemberName}
+                      onChange={(e) => setNewMemberName(e.target.value)}
+                      placeholder="Member Name & Department"
+                      className="flex-1 rounded border border-input p-2 text-xs"
+                    />
+                    <button
+                      onClick={() => void addMember()}
+                      className="rounded bg-primary px-3 text-xs font-bold text-primary-foreground"
+                    >
+                      Add
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Industry Collaborations */}
+              <div className="rounded-xl border border-border bg-card p-4 space-y-2 text-xs">
+                <h3 className="font-bold text-sm flex items-center gap-1.5">
+                  <Handshake size={16} /> Industry & CSR Enablers
+                </h3>
+                {selected.funding_commitments?.length ? (
+                  <div className="space-y-1.5">
+                    {selected.funding_commitments.map((fc: any) => (
+                      <div key={fc.id} className="p-2 rounded bg-surface flex items-center justify-between">
+                        <span className="font-semibold uppercase">{fc.source_type}</span>
+                        <span>{fc.amount > 0 ? `₹${Number(fc.amount).toLocaleString()}` : "In-kind Support"}</span>
+                        <span className="capitalize text-emerald-700 font-bold">{fc.status}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground italic">No industry partner has joined this project yet.</p>
+                )}
+              </div>
+
+              {/* Engineering Stages: Milestones, Prototypes, Pilot */}
+              <div className="grid gap-5 md:grid-cols-2">
+                <section className="space-y-2">
+                  <h3 className="font-bold text-sm">Milestones</h3>
+                  <div className="space-y-1.5">
+                    {(selected.milestones ?? []).map((item: any) => (
+                      <p key={item.id} className="rounded bg-surface p-2 text-xs flex justify-between">
+                        <span>{item.title}</span>
+                        <span className="capitalize text-muted-foreground">{item.status}</span>
+                      </p>
+                    ))}
+                  </div>
+                  {staff && (
+                    <div className="flex gap-2 pt-1">
+                      <input
+                        value={milestone}
+                        onChange={(e) => setMilestone(e.target.value)}
+                        placeholder="Add milestone"
+                        className="flex-1 rounded border border-input p-2 text-xs"
+                      />
+                      <button
+                        onClick={() => void addMilestone()}
+                        className="rounded bg-primary px-3 text-xs font-bold text-primary-foreground"
+                      >
+                        Add
+                      </button>
+                    </div>
+                  )}
+                </section>
+
+                <section className="space-y-2">
+                  <h3 className="font-bold text-sm">Prototypes & Lab Testing</h3>
+                  <div className="space-y-1.5">
+                    {(selected.prototypes ?? []).map((item: any) => (
+                      <div key={item.id} className="p-2 rounded bg-surface text-xs space-y-0.5">
+                        <p className="font-semibold">{item.version}</p>
+                        {item.repository_url && (
+                          <a
+                            href={item.repository_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary text-[11px] underline block"
+                          >
+                            {item.repository_url}
+                          </a>
+                        )}
+                      </div>
+                    ))}
+                    {(!selected.prototypes || selected.prototypes.length === 0) && (
+                      <p className="text-xs text-muted-foreground italic">No prototype versions recorded yet.</p>
+                    )}
+                  </div>
+                  {staff && (
+                    <div className="space-y-1.5 pt-1">
+                      <input
+                        value={prototype}
+                        onChange={(e) => setPrototype(e.target.value)}
+                        placeholder="Version (e.g. V1 Lab Prototype)"
+                        className="w-full rounded border border-input p-2 text-xs"
+                      />
+                      <input
+                        value={repository}
+                        onChange={(e) => setRepository(e.target.value)}
+                        placeholder="Code / CAD Repository URL"
+                        className="w-full rounded border border-input p-2 text-xs"
+                      />
+                      <button
+                        onClick={() => void addPrototype()}
+                        className="w-full rounded bg-primary py-2 text-xs font-bold text-primary-foreground"
+                      >
+                        Record Prototype
+                      </button>
+                    </div>
+                  )}
+                </section>
+              </div>
+
+              {/* Pilot & Field Deployment */}
+              <section className="rounded-xl border border-border bg-card p-4 space-y-3 text-xs">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-bold text-sm flex items-center gap-1.5">
+                    <Rocket size={16} /> Government Pilot Status
+                  </h3>
+                  <span className="capitalize font-bold text-primary">
+                    {selected.pilots?.[0]?.status || "Not Proposed"}
+                  </span>
+                </div>
+                {selected.pilots?.[0] ? (
+                  <div className="space-y-1.5">
+                    <p>
+                      <b>Location:</b> {selected.pilots[0].location_text}
+                    </p>
+                    {selected.pilots[0].pilot_conditions && (
+                      <p className="p-2 rounded bg-surface text-primary">
+                        <b>Government Pilot Conditions:</b> {selected.pilots[0].pilot_conditions}
+                      </p>
+                    )}
+                    {selected.pilots[0].monitoring_requirements && (
+                      <p className="p-2 rounded bg-surface">
+                        <b>Monitoring Requirements:</b> {selected.pilots[0].monitoring_requirements}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground italic">No pilot proposed yet.</p>
+                )}
+                {staff && !selected.pilots?.[0] && (
+                  <div className="flex gap-2 pt-2">
+                    <input
+                      value={pilotLocation}
+                      onChange={(e) => setPilotLocation(e.target.value)}
+                      placeholder="Pilot Location / Ward (for government review)"
+                      className="flex-1 rounded border border-input p-2 text-xs"
+                    />
+                    <button
+                      onClick={() => void createPilot()}
+                      className="rounded bg-primary px-3 text-xs font-bold text-primary-foreground"
+                    >
+                      Submit for Pilot Approval
+                    </button>
+                  </div>
+                )}
+              </section>
+
+              {/* Measured Impact */}
+              <section className="rounded-xl border border-border bg-card p-4 space-y-2 text-xs">
+                <h3 className="font-bold text-sm flex items-center gap-1.5">
+                  <TrendingUp size={16} /> Measured Societal Impact
+                </h3>
+                {(selected.impact_observations ?? []).map((item: any) => (
+                  <p key={item.id} className="rounded bg-surface p-2">
+                    <b>{item.metric}:</b> {item.observed ?? "Pending measurement"} {item.unit} ({item.verification_status})
+                  </p>
+                ))}
+                {(!selected.impact_observations || selected.impact_observations.length === 0) && (
+                  <p className="text-muted-foreground italic">Impact data not yet recorded.</p>
+                )}
+                {staff && (
+                  <div className="flex gap-2 pt-2">
+                    <input
+                      value={impact}
+                      onChange={(e) => setImpact(e.target.value)}
+                      placeholder="Outcome Metric (e.g. Water turbidity reduction)"
+                      className="flex-1 rounded border border-input p-2 text-xs"
+                    />
+                    <input
+                      value={unit}
+                      onChange={(e) => setUnit(e.target.value)}
+                      placeholder="Unit (%)"
+                      className="w-20 rounded border border-input p-2 text-xs"
+                    />
+                    <button
+                      onClick={() => void addImpact()}
+                      className="rounded bg-primary px-3 text-xs font-bold text-primary-foreground"
+                    >
+                      Record Impact
+                    </button>
+                  </div>
+                )}
+              </section>
+            </div>
+          ) : (
+            <p className="p-8 text-center text-sm text-muted-foreground">Select a university project to open its workspace.</p>
+          )}
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function Notifications({ user, go }: { user: User | null; go: (x: Screen) => void }) {
@@ -5256,11 +6712,13 @@ function AdminControlCenter({
   profile,
   flash,
   refresh,
+  go,
 }: {
   user: User | null;
   profile: Profile | null;
   flash: (x: string) => void;
   refresh: (q?: string) => void;
+  go?: (x: Screen) => void;
 }) {
   const [section, setSection] = useState("Dashboard"),
     [query, setQuery] = useState(""),
@@ -5356,6 +6814,8 @@ function AdminControlCenter({
     "Expertise & Resources",
     "Financial Transparency",
     "Reports",
+    "Pilot Approvals",
+    "Adoption & Scaling",
     "Analytics",
     "Account Management",
   ];
@@ -5416,15 +6876,15 @@ function AdminControlCenter({
     ["Reassigned tasks", transfers.length],
   ] as const;
   return (
-    <div className="dashboard-shell min-h-screen bg-surface">
-      <div className="dashboard-frame mx-auto flex max-w-[1700px]">
-        <aside className="app-sidebar sticky top-0 hidden h-fit w-68 shrink-0 self-start border-r border-border bg-card p-5 lg:block">
-          <div className="flex items-center gap-3 px-2">
-            <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground">
-              <ShieldCheck size={20} />
+    <div className="flex min-h-screen bg-background">
+      <div className="mx-auto flex w-full max-w-[1600px] flex-1">
+        <aside className="dashboard-sidebar hidden w-64 border-r border-border p-6 lg:block">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary font-bold text-primary-foreground">
+              SS
             </div>
             <div>
-              <b>SamajSetu</b>
+              <p className="font-bold">SamajSetu</p>
               <p className="text-xs text-muted-foreground">Admin Control Center</p>
             </div>
           </div>
@@ -5442,6 +6902,10 @@ function AdminControlCenter({
                   <LayoutDashboard size={16} />
                 ) : item === "Organizations" || item === "NGOs" ? (
                   <Building2 size={16} />
+                ) : item === "Pilot Approvals" ? (
+                  <ShieldCheck size={16} />
+                ) : item === "Adoption & Scaling" ? (
+                  <Landmark size={16} />
                 ) : item.includes("Task") ? (
                   <ClipboardCheck size={16} />
                 ) : (
@@ -5451,6 +6915,16 @@ function AdminControlCenter({
               </button>
             ))}
           </nav>
+          {go && (
+            <div className="mt-6 border-t border-border pt-4">
+              <button
+                onClick={() => go("ulb-dashboard")}
+                className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-3 py-2.5 text-xs font-bold text-white hover:bg-blue-700 transition shadow-sm"
+              >
+                🏙️ ULB Municipal Portal
+              </button>
+            </div>
+          )}
         </aside>
         <nav className="fixed inset-x-0 bottom-0 z-30 flex gap-1 overflow-x-auto border-t border-border bg-card p-2 shadow-[0_-4px_16px_rgba(0,0,0,.08)] lg:hidden">
           {nav.map((item) => <button key={item} onClick={() => { setSection(item); setSelected(null); }} className={`shrink-0 rounded-lg px-3 py-2 text-xs font-bold ${section === item ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>{item}</button>)}
@@ -5808,6 +7282,8 @@ function AdminControlCenter({
             />
           )}
           {section === "Reports" && <AdminProblemReview flash={flash} refresh={refresh} />}
+          {section === "Pilot Approvals" && <GovernmentPilotApprovals flash={flash} refresh={refresh} />}
+          {section === "Adoption & Scaling" && <GovernmentAdoptionScaling flash={flash} refresh={refresh} />}
         </main>
       </div>
     </div>
@@ -5815,34 +7291,1479 @@ function AdminControlCenter({
 }
 
 type AdminReviewProblem = {
-  challenge_id: string; public_id: string; title: string; summary: string; domain: string; district: string; block: string | null; locality: string | null;
-  severity: number; urgency: number; affected_population: number | null; created_at: string; priority_score: number; priority_level: string;
-  report_id: string | null; report_description: string | null; report_latitude: number | null; report_longitude: number | null; voice_transcript: string | null;
+  challenge_id: string;
+  public_id: string;
+  title: string;
+  summary: string;
+  domain: string;
+  district: string;
+  block: string | null;
+  locality: string | null;
+  public_latitude: number | null;
+  public_longitude: number | null;
+  severity: number;
+  urgency: number;
+  affected_population: number | null;
+  created_at: string;
+  priority_score: number;
+  priority_level: string;
+  report_id: string | null;
+  report_description: string | null;
+  report_latitude: number | null;
+  report_longitude: number | null;
+  consent_location: boolean | null;
+  consent_media: boolean | null;
+  voice_transcript: string | null;
   evidence: { path: string; mime_type: string; size_bytes: number; created_at: string }[];
+  responsible_department: string | null;
+  technical_scope: string | null;
+  expected_outcome: string | null;
+  constraints: string | null;
+  government_data: string | null;
+  regulatory_requirements: string | null;
+  safety_requirements: string | null;
+  pilot_requirements: string | null;
+  evaluation_criteria: string | null;
+  support_needed: string[] | null;
+  scope_defined_at: string | null;
+  rejection_reason: string | null;
+  duplicate_status: string | null;
 };
 
+const SUPPORT_CATEGORIES = [
+  "Mentoring",
+  "Hardware",
+  "Software",
+  "CSR Funding",
+  "Prototyping",
+  "Testing",
+  "Pilot Implementation",
+  "Tech Transfer",
+];
+
+const GOV_DEPARTMENTS = [
+  "Municipal Administration & Engineering",
+  "Public Health & Sanitation",
+  "Water Resources & Sewerage",
+  "Transport & Traffic Engineering",
+  "Electrical & Energy Infrastructure",
+  "Environmental Protection & Forest",
+  "Disaster Management & Civil Defense",
+  "Public Works Department (PWD)",
+  "Social Welfare & Urban Development",
+];
+
 function AdminProblemReview({ flash, refresh }: { flash: (message: string) => void; refresh: () => void }) {
-  const [items, setItems] = useState<AdminReviewProblem[]>([]), [scores, setScores] = useState<Record<string, string>>({}), [notes, setNotes] = useState<Record<string, string>>({}), [busy, setBusy] = useState<string | null>(null);
+  const [items, setItems] = useState<AdminReviewProblem[]>([]);
+  const [filter, setFilter] = useState<"all" | "unscoped" | "scoped" | "rejected">("all");
+  const [scores, setScores] = useState<Record<string, string>>({});
+  const [notes, setNotes] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const [expandedScopeId, setExpandedScopeId] = useState<string | null>(null);
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [rejectionReason, setRejectionReason] = useState("");
+  const [scopeDrafts, setScopeDrafts] = useState<
+    Record<
+      string,
+      {
+        dept: string;
+        scope_text: string;
+        outcome_text: string;
+        constraints_text: string;
+        gov_data: string;
+        reg_req: string;
+        safety_req: string;
+        pilot_req: string;
+        eval_crit: string;
+        needed_support: string[];
+      }
+    >
+  >({});
+
   const load = async () => {
     const { data, error } = await supabase!.rpc("admin_problem_review");
-    if (error) flash(error.message); else setItems((data ?? []) as AdminReviewProblem[]);
+    if (error) {
+      flash(error.message);
+    } else {
+      setItems((data ?? []) as AdminReviewProblem[]);
+    }
   };
-  useEffect(() => { void load(); }, []);
-  const assign = async (item: AdminReviewProblem) => {
-    const score = Number(scores[item.challenge_id] ?? item.priority_score);
-    if (!Number.isInteger(score) || score < 0 || score > 100) return flash("Enter a whole priority score from 0 to 100.");
-    setBusy(item.challenge_id);
-    const { error } = await supabase!.rpc("assign_problem_priority", { challenge_uuid: item.challenge_id, assigned_score: score, assignment_note: notes[item.challenge_id] ?? null });
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const getScopeDraft = (item: AdminReviewProblem) => {
+    if (scopeDrafts[item.challenge_id]) return scopeDrafts[item.challenge_id];
+    return {
+      dept: item.responsible_department || "",
+      scope_text: item.technical_scope || "",
+      outcome_text: item.expected_outcome || "",
+      constraints_text: item.constraints || "",
+      gov_data: item.government_data || "",
+      reg_req: item.regulatory_requirements || "",
+      safety_req: item.safety_requirements || "",
+      pilot_req: item.pilot_requirements || "",
+      eval_crit: item.evaluation_criteria || "",
+      needed_support: item.support_needed || [],
+    };
+  };
+
+  const updateScopeDraftField = (
+    challengeId: string,
+    field: string,
+    value: any,
+  ) => {
+    setScopeDrafts((prev) => {
+      const current = prev[challengeId] || {
+        dept: "",
+        scope_text: "",
+        outcome_text: "",
+        constraints_text: "",
+        gov_data: "",
+        reg_req: "",
+        safety_req: "",
+        pilot_req: "",
+        eval_crit: "",
+        needed_support: [],
+      };
+      return { ...prev, [challengeId]: { ...current, [field]: value } };
+    });
+  };
+
+  const toggleSupportTag = (challengeId: string, tag: string) => {
+    const current = getScopeDraft(
+      items.find((i) => i.challenge_id === challengeId)!,
+    ).needed_support;
+    const next = current.includes(tag)
+      ? current.filter((t) => t !== tag)
+      : [...current, tag];
+    updateScopeDraftField(challengeId, "needed_support", next);
+  };
+
+  const handleSaveScope = async (item: AdminReviewProblem) => {
+    const draft = getScopeDraft(item);
+    if (!draft.dept.trim()) {
+      return flash("Please specify the responsible government department.");
+    }
+    if (!draft.scope_text.trim()) {
+      return flash("Please enter the technical problem statement and scope.");
+    }
+    setBusy(`scope-${item.challenge_id}`);
+    const { error } = await supabase!.rpc("define_government_scope", {
+      challenge_uuid: item.challenge_id,
+      dept: draft.dept.trim(),
+      scope_text: draft.scope_text.trim(),
+      outcome_text: draft.outcome_text.trim() || null,
+      constraints_text: draft.constraints_text.trim() || null,
+      gov_data: draft.gov_data.trim() || null,
+      reg_req: draft.reg_req.trim() || null,
+      safety_req: draft.safety_req.trim() || null,
+      pilot_req: draft.pilot_req.trim() || null,
+      eval_crit: draft.eval_crit.trim() || null,
+      needed_support: draft.needed_support,
+    });
     setBusy(null);
     if (error) return flash(error.message);
-    flash(`${item.public_id} priority assigned and smart allocation started.`); await load(); refresh();
+    flash(`Government technical scope defined for ${item.public_id}. Challenge is now open for university innovation.`);
+    setExpandedScopeId(null);
+    await load();
+    refresh();
   };
+
+  const handleReject = async (item: AdminReviewProblem) => {
+    if (!rejectionReason.trim()) {
+      return flash("Please provide a reason for rejecting this report.");
+    }
+    setBusy(`reject-${item.challenge_id}`);
+    const { error } = await supabase!.rpc("reject_citizen_challenge", {
+      challenge_uuid: item.challenge_id,
+      reason_text: rejectionReason.trim(),
+    });
+    setBusy(null);
+    if (error) return flash(error.message);
+    flash(`${item.public_id} marked as rejected.`);
+    setRejectingId(null);
+    setRejectionReason("");
+    await load();
+    refresh();
+  };
+
+  const assign = async (item: AdminReviewProblem) => {
+    const score = Number(scores[item.challenge_id] ?? item.priority_score);
+    if (!Number.isInteger(score) || score < 0 || score > 100)
+      return flash("Enter a whole priority score from 0 to 100.");
+    setBusy(`score-${item.challenge_id}`);
+    const { error } = await supabase!.rpc("assign_problem_priority", {
+      challenge_uuid: item.challenge_id,
+      assigned_score: score,
+      assignment_note: notes[item.challenge_id] ?? null,
+    });
+    setBusy(null);
+    if (error) return flash(error.message);
+    flash(`${item.public_id} priority assigned and smart allocation updated.`);
+    await load();
+    refresh();
+  };
+
   const evidenceUrl = async (path: string) => {
-    const { data, error } = await supabase!.storage.from("evidence").createSignedUrl(path, 300);
-    if (error || !data?.signedUrl) return flash(error?.message ?? "Unable to open evidence.");
+    const { data, error } = await supabase!.storage
+      .from("evidence")
+      .createSignedUrl(path, 300);
+    if (error || !data?.signedUrl)
+      return flash(error?.message ?? "Unable to open evidence.");
     window.open(data.signedUrl, "_blank", "noopener,noreferrer");
   };
-  return <section className="mt-7"><h2 className="text-2xl font-bold">Citizen problem review</h2><p className="mt-1 text-sm text-muted-foreground">Review the complete report, exact reported location and private evidence. Assigning priority starts smart partner allocation.</p><div className="mt-5 space-y-4">{items.map((item) => <article key={`${item.challenge_id}-${item.report_id}`} className="card-surface p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-bold text-primary">{item.public_id} | {item.domain}</p><h3 className="mt-1 text-lg font-bold">{item.title}</h3><p className="mt-2 text-sm text-muted-foreground">{item.summary}</p></div><span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">Current: {item.priority_score}/100 | {item.priority_level}</span></div><div className="mt-4 grid gap-3 text-sm sm:grid-cols-2"><p><b>Submitted location:</b> {item.district}{item.block ? `, ${item.block}` : ""}{item.locality ? `, ${item.locality}` : ""}</p><p><b>Exact report GPS:</b> {item.report_latitude ?? "Not shared"}, {item.report_longitude ?? "Not shared"}</p><p><b>Citizen severity / urgency:</b> {item.severity}/4 | {item.urgency}/4</p><p><b>Affected people:</b> {item.affected_population ?? "Not provided"}</p></div>{item.report_description && <p className="mt-3 rounded-lg bg-surface p-3 text-sm"><b>Citizen description:</b> {item.report_description}</p>}{item.voice_transcript && <p className="mt-2 rounded-lg bg-surface p-3 text-sm"><b>Original voice transcript:</b> {item.voice_transcript}</p>}<div className="mt-3"><p className="text-sm font-bold">Private submitted media ({item.evidence.length})</p><div className="mt-2 flex flex-wrap gap-2">{item.evidence.map((media) => <button key={media.path} onClick={() => void evidenceUrl(media.path)} className="rounded-lg border border-input px-3 py-2 text-xs font-bold text-primary">Open {media.mime_type.split("/")[0]} | {Math.ceil(media.size_bytes / 1024)} KB</button>)}{!item.evidence.length && <p className="text-sm text-muted-foreground">No media attached.</p>}</div></div><div className="mt-4 grid gap-2 sm:grid-cols-[150px_1fr_auto]"><input value={scores[item.challenge_id] ?? String(item.priority_score)} onChange={(event) => setScores((all) => ({ ...all, [item.challenge_id]: event.target.value }))} type="number" min="0" max="100" placeholder="0-100" className="rounded-lg border border-input p-3" aria-label="Priority score"/><input value={notes[item.challenge_id] ?? ""} onChange={(event) => setNotes((all) => ({ ...all, [item.challenge_id]: event.target.value }))} placeholder="Priority rationale (optional)" className="rounded-lg border border-input p-3"/><button onClick={() => void assign(item)} disabled={busy === item.challenge_id} className="rounded-lg bg-primary px-4 py-3 text-sm font-bold text-primary-foreground disabled:opacity-50">{busy === item.challenge_id ? "Saving..." : "Assign & allocate"}</button></div></article>)}{!items.length && <p className="card-surface p-5 text-muted-foreground">No citizen reports are available for review.</p>}</div></section>;
+
+  const filteredItems = items.filter((item) => {
+    if (filter === "unscoped") return !item.scope_defined_at && !item.rejection_reason;
+    if (filter === "scoped") return Boolean(item.scope_defined_at);
+    if (filter === "rejected") return Boolean(item.rejection_reason);
+    return true;
+  });
+
+  return (
+    <section className="mt-7">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold">Government Challenge Validation & Technical Scoping</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Review citizen complaints, inspect verified evidence and GPS locations, reject duplicates or specify exact engineering scopes for university R&D.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {(
+            [
+              ["all", `All Reports (${items.length})`],
+              [
+                "unscoped",
+                `Awaiting Scope (${items.filter((i) => !i.scope_defined_at && !i.rejection_reason).length})`,
+              ],
+              [
+                "scoped",
+                `Scoped & Active (${items.filter((i) => i.scope_defined_at).length})`,
+              ],
+              [
+                "rejected",
+                `Rejected (${items.filter((i) => i.rejection_reason).length})`,
+              ],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setFilter(key)}
+              className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                filter === key
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-surface text-muted-foreground hover:bg-card hover:text-foreground"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-5 space-y-5">
+        {filteredItems.map((item) => {
+          const draft = getScopeDraft(item);
+          const isScopeOpen = expandedScopeId === item.challenge_id;
+          const isRejectOpen = rejectingId === item.challenge_id;
+
+          return (
+            <article
+              key={`${item.challenge_id}-${item.report_id}`}
+              className="card-surface p-6 transition"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex-1 min-w-[280px]">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-xs font-bold text-primary">
+                      {item.public_id}
+                    </span>
+                    <span className="rounded bg-surface px-2 py-0.5 text-xs font-medium">
+                      {item.domain}
+                    </span>
+                    {item.scope_defined_at && (
+                      <span className="rounded bg-emerald-500/10 px-2 py-0.5 text-xs font-bold text-emerald-600">
+                        Technical Scope Defined
+                      </span>
+                    )}
+                    {item.rejection_reason && (
+                      <span className="rounded bg-rose-500/10 px-2 py-0.5 text-xs font-bold text-rose-600">
+                        Rejected Submission
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="mt-1.5 text-xl font-bold">{item.title}</h3>
+                  <p className="mt-2 text-sm text-muted-foreground">{item.summary}</p>
+                </div>
+                <div className="flex flex-col items-end gap-1">
+                  <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
+                    Priority: {item.priority_score}/100 | {item.priority_level}
+                  </span>
+                  <span className="text-[11px] text-muted-foreground">
+                    Reported on {new Date(item.created_at).toLocaleDateString()}
+                  </span>
+                </div>
+              </div>
+
+              {/* Citizen Details Grid */}
+              <div className="mt-4 grid gap-3 rounded-lg border border-border bg-surface/50 p-4 text-xs sm:grid-cols-2 lg:grid-cols-4">
+                <div>
+                  <b className="text-muted-foreground block">Submitted Location</b>
+                  <p className="mt-0.5 font-medium">
+                    {item.district}
+                    {item.block ? `, ${item.block}` : ""}
+                    {item.locality ? `, ${item.locality}` : ""}
+                  </p>
+                </div>
+                <div>
+                  <b className="text-muted-foreground block">Exact GPS Coordinates</b>
+                  <p className="mt-0.5 font-mono font-medium">
+                    {item.report_latitude && item.report_longitude
+                      ? `${item.report_latitude}, ${item.report_longitude}`
+                      : "Not shared by citizen"}
+                  </p>
+                </div>
+                <div>
+                  <b className="text-muted-foreground block">Citizen Severity / Urgency</b>
+                  <p className="mt-0.5 font-medium">
+                    Severity: {item.severity}/4 &bull; Urgency: {item.urgency}/4
+                  </p>
+                </div>
+                <div>
+                  <b className="text-muted-foreground block">Affected Population</b>
+                  <p className="mt-0.5 font-medium">
+                    {item.affected_population
+                      ? `${item.affected_population.toLocaleString()} citizens`
+                      : "Not specified"}
+                  </p>
+                </div>
+              </div>
+
+              {item.report_description && (
+                <div className="mt-3 rounded-lg bg-surface p-3 text-xs">
+                  <b className="text-muted-foreground block">Citizen Detailed Description:</b>
+                  <p className="mt-1 text-foreground leading-relaxed">{item.report_description}</p>
+                </div>
+              )}
+
+              {item.voice_transcript && (
+                <div className="mt-2 rounded-lg bg-surface p-3 text-xs">
+                  <b className="text-muted-foreground block">Original Voice Transcript:</b>
+                  <p className="mt-1 italic text-foreground">&ldquo;{item.voice_transcript}&rdquo;</p>
+                </div>
+              )}
+
+              {/* Private Media Evidence */}
+              <div className="mt-3">
+                <p className="text-xs font-bold text-muted-foreground">
+                  Citizen Media Evidence ({item.evidence.length})
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {item.evidence.map((media) => (
+                    <button
+                      key={media.path}
+                      onClick={() => void evidenceUrl(media.path)}
+                      className="rounded-lg border border-input bg-card px-3 py-1.5 text-xs font-medium text-primary hover:bg-surface"
+                    >
+                      Open {media.mime_type.split("/")[0]} ({Math.ceil(media.size_bytes / 1024)} KB)
+                    </button>
+                  ))}
+                  {!item.evidence.length && (
+                    <p className="text-xs text-muted-foreground">No media files attached.</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Rejection notice if present */}
+              {item.rejection_reason && (
+                <div className="mt-3 rounded-lg border border-rose-500/20 bg-rose-500/5 p-3 text-xs text-rose-700">
+                  <b>Rejection Reason:</b> {item.rejection_reason}
+                </div>
+              )}
+
+              {/* Active Scoping details summary if not expanding */}
+              {item.scope_defined_at && !isScopeOpen && (
+                <div className="mt-4 rounded-lg border border-border bg-card p-4 text-xs space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2">
+                    <span className="font-bold text-primary">
+                      Dept: {item.responsible_department || "General Engineering"}
+                    </span>
+                    <span className="text-muted-foreground">
+                      Defined on {new Date(item.scope_defined_at).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <div>
+                    <b className="text-muted-foreground block">Technical Scope & Problem Statement:</b>
+                    <p className="mt-0.5 text-foreground leading-relaxed">{item.technical_scope}</p>
+                  </div>
+                  {item.expected_outcome && (
+                    <div>
+                      <b className="text-muted-foreground block">Target Outcome:</b>
+                      <p className="mt-0.5 text-foreground">{item.expected_outcome}</p>
+                    </div>
+                  )}
+                  {item.support_needed && item.support_needed.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                      <span className="text-muted-foreground font-semibold">Support Needed:</span>
+                      {item.support_needed.map((s) => (
+                        <span key={s} className="rounded bg-primary-soft px-2 py-0.5 text-[11px] font-bold text-primary">
+                          {s}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setExpandedScopeId(isScopeOpen ? null : item.challenge_id);
+                      setRejectingId(null);
+                    }}
+                    className={`rounded-lg px-4 py-2 text-xs font-bold transition ${
+                      isScopeOpen
+                        ? "bg-muted text-foreground"
+                        : "bg-primary text-primary-foreground"
+                    }`}
+                  >
+                    {isScopeOpen
+                      ? "Close Scoping Form"
+                      : item.scope_defined_at
+                      ? "Edit Technical Scope"
+                      : "Define Technical Scope for Universities"}
+                  </button>
+
+                  {!item.rejection_reason && (
+                    <button
+                      onClick={() => {
+                        setRejectingId(isRejectOpen ? null : item.challenge_id);
+                        setExpandedScopeId(null);
+                      }}
+                      className="rounded-lg border border-input px-3 py-2 text-xs font-medium text-destructive hover:bg-destructive-soft"
+                    >
+                      {isRejectOpen ? "Cancel Rejection" : "Reject Submission"}
+                    </button>
+                  )}
+                </div>
+
+                {/* Quick Priority Adjust */}
+                <div className="flex items-center gap-2">
+                  <input
+                    value={scores[item.challenge_id] ?? String(item.priority_score)}
+                    onChange={(e) =>
+                      setScores((all) => ({ ...all, [item.challenge_id]: e.target.value }))
+                    }
+                    type="number"
+                    min="0"
+                    max="100"
+                    placeholder="Score"
+                    className="w-20 rounded-lg border border-input p-2 text-xs"
+                    aria-label="Priority score"
+                  />
+                  <input
+                    value={notes[item.challenge_id] ?? ""}
+                    onChange={(e) =>
+                      setNotes((all) => ({ ...all, [item.challenge_id]: e.target.value }))
+                    }
+                    placeholder="Rationale (optional)"
+                    className="w-44 rounded-lg border border-input p-2 text-xs"
+                  />
+                  <button
+                    onClick={() => void assign(item)}
+                    disabled={busy === `score-${item.challenge_id}`}
+                    className="rounded-lg border border-input bg-card px-3 py-2 text-xs font-bold text-foreground hover:bg-surface disabled:opacity-50"
+                  >
+                    {busy === `score-${item.challenge_id}` ? "Saving..." : "Set Priority"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Rejection Box */}
+              {isRejectOpen && (
+                <div className="mt-4 rounded-xl border border-rose-500/20 bg-rose-500/5 p-4 space-y-3">
+                  <h4 className="text-sm font-bold text-rose-700">
+                    Reject Citizen Challenge Submission
+                  </h4>
+                  <p className="text-xs text-muted-foreground">
+                    Provide the reason for rejecting this submission (e.g. duplicate of existing challenge, out of jurisdiction, incomplete information). The citizen will be notified.
+                  </p>
+                  <textarea
+                    value={rejectionReason}
+                    onChange={(e) => setRejectionReason(e.target.value)}
+                    rows={2}
+                    placeholder="Enter official rejection reason..."
+                    className="w-full rounded-lg border border-input bg-card p-3 text-xs outline-none focus:ring-1 focus:ring-rose-500"
+                  />
+                  <div className="flex justify-end gap-2">
+                    <button
+                      onClick={() => setRejectingId(null)}
+                      className="rounded-lg border border-input px-3 py-2 text-xs font-medium"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => void handleReject(item)}
+                      disabled={busy === `reject-${item.challenge_id}`}
+                      className="rounded-lg bg-rose-600 px-4 py-2 text-xs font-bold text-white hover:bg-rose-700 disabled:opacity-50"
+                    >
+                      {busy === `reject-${item.challenge_id}` ? "Rejecting..." : "Confirm Rejection"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Quad-Helix Technical Scoping Form */}
+              {isScopeOpen && (
+                <div className="mt-5 rounded-xl border border-primary/20 bg-card p-5 shadow-sm space-y-4">
+                  <div className="border-b border-border pb-3">
+                    <h4 className="text-base font-bold text-foreground">
+                      Define Technical Scope for University R&D & Industry Collaboration
+                    </h4>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Specify engineering guidelines, constraints, and baseline data. This transforms the citizen complaint into a formal Civic Innovation Challenge for student and research teams.
+                    </p>
+                  </div>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div>
+                      <label className="block text-xs font-bold text-foreground">
+                        Responsible Government Department <span className="text-destructive">*</span>
+                      </label>
+                      <input
+                        list="gov-dept-list"
+                        value={draft.dept}
+                        onChange={(e) => updateScopeDraftField(item.challenge_id, "dept", e.target.value)}
+                        placeholder="e.g. Municipal Administration & Engineering"
+                        className="mt-1.5 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                      />
+                      <datalist id="gov-dept-list">
+                        {GOV_DEPARTMENTS.map((dept) => (
+                          <option key={dept} value={dept} />
+                        ))}
+                      </datalist>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-foreground">
+                        Expected Outcome & Success Metrics
+                      </label>
+                      <input
+                        value={draft.outcome_text}
+                        onChange={(e) => updateScopeDraftField(item.challenge_id, "outcome_text", e.target.value)}
+                        placeholder="e.g. 80% reduction in turbidity, &lt;30 min alert time"
+                        className="mt-1.5 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-foreground">
+                      Technical Problem Statement & Engineering Scope <span className="text-destructive">*</span>
+                    </label>
+                    <textarea
+                      rows={3}
+                      value={draft.scope_text}
+                      onChange={(e) => updateScopeDraftField(item.challenge_id, "scope_text", e.target.value)}
+                      placeholder="Detail the technical specifications, system boundaries, and functional requirements for university engineering prototypes..."
+                      className="mt-1.5 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                    />
+                  </div>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div>
+                      <label className="block text-xs font-bold text-foreground">
+                        Engineering & Site Constraints
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={draft.constraints_text}
+                        onChange={(e) => updateScopeDraftField(item.challenge_id, "constraints_text", e.target.value)}
+                        placeholder="e.g. Solar power operation only, weatherproofing IP67, unit cost &lt;₹15,000"
+                        className="mt-1.5 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-foreground">
+                        Available Government Data & GIS Layers
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={draft.gov_data}
+                        onChange={(e) => updateScopeDraftField(item.challenge_id, "gov_data", e.target.value)}
+                        placeholder="e.g. Municipal ward shapefiles, daily water test logs (2025-2026), traffic sensor APIs"
+                        className="mt-1.5 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div>
+                      <label className="block text-xs font-bold text-foreground">
+                        Regulatory & Environmental Compliance Requirements
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={draft.reg_req}
+                        onChange={(e) => updateScopeDraftField(item.challenge_id, "reg_req", e.target.value)}
+                        placeholder="e.g. BIS/ISO water testing standard 10500, Central Pollution Control Board guidelines"
+                        className="mt-1.5 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-foreground">
+                        Public Safety & Fail-Safe Requirements
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={draft.safety_req}
+                        onChange={(e) => updateScopeDraftField(item.challenge_id, "safety_req", e.target.value)}
+                        placeholder="e.g. Automatic electrical cutoff, zero chemical leeching, secure tamper-proof housing"
+                        className="mt-1.5 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div>
+                      <label className="block text-xs font-bold text-foreground">
+                        Field Pilot Requirements & Conditions
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={draft.pilot_req}
+                        onChange={(e) => updateScopeDraftField(item.challenge_id, "pilot_req", e.target.value)}
+                        placeholder="e.g. Minimum 30-day continuous test in Ward 14 before official deployment approval"
+                        className="mt-1.5 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-foreground">
+                        Prototype Evaluation Criteria & Benchmarks
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={draft.eval_crit}
+                        onChange={(e) => updateScopeDraftField(item.challenge_id, "eval_crit", e.target.value)}
+                        placeholder="e.g. Accuracy 40%, Durability 30%, Cost-efficiency 20%, Ease of maintenance 10%"
+                        className="mt-1.5 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-foreground">
+                      Required Support from Industry / CSR Partners
+                    </label>
+                    <p className="text-[11px] text-muted-foreground">
+                      Select resources that university teams will need industry enablers to supply:
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {SUPPORT_CATEGORIES.map((category) => {
+                        const isSelected = draft.needed_support.includes(category);
+                        return (
+                          <button
+                            type="button"
+                            key={category}
+                            onClick={() => toggleSupportTag(item.challenge_id, category)}
+                            className={`rounded-full border px-3 py-1 text-xs font-bold transition ${
+                              isSelected
+                                ? "border-primary bg-primary text-primary-foreground"
+                                : "border-input bg-background text-muted-foreground hover:border-primary/50 hover:text-foreground"
+                            }`}
+                          >
+                            {isSelected ? `✓ ${category}` : `+ ${category}`}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border pt-4">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedScopeId(null)}
+                      className="rounded-lg border border-input px-4 py-2 text-xs font-bold"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveScope(item)}
+                      disabled={busy === `scope-${item.challenge_id}`}
+                      className="rounded-lg bg-primary px-5 py-2 text-xs font-bold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                    >
+                      {busy === `scope-${item.challenge_id}`
+                        ? "Saving & Publishing Scope..."
+                        : "Publish Technical Scope to Innovation Pipeline"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </article>
+          );
+        })}
+
+        {!filteredItems.length && (
+          <div className="card-surface p-8 text-center">
+            <p className="text-sm font-semibold text-foreground">No reports match the selected view.</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              All citizen submissions are retrieved directly from the live database.
+            </p>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+type GovernmentPilotRecord = {
+  id: string;
+  project_id: string;
+  title: string;
+  location: string;
+  test_plan: string | null;
+  risk_assessment: string | null;
+  emergency_protocol: string | null;
+  success_criteria: string | null;
+  planned_start: string | null;
+  planned_end: string | null;
+  actual_start: string | null;
+  actual_end: string | null;
+  status: "planned" | "approved" | "running" | "completed" | "verified";
+  pilot_conditions: string | null;
+  monitoring_requirements: string | null;
+  rejection_reason: string | null;
+  government_verified_at: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+  projects?: {
+    id: string;
+    title: string;
+    challenges?: {
+      id: string;
+      public_id: string;
+      title: string;
+      district: string;
+      responsible_department: string | null;
+    } | null;
+  } | null;
+};
+
+function GovernmentPilotApprovals({
+  flash,
+  refresh,
+}: {
+  flash: (message: string) => void;
+  refresh: () => void;
+}) {
+  const [pilots, setPilots] = useState<GovernmentPilotRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [editingPilotId, setEditingPilotId] = useState<string | null>(null);
+  const [conditions, setConditions] = useState("");
+  const [monitoring, setMonitoring] = useState("");
+  const [rejectionNote, setRejectionNote] = useState("");
+
+  const loadPilots = async () => {
+    setLoading(true);
+    const { data, error } = await supabase!
+      .from("pilots")
+      .select(`
+        id, project_id, title, location, test_plan, risk_assessment, emergency_protocol,
+        success_criteria, planned_start, planned_end, actual_start, actual_end, status,
+        pilot_conditions, monitoring_requirements, rejection_reason, government_verified_at,
+        reviewed_at, created_at,
+        projects (
+          id, title,
+          challenges (
+            id, public_id, title, district, responsible_department
+          )
+        )
+      `)
+      .order("created_at", { ascending: false });
+
+    setLoading(false);
+    if (error) {
+      flash(`Could not load pilots: ${error.message}`);
+    } else {
+      setPilots((data ?? []) as GovernmentPilotRecord[]);
+    }
+  };
+
+  useEffect(() => {
+    void loadPilots();
+  }, []);
+
+  const openReview = (pilot: GovernmentPilotRecord) => {
+    setEditingPilotId(pilot.id);
+    setConditions(pilot.pilot_conditions || "");
+    setMonitoring(pilot.monitoring_requirements || "");
+    setRejectionNote(pilot.rejection_reason || "");
+  };
+
+  const handleDecision = async (
+    pilot: GovernmentPilotRecord,
+    decision: "approved" | "planned" | "verified",
+  ) => {
+    if (decision === "planned" && !rejectionNote.trim()) {
+      return flash("Please enter a note explaining what modifications are needed.");
+    }
+    setBusy(`${pilot.id}-${decision}`);
+    const { error } = await supabase!.rpc("review_pilot_approval", {
+      pilot_uuid: pilot.id,
+      next_status: decision,
+      conditions_text: conditions.trim() || null,
+      monitoring_text: monitoring.trim() || null,
+      reject_note: decision === "planned" ? rejectionNote.trim() : null,
+    });
+    setBusy(null);
+    if (error) return flash(error.message);
+
+    flash(
+      decision === "approved"
+        ? `Pilot "${pilot.title}" has been officially approved for field deployment.`
+        : decision === "verified"
+        ? `Pilot "${pilot.title}" results verified. Project is ready for adoption and scaling.`
+        : `Modifications requested for pilot "${pilot.title}".`,
+    );
+    setEditingPilotId(null);
+    await loadPilots();
+    refresh();
+  };
+
+  return (
+    <section className="mt-7">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold">Government Field Pilot Approvals</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Review and sanction university field trials in public municipal infrastructure before deployment.
+          </p>
+        </div>
+        <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
+          {pilots.length} {pilots.length === 1 ? "Pilot" : "Pilots"} Recorded
+        </span>
+      </div>
+
+      {loading && <p className="mt-6 text-sm text-muted-foreground">Loading pilot applications...</p>}
+
+      {!loading && pilots.length === 0 && (
+        <div className="card-surface mt-6 p-8 text-center">
+          <p className="text-base font-semibold text-foreground">
+            No field pilot deployment applications currently pending review.
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground max-w-md mx-auto">
+            University innovation teams submit field deployment plans here once laboratory prototype testing and validation are completed.
+          </p>
+        </div>
+      )}
+
+      <div className="mt-6 space-y-4">
+        {pilots.map((pilot) => {
+          const isReviewing = editingPilotId === pilot.id;
+          const challenge = pilot.projects?.challenges;
+
+          return (
+            <article key={pilot.id} className="card-surface p-6">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {challenge && (
+                      <span className="font-mono text-xs font-bold text-primary">
+                        {challenge.public_id}
+                      </span>
+                    )}
+                    <span
+                      className={`rounded-full px-2.5 py-0.5 text-xs font-bold capitalize ${
+                        pilot.status === "approved"
+                          ? "bg-emerald-500/10 text-emerald-600"
+                          : pilot.status === "running"
+                          ? "bg-blue-500/10 text-blue-600"
+                          : pilot.status === "verified"
+                          ? "bg-purple-500/10 text-purple-600"
+                          : "bg-amber-500/10 text-amber-600"
+                      }`}
+                    >
+                      Status: {pilot.status}
+                    </span>
+                    {pilot.location && (
+                      <span className="text-xs text-muted-foreground">
+                        📍 {pilot.location}
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="mt-1.5 text-lg font-bold">{pilot.title}</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Project: <b className="text-foreground">{pilot.projects?.title || "University Project"}</b>
+                    {challenge?.responsible_department && ` • Department: ${challenge.responsible_department}`}
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => (isReviewing ? setEditingPilotId(null) : openReview(pilot))}
+                  className="rounded-lg bg-primary px-3 py-1.5 text-xs font-bold text-primary-foreground"
+                >
+                  {isReviewing ? "Close Review" : "Official Review"}
+                </button>
+              </div>
+
+              {/* Protocol Details */}
+              <div className="mt-4 grid gap-3 rounded-lg border border-border bg-surface/50 p-4 text-xs sm:grid-cols-2">
+                <div>
+                  <b className="text-muted-foreground block">Test & Deployment Plan:</b>
+                  <p className="mt-0.5 text-foreground leading-relaxed">
+                    {pilot.test_plan || "Test plan details not yet submitted."}
+                  </p>
+                </div>
+                <div>
+                  <b className="text-muted-foreground block">Risk Assessment & Mitigation:</b>
+                  <p className="mt-0.5 text-foreground leading-relaxed">
+                    {pilot.risk_assessment || "No risks documented."}
+                  </p>
+                </div>
+                <div>
+                  <b className="text-muted-foreground block">Emergency Fail-Safe Protocol:</b>
+                  <p className="mt-0.5 text-foreground leading-relaxed">
+                    {pilot.emergency_protocol || "Protocol not specified."}
+                  </p>
+                </div>
+                <div>
+                  <b className="text-muted-foreground block">Success & Validation Criteria:</b>
+                  <p className="mt-0.5 text-foreground leading-relaxed">
+                    {pilot.success_criteria || "Criteria pending."}
+                  </p>
+                </div>
+              </div>
+
+              {/* Conditions / Monitoring notice if set */}
+              {(pilot.pilot_conditions || pilot.monitoring_requirements) && (
+                <div className="mt-3 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-xs text-emerald-800 space-y-1">
+                  {pilot.pilot_conditions && (
+                    <p>
+                      <b>Mandated Government Conditions:</b> {pilot.pilot_conditions}
+                    </p>
+                  )}
+                  {pilot.monitoring_requirements && (
+                    <p>
+                      <b>Monitoring Protocol:</b> {pilot.monitoring_requirements}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {pilot.rejection_reason && (
+                <div className="mt-3 rounded-lg border border-rose-500/20 bg-rose-500/5 p-3 text-xs text-rose-700">
+                  <b>Changes Requested:</b> {pilot.rejection_reason}
+                </div>
+              )}
+
+              {/* Review Panel */}
+              {isReviewing && (
+                <div className="mt-5 rounded-xl border border-primary/20 bg-card p-5 space-y-4">
+                  <h4 className="text-sm font-bold">Government Review & Sanctioning</h4>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="block text-xs font-bold text-foreground">
+                        Permit Conditions (Site access, timing, security)
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={conditions}
+                        onChange={(e) => setConditions(e.target.value)}
+                        placeholder="e.g. Conduct testing between 09:00 - 17:00, notify local municipal inspector 24h prior..."
+                        className="mt-1 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-foreground">
+                        Monitoring & Reporting Requirements
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={monitoring}
+                        onChange={(e) => setMonitoring(e.target.value)}
+                        placeholder="e.g. Submit sensor calibration logs weekly to Department of Water Resources..."
+                        className="mt-1 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-foreground">
+                      Modification / Clarification Notes (Required if requesting changes)
+                    </label>
+                    <input
+                      value={rejectionNote}
+                      onChange={(e) => setRejectionNote(e.target.value)}
+                      placeholder="e.g. Please update the risk assessment to include traffic diversion protocols..."
+                      className="mt-1 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                    />
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border pt-4">
+                    <button
+                      type="button"
+                      onClick={() => setEditingPilotId(null)}
+                      className="rounded-lg border border-input px-3 py-2 text-xs font-bold"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleDecision(pilot, "planned")}
+                      disabled={busy !== null}
+                      className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50"
+                    >
+                      Request Modifications
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleDecision(pilot, "approved")}
+                      disabled={busy !== null}
+                      className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
+                    >
+                      Approve Field Deployment
+                    </button>
+                    {pilot.status === "running" && (
+                      <button
+                        type="button"
+                        onClick={() => void handleDecision(pilot, "verified")}
+                        disabled={busy !== null}
+                        className="rounded-lg bg-purple-600 px-4 py-2 text-xs font-bold text-white hover:bg-purple-700 disabled:opacity-50"
+                      >
+                        Verify Pilot Completion
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+type GovernmentAdoptionChallenge = {
+  id: string;
+  public_id: string;
+  title: string;
+  domain: string;
+  district: string;
+  stage: string;
+  responsible_department: string | null;
+  technical_scope: string | null;
+  expected_outcome: string | null;
+  adoption_status: string | null;
+  scaling_details: {
+    procurement_reference?: string;
+    implementing_agency?: string;
+    target_districts?: string;
+    deployment_target_units?: number;
+    beneficiaries_target?: number;
+    funding_source?: string;
+    scaling_notes?: string;
+    updated_at?: string;
+  } | null;
+  created_at: string;
+  projects?: {
+    id: string;
+    title: string;
+    pilots?: {
+      id: string;
+      title: string;
+      status: string;
+    }[];
+  }[];
+};
+
+const ADOPTION_STATUS_OPTIONS = [
+  { value: "not_started", label: "Evaluating Pilot Results" },
+  { value: "pilot_successful", label: "Pilot Validated & Successful" },
+  { value: "adoption_recommended", label: "Adoption Recommended by Department" },
+  { value: "scaling_approved", label: "Municipal Scaling Sanctioned" },
+  { value: "scaling_in_progress", label: "Procurement & Rollout in Progress" },
+  { value: "scaled", label: "Civic Innovation Fully Scaled" },
+];
+
+function GovernmentAdoptionScaling({
+  flash,
+  refresh,
+}: {
+  flash: (message: string) => void;
+  refresh: () => void;
+}) {
+  const [items, setItems] = useState<GovernmentAdoptionChallenge[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [targetStatus, setTargetStatus] = useState("adoption_recommended");
+  const [procurementRef, setProcurementRef] = useState("");
+  const [agency, setAgency] = useState("");
+  const [targetDistricts, setTargetDistricts] = useState("");
+  const [units, setUnits] = useState("");
+  const [beneficiaries, setBeneficiaries] = useState("");
+  const [fundingSource, setFundingSource] = useState("");
+  const [notes, setNotes] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    const { data, error } = await supabase!
+      .from("challenges")
+      .select(`
+        id, public_id, title, domain, district, stage, responsible_department,
+        technical_scope, expected_outcome, adoption_status, scaling_details, created_at,
+        projects (
+          id, title,
+          pilots (
+            id, title, status
+          )
+        )
+      `)
+      .order("created_at", { ascending: false });
+
+    setLoading(false);
+    if (error) {
+      flash(`Could not load challenges: ${error.message}`);
+    } else {
+      setItems((data ?? []) as GovernmentAdoptionChallenge[]);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const openForm = (challenge: GovernmentAdoptionChallenge) => {
+    setEditingId(challenge.id);
+    setTargetStatus(challenge.adoption_status || "adoption_recommended");
+    const meta = challenge.scaling_details || {};
+    setProcurementRef(meta.procurement_reference || "");
+    setAgency(meta.implementing_agency || challenge.responsible_department || "");
+    setTargetDistricts(meta.target_districts || challenge.district);
+    setUnits(meta.deployment_target_units ? String(meta.deployment_target_units) : "");
+    setBeneficiaries(meta.beneficiaries_target ? String(meta.beneficiaries_target) : "");
+    setFundingSource(meta.funding_source || "");
+    setNotes(meta.scaling_notes || "");
+  };
+
+  const handleSaveScaling = async (challenge: GovernmentAdoptionChallenge) => {
+    setBusy(challenge.id);
+    const meta = {
+      procurement_reference: procurementRef.trim() || undefined,
+      implementing_agency: agency.trim() || undefined,
+      target_districts: targetDistricts.trim() || undefined,
+      deployment_target_units: units ? Number(units) : undefined,
+      beneficiaries_target: beneficiaries ? Number(beneficiaries) : undefined,
+      funding_source: fundingSource.trim() || undefined,
+      scaling_notes: notes.trim() || undefined,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error } = await supabase!.rpc("update_adoption_scaling", {
+      challenge_uuid: challenge.id,
+      next_adoption_status: targetStatus,
+      scaling_meta: meta,
+    });
+    setBusy(null);
+    if (error) return flash(error.message);
+
+    flash(`Adoption & Scaling plan updated for ${challenge.public_id}.`);
+    setEditingId(null);
+    await load();
+    refresh();
+  };
+
+  return (
+    <section className="mt-7">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold">Government Adoption & Scaling Management</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Transition verified university prototypes and successful field pilots into official municipal procurement, state funding, and civic infrastructure scaling.
+          </p>
+        </div>
+        <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
+          {items.length} {items.length === 1 ? "Challenge" : "Challenges"} in Pipeline
+        </span>
+      </div>
+
+      {loading && <p className="mt-6 text-sm text-muted-foreground">Loading adoption pipeline...</p>}
+
+      {!loading && items.length === 0 && (
+        <div className="card-surface mt-6 p-8 text-center">
+          <p className="text-base font-semibold text-foreground">
+            No civic challenges currently in the adoption or scaling phase.
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground max-w-md mx-auto">
+            Once university prototypes complete validated field pilots, departments sanction civic adoption, public procurement orders, and district-wide rollouts here.
+          </p>
+        </div>
+      )}
+
+      <div className="mt-6 space-y-4">
+        {items.map((challenge) => {
+          const isEditing = editingId === challenge.id;
+          const details = challenge.scaling_details;
+          const pilots = challenge.projects?.flatMap((p) => p.pilots ?? []) ?? [];
+
+          return (
+            <article key={challenge.id} className="card-surface p-6">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-xs font-bold text-primary">
+                      {challenge.public_id}
+                    </span>
+                    <span className="rounded bg-surface px-2 py-0.5 text-xs font-medium">
+                      {challenge.domain}
+                    </span>
+                    <span className="rounded-full bg-primary-soft px-2.5 py-0.5 text-xs font-bold text-primary capitalize">
+                      Stage: {challenge.stage}
+                    </span>
+                    {challenge.adoption_status && (
+                      <span className="rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-xs font-bold text-emerald-600">
+                        {ADOPTION_STATUS_OPTIONS.find((o) => o.value === challenge.adoption_status)?.label ||
+                          challenge.adoption_status}
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="mt-1.5 text-lg font-bold">{challenge.title}</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Location: <b>{challenge.district}</b>
+                    {challenge.responsible_department && ` • Department: ${challenge.responsible_department}`}
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => (isEditing ? setEditingId(null) : openForm(challenge))}
+                  className="rounded-lg bg-primary px-3 py-1.5 text-xs font-bold text-primary-foreground"
+                >
+                  {isEditing ? "Close Form" : "Sanction / Update Scaling"}
+                </button>
+              </div>
+
+              {/* Pilots and R&D Summary */}
+              <div className="mt-4 grid gap-3 rounded-lg border border-border bg-surface/50 p-4 text-xs sm:grid-cols-2">
+                <div>
+                  <b className="text-muted-foreground block">University Innovation:</b>
+                  <p className="mt-0.5 font-medium">
+                    {challenge.projects && challenge.projects.length > 0
+                      ? challenge.projects.map((p) => p.title).join(", ")
+                      : "No active university project linked yet."}
+                  </p>
+                </div>
+                <div>
+                  <b className="text-muted-foreground block">Field Pilot Status:</b>
+                  <p className="mt-0.5 font-medium">
+                    {pilots.length > 0
+                      ? pilots.map((p) => `${p.title} (${p.status})`).join(", ")
+                      : "No field pilots submitted yet."}
+                  </p>
+                </div>
+              </div>
+
+              {/* Scaling Details Summary if present */}
+              {details && Object.keys(details).length > 0 && (
+                <div className="mt-4 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-4 text-xs space-y-2">
+                  <h4 className="font-bold text-emerald-800">Active Scaling & Rollout Specifications</h4>
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                    {details.procurement_reference && (
+                      <div>
+                        <span className="text-muted-foreground">Procurement / Tender Ref:</span>
+                        <p className="font-mono font-bold text-foreground">{details.procurement_reference}</p>
+                      </div>
+                    )}
+                    {details.implementing_agency && (
+                      <div>
+                        <span className="text-muted-foreground">Implementing Agency:</span>
+                        <p className="font-bold text-foreground">{details.implementing_agency}</p>
+                      </div>
+                    )}
+                    {details.target_districts && (
+                      <div>
+                        <span className="text-muted-foreground">Target Districts:</span>
+                        <p className="font-bold text-foreground">{details.target_districts}</p>
+                      </div>
+                    )}
+                    {details.deployment_target_units && (
+                      <div>
+                        <span className="text-muted-foreground">Planned Units / Hardware:</span>
+                        <p className="font-bold text-foreground">
+                          {details.deployment_target_units.toLocaleString()} installations
+                        </p>
+                      </div>
+                    )}
+                    {details.beneficiaries_target && (
+                      <div>
+                        <span className="text-muted-foreground">Target Beneficiaries:</span>
+                        <p className="font-bold text-foreground">
+                          {details.beneficiaries_target.toLocaleString()} citizens
+                        </p>
+                      </div>
+                    )}
+                    {details.funding_source && (
+                      <div>
+                        <span className="text-muted-foreground">Funding / CSR Partner:</span>
+                        <p className="font-bold text-foreground">{details.funding_source}</p>
+                      </div>
+                    )}
+                  </div>
+                  {details.scaling_notes && (
+                    <p className="mt-2 text-foreground italic border-t border-emerald-500/10 pt-2">
+                      &ldquo;{details.scaling_notes}&rdquo;
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Editing Form */}
+              {isEditing && (
+                <div className="mt-5 rounded-xl border border-primary/20 bg-card p-5 space-y-4">
+                  <h4 className="text-sm font-bold">Official Municipal Adoption & Scaling Plan</h4>
+
+                  <div>
+                    <label className="block text-xs font-bold text-foreground">
+                      Civic Adoption Status
+                    </label>
+                    <select
+                      value={targetStatus}
+                      onChange={(e) => setTargetStatus(e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                    >
+                      {ADOPTION_STATUS_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="block text-xs font-bold text-foreground">
+                        Procurement / Sanction Order Reference
+                      </label>
+                      <input
+                        value={procurementRef}
+                        onChange={(e) => setProcurementRef(e.target.value)}
+                        placeholder="e.g. GO-MS-2026/894 or GeM Tender #8210"
+                        className="mt-1 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-foreground">
+                        Implementing Municipal Agency / Department
+                      </label>
+                      <input
+                        value={agency}
+                        onChange={(e) => setAgency(e.target.value)}
+                        placeholder="e.g. Visakhapatnam Smart City Corporation"
+                        className="mt-1 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div>
+                      <label className="block text-xs font-bold text-foreground">
+                        Target Districts (Comma separated)
+                      </label>
+                      <input
+                        value={targetDistricts}
+                        onChange={(e) => setTargetDistricts(e.target.value)}
+                        placeholder="e.g. Visakhapatnam, Anakapalli"
+                        className="mt-1 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-foreground">
+                        Deployment Target Units
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={units}
+                        onChange={(e) => setUnits(e.target.value)}
+                        placeholder="e.g. 50"
+                        className="mt-1 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-foreground">
+                        Target Citizens Benefited
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={beneficiaries}
+                        onChange={(e) => setBeneficiaries(e.target.value)}
+                        placeholder="e.g. 250000"
+                        className="mt-1 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="block text-xs font-bold text-foreground">
+                        Funding Source (State Scheme / CSR / Municipal)
+                      </label>
+                      <input
+                        value={fundingSource}
+                        onChange={(e) => setFundingSource(e.target.value)}
+                        placeholder="e.g. State Innovation Fund + Google CSR Grant"
+                        className="mt-1 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-foreground">
+                        Rollout Directives / Notes
+                      </label>
+                      <input
+                        value={notes}
+                        onChange={(e) => setNotes(e.target.value)}
+                        placeholder="e.g. Phase 1 rollout across Coastal Zone scheduled for Q3"
+                        className="mt-1 w-full rounded-lg border border-input bg-background p-2.5 text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-2 border-t border-border pt-4">
+                    <button
+                      type="button"
+                      onClick={() => setEditingId(null)}
+                      className="rounded-lg border border-input px-3 py-2 text-xs font-bold"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveScaling(challenge)}
+                      disabled={busy === challenge.id}
+                      className="rounded-lg bg-primary px-4 py-2 text-xs font-bold text-primary-foreground disabled:opacity-50"
+                    >
+                      {busy === challenge.id ? "Saving Scaling Directives..." : "Save & Update Rollout"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
 }
 
 function AdminDataSection({
