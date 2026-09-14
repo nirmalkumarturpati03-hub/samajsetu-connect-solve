@@ -16,8 +16,8 @@ export default defineConfig({
       host: "0.0.0.0",
       port: 5173,
       strictPort: false,
-      // Permit ngrok's generated forwarding host without allowing arbitrary hosts.
-      allowedHosts: [".ngrok.app", ".ngrok-free.app", ".ngrok-free.dev"],
+      // Permit preview and ngrok generated forwarding hosts.
+      allowedHosts: true,
     },
   },
   tanstackStart: {
