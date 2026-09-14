@@ -280,8 +280,8 @@ export function GovernmentOfficialRegistration({
               contact_email: officialEmail.trim(),
               district: district.trim(),
               locality: `${officeUnit.trim()} (${jurisdiction.trim()})`,
-              expertise: [departmentSector, orgCategory].filter(Boolean),
-              capabilities: [designation.trim(), `ID: ${officialId.trim()}`].filter(Boolean),
+              expertise: [departmentSector, orgCategory, jurisdiction.trim()].filter(Boolean),
+              capabilities: [designation.trim(), `Jurisdiction: ${jurisdiction.trim()}`, `ID: ${officialId.trim()}`].filter(Boolean),
             },
             { onConflict: "owner_id" }
           );
