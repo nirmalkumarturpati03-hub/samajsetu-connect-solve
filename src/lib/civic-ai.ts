@@ -1,4 +1,6 @@
 import { supabase } from "./supabase";
+import { runHybridCategorization, FusedCategorizationResult } from "./hybrid-categorization/fusion-engine";
+import { normalizeCivicCategory } from "./hybrid-categorization/taxonomy";
 
 export type PriorityLevel = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
 
@@ -6,10 +8,12 @@ export interface MatchedDepartment {
   name: string;
   department: string;
   organizationType: "Urban Local Body (ULB)" | "Panchayati Raj Institution (PRI)" | "Government Department" | string;
-  contactName?: string | null;
-  contactEmail?: string | null;
-  userId?: string | null;
-  orgId?: string | null;
+  lineDepartment?: string | null | undefined;
+  authority?: string | null | undefined;
+  contactName?: string | null | undefined;
+  contactEmail?: string | null | undefined;
+  userId?: string | null | undefined;
+  orgId?: string | null | undefined;
   jurisdiction: string;
   routedTo: string;
   isLiveDbMatch: boolean;
@@ -18,6 +22,22 @@ export interface MatchedDepartment {
     industry: string;
     community: string;
   };
+}
+
+export interface ActiveGovernmentDepartment {
+  id: string;
+  ownerId?: string | null;
+  name: string;
+  organizationType: string;
+  district?: string | null;
+  locality?: string | null;
+  expertise: string[];
+  capabilities: string[];
+  accountStatus: string;
+  lineDepartment?: string | null;
+  authority?: string | null;
+  contactName?: string | null;
+  contactEmail?: string | null;
 }
 
 export interface AIAnalysisResult {
@@ -31,11 +51,13 @@ export interface AIAnalysisResult {
   confidence: number;
   recommendedDepartment: string;
   recommendedOrganization: string;
+  lineDepartment?: string | null | undefined;
+  authority?: string | null | undefined;
   organizationType: string;
   routedTo: string;
   jurisdiction: string;
-  assignedUserId?: string | null;
-  assignedOrgId?: string | null;
+  assignedUserId?: string | null | undefined;
+  assignedOrgId?: string | null | undefined;
   routingStatus: string;
   lifecycleStage: string;
   stakeholderRecommendations: {
@@ -49,6 +71,11 @@ export interface AIAnalysisResult {
   status: "AI Analysis Complete" | "Analyzing..." | "Pending Analysis";
   factors: Record<string, any>;
   timestamp: string;
+  secondaryContext?: string[] | undefined;
+  confidenceTier?: "High" | "Medium" | "Needs Review" | undefined;
+  needsReview?: boolean | undefined;
+  explanation?: string | undefined;
+  hybridResult?: FusedCategorizationResult | undefined;
 }
 
 export interface DomainTaxonomy {
@@ -655,7 +682,7 @@ export const DOMAIN_TAXONOMIES: DomainTaxonomy[] = [
 ];
 
 export interface CivicProblemInput {
-  domain: string;
+  domain?: string | undefined;
   title: string;
   description: string;
   district?: string | undefined;
@@ -666,6 +693,7 @@ export interface CivicProblemInput {
   affectedPopulation?: number | null | undefined;
   supportingInfo?: string | undefined;
   challengePublicId?: string | undefined;
+  imageDataUrls?: string[] | undefined;
 }
 
 /**
@@ -675,10 +703,10 @@ export function extractWardOrJurisdiction(text: string): string | null {
   if (!text) return null;
   // Match patterns like "Ward 20", "Ward No. 15", "Ward 15-25", "Zone 3", "Sector 4", etc.
   const wardMatch = text.match(/\b(ward(?:\s*no\.?|\s+)?\s*\d+(?:\s*[-–]\s*\d+)?)\b/i);
-  if (wardMatch) return wardMatch[1].replace(/\s+/g, " ").trim();
+  if (wardMatch && wardMatch[1]) return wardMatch[1].replace(/\s+/g, " ").trim();
 
   const zoneMatch = text.match(/\b(zone\s*\d+|sector\s*\d+|block\s*[a-zA-Z0-9]+)\b/i);
-  if (zoneMatch) return zoneMatch[1].replace(/\s+/g, " ").trim();
+  if (zoneMatch && zoneMatch[1]) return zoneMatch[1].replace(/\s+/g, " ").trim();
 
   return null;
 }
@@ -697,7 +725,7 @@ function isJurisdictionEncompassing(officialJurisdiction: string, targetJurisdic
   const tarNumMatch = tarClean.match(/\b(\d+)\b/);
   const offRangeMatch = offClean.match(/(\d+)\s*[-–]\s*(\d+)/);
 
-  if (tarNumMatch && offRangeMatch) {
+  if (tarNumMatch?.[1] && offRangeMatch?.[1] && offRangeMatch?.[2]) {
     const tarNum = parseInt(tarNumMatch[1], 10);
     const startNum = parseInt(offRangeMatch[1], 10);
     const endNum = parseInt(offRangeMatch[2], 10);
@@ -707,6 +735,115 @@ function isJurisdictionEncompassing(officialJurisdiction: string, targetJurisdic
   }
 
   return false;
+}
+
+/**
+ * Parses line department and authority designations from organization capabilities and profile.
+ */
+export function parseLineDepartmentAndAuthority(
+  capabilities: string[] = [],
+  orgName: string = "",
+  expertise: string[] = []
+): { lineDepartment: string | null; authority: string | null } {
+  let lineDepartment: string | null = null;
+  let authority: string | null = null;
+
+  for (const cap of capabilities) {
+    if (typeof cap === "string") {
+      const lineMatch = cap.match(/line\s*department\s*:\s*(.+)/i);
+      if (lineMatch && lineMatch[1]) {
+        lineDepartment = lineMatch[1].trim();
+      }
+      const authMatch = cap.match(/authority\s*:\s*(.+)/i);
+      if (authMatch && authMatch[1]) {
+        authority = authMatch[1].trim();
+      }
+    }
+  }
+
+  // If not explicitly formatted with prefix, look for line department / division designation
+  if (!lineDepartment) {
+    const divCap = capabilities.find(
+      (c) => typeof c === "string" && /division|wing|directorate|mission|engineer|health|works/i.test(c) && !/jurisdiction|id:/i.test(c)
+    );
+    if (divCap) {
+      lineDepartment = divCap.trim();
+    } else {
+      const primaryExp = expertise.find((e) => typeof e === "string" && !/ulb|pri|government/i.test(e));
+      lineDepartment = primaryExp ? `${orgName} (${primaryExp})` : orgName;
+    }
+  }
+
+  // If authority not explicitly present, deduce from organizational form
+  if (!authority) {
+    const nameLower = orgName.toLowerCase();
+    if (nameLower.includes("corporation") || nameLower.includes("ulb") || nameLower.includes("municip") || nameLower.includes("mcd")) {
+      authority = "Urban Local Body (ULB)";
+    } else if (nameLower.includes("panchayat") || nameLower.includes("zilla") || nameLower.includes("pri") || nameLower.includes("rural")) {
+      authority = "Panchayati Raj Institution (PRI)";
+    } else if (nameLower.includes("pollution control") || nameLower.includes("spcb")) {
+      authority = "State Pollution Control Board";
+    } else if (nameLower.includes("disaster") || nameLower.includes("ddma")) {
+      authority = "State Disaster Management Authority (SDMA)";
+    } else if (nameLower.includes("power") || nameLower.includes("electricity") || nameLower.includes("discom")) {
+      authority = "DISCOM / State Electricity Board";
+    } else {
+      authority = "District Administration / Competent State Authority";
+    }
+  }
+
+  return { lineDepartment, authority };
+}
+
+/**
+ * Fetches all currently active registered government organizations directly from the database.
+ * Deactivated departments (account_status = 'Inactive' or 'Suspended') are strictly excluded.
+ * Newly registered departments become immediately available.
+ */
+export async function fetchActiveGovernmentDepartments(): Promise<ActiveGovernmentDepartment[]> {
+  if (!supabase) return [];
+  try {
+    const { data, error } = await supabase
+      .from("organization_accounts")
+      .select("id, owner_id, name, organization_type, district, locality, contact_name, contact_email, expertise, capabilities, account_status")
+      .eq("organization_type", "Government")
+      .limit(100);
+
+    if (error || !data) {
+      console.warn("Could not fetch active government departments from DB:", error);
+      return [];
+    }
+
+    // Strictly filter out inactive or suspended accounts
+    const activeList = data.filter(
+      (org) => org.account_status !== "Inactive" && org.account_status !== "Suspended"
+    );
+
+    return activeList.map((org) => {
+      const capabilities = Array.isArray(org.capabilities) ? org.capabilities : [];
+      const expertise = Array.isArray(org.expertise) ? org.expertise : [];
+      const { lineDepartment, authority } = parseLineDepartmentAndAuthority(capabilities, org.name, expertise);
+
+      return {
+        id: org.id,
+        ownerId: org.owner_id,
+        name: org.name,
+        organizationType: org.organization_type || "Government",
+        district: org.district,
+        locality: org.locality,
+        expertise,
+        capabilities,
+        accountStatus: org.account_status || "Active",
+        lineDepartment,
+        authority,
+        contactName: org.contact_name,
+        contactEmail: org.contact_email,
+      };
+    });
+  } catch (err) {
+    console.warn("fetchActiveGovernmentDepartments failed:", err);
+    return [];
+  }
 }
 
 /**
@@ -727,39 +864,25 @@ export async function matchRegisteredGovernmentDepartment(
     community: "Local community oversight, progress verification and feedback monitoring",
   };
 
+  const isRural = (locationText + (district || "")).toLowerCase().includes("panchayat") ||
+    (locationText + (district || "")).toLowerCase().includes("village") ||
+    (locationText + (district || "")).toLowerCase().includes("gram");
+
+  const fallbackOrgType = isRural ? "Panchayati Raj Institution (PRI)" : "Urban Local Body (ULB)";
+  const fallbackOrgName = district && district.toLowerCase() !== "gps-detected location"
+    ? `${district} ${isRural ? "Zilla Parishad" : "Municipal Corporation"}`
+    : "Greater Visakhapatnam Municipal Corporation (GVMC)";
+
   try {
-    if (!supabase) {
-      return {
-        name: "Local Municipal Corporation / Line Department",
-        department: departmentFallback,
-        organizationType: "Urban Local Body (ULB)",
-        routedTo: `${departmentFallback} — ${locationText}`,
-        jurisdiction: locationText,
-        isLiveDbMatch: false,
-        stakeholderRecommendations: defaultRecs,
-      };
-    }
+    const activeOrgs = await fetchActiveGovernmentDepartments();
 
-    // Query registered organization accounts with organization_type = 'Government'
-    const { data: orgs, error } = await supabase
-      .from("organization_accounts")
-      .select("id, owner_id, name, organization_type, district, locality, contact_name, contact_email, expertise, capabilities")
-      .eq("organization_type", "Government")
-      .limit(50);
-
-    const isRural = (locationText + (district || "")).toLowerCase().includes("panchayat") ||
-      (locationText + (district || "")).toLowerCase().includes("village") ||
-      (locationText + (district || "")).toLowerCase().includes("gram");
-
-    const fallbackOrgType = isRural ? "Panchayati Raj Institution (PRI)" : "Urban Local Body (ULB)";
-    const fallbackOrgName = district && district.toLowerCase() !== "gps-detected location"
-      ? `${district} ${isRural ? "Zilla Parishad" : "Municipal Corporation"}`
-      : "Greater Visakhapatnam Municipal Corporation (GVMC)";
-
-    if (error || !orgs || orgs.length === 0) {
+    if (activeOrgs.length === 0) {
+      const { lineDepartment, authority } = parseLineDepartmentAndAuthority([], fallbackOrgName, [departmentFallback]);
       return {
         name: fallbackOrgName,
         department: departmentFallback,
+        lineDepartment: lineDepartment || departmentFallback,
+        authority: authority || fallbackOrgType,
         organizationType: fallbackOrgType,
         routedTo: `${fallbackOrgName} — ${departmentFallback} (${locationText})`,
         jurisdiction: locationText,
@@ -770,28 +893,22 @@ export async function matchRegisteredGovernmentDepartment(
 
     // Score registered organizations based on:
     // 1. Exact Department / Sector match in expertise or name
-    // 2. Jurisdiction match (ward range, locality, district)
-    // 3. Organization category
-    const searchTerms = [
-      classifiedDomain.toLowerCase(),
-      specificIssue.toLowerCase(),
-      departmentFallback.toLowerCase(),
-      ...(district ? [district.toLowerCase()] : []),
-    ];
-
-    let bestOrg: any = null;
+    // 2. Domain-specific keywords & subcategory alignment
+    // 3. Jurisdiction match (ward range, locality, district)
+    // 4. Urban vs Rural alignment
+    let bestOrg: ActiveGovernmentDepartment | null = null;
     let bestScore = -1;
 
-    for (const org of orgs) {
+    for (const org of activeOrgs) {
       let score = 0;
       const orgName = (org.name || "").toLowerCase();
       const orgDistrict = (org.district || "").toLowerCase();
       const orgLocality = (org.locality || "").toLowerCase();
       const orgExpertise = (org.expertise || []).map((e: string) => String(e).toLowerCase());
       const orgCapabilities = (org.capabilities || []).map((c: string) => String(c).toLowerCase());
-      const combinedOrgText = `${orgName} ${orgDistrict} ${orgLocality} ${orgExpertise.join(" ")} ${orgCapabilities.join(" ")}`;
+      const combinedOrgText = `${orgName} ${orgDistrict} ${orgLocality} ${orgExpertise.join(" ")} ${orgCapabilities.join(" ")} ${org.lineDepartment || ""} ${org.authority || ""}`.toLowerCase();
 
-      // 1. Department / Sector Match
+      // 1. Department / Sector Match in expertise
       if (orgExpertise.some((e: string) => e.includes(departmentFallback.toLowerCase()) || departmentFallback.toLowerCase().includes(e))) {
         score += 50;
       }
@@ -800,16 +917,26 @@ export async function matchRegisteredGovernmentDepartment(
       }
 
       // Specific domain keywords
-      if (classifiedDomain.toLowerCase().includes("road") || classifiedDomain.toLowerCase().includes("infrastructure")) {
-        if (combinedOrgText.includes("road") || combinedOrgText.includes("infrastructure") || combinedOrgText.includes("pwd") || combinedOrgText.includes("engineering")) score += 40;
-      } else if (classifiedDomain.toLowerCase().includes("water")) {
-        if (combinedOrgText.includes("water") || combinedOrgText.includes("phed") || combinedOrgText.includes("drinking water")) score += 40;
-      } else if (classifiedDomain.toLowerCase().includes("sanitation")) {
-        if (combinedOrgText.includes("sanitation") || combinedOrgText.includes("solid waste") || combinedOrgText.includes("drainage")) score += 40;
-      } else if (classifiedDomain.toLowerCase().includes("electric") || classifiedDomain.toLowerCase().includes("power")) {
-        if (combinedOrgText.includes("electric") || combinedOrgText.includes("power") || combinedOrgText.includes("discom")) score += 40;
-      } else if (classifiedDomain.toLowerCase().includes("health")) {
-        if (combinedOrgText.includes("health") || combinedOrgText.includes("medical") || combinedOrgText.includes("hospital") || combinedOrgText.includes("cmo")) score += 40;
+      const domainLower = classifiedDomain.toLowerCase();
+      if (domainLower.includes("water")) {
+        if (combinedOrgText.includes("water") || combinedOrgText.includes("phed") || combinedOrgText.includes("drinking water") || combinedOrgText.includes("jal jeevan")) score += 45;
+        if (combinedOrgText.includes("handpump") || combinedOrgText.includes("borewell") || combinedOrgText.includes("rural water")) {
+          if (specificIssue.toLowerCase().includes("handpump") || specificIssue.toLowerCase().includes("borewell") || isRural) score += 30;
+        }
+      } else if (domainLower.includes("sanitation") || domainLower.includes("waste")) {
+        if (combinedOrgText.includes("sanitation") || combinedOrgText.includes("solid waste") || combinedOrgText.includes("drainage") || combinedOrgText.includes("cleaning")) score += 45;
+      } else if (domainLower.includes("road") || domainLower.includes("infrastructure") || domainLower.includes("transport")) {
+        if (combinedOrgText.includes("road") || combinedOrgText.includes("infrastructure") || combinedOrgText.includes("pwd") || combinedOrgText.includes("highways")) score += 45;
+      } else if (domainLower.includes("electric") || domainLower.includes("energy") || domainLower.includes("power")) {
+        if (combinedOrgText.includes("electric") || combinedOrgText.includes("power") || combinedOrgText.includes("discom") || combinedOrgText.includes("energy")) score += 45;
+      } else if (domainLower.includes("health") || domainLower.includes("medical")) {
+        if (combinedOrgText.includes("health") || combinedOrgText.includes("medical") || combinedOrgText.includes("family welfare") || combinedOrgText.includes("hospital")) score += 45;
+      } else if (domainLower.includes("education") || domainLower.includes("school")) {
+        if (combinedOrgText.includes("education") || combinedOrgText.includes("school") || combinedOrgText.includes("shiksha")) score += 45;
+      } else if (domainLower.includes("environment") || domainLower.includes("pollution")) {
+        if (combinedOrgText.includes("environment") || combinedOrgText.includes("pollution") || combinedOrgText.includes("spcb") || combinedOrgText.includes("forest")) score += 45;
+      } else if (domainLower.includes("disaster") || domainLower.includes("safety")) {
+        if (combinedOrgText.includes("disaster") || combinedOrgText.includes("ddma") || combinedOrgText.includes("relief") || combinedOrgText.includes("revenue")) score += 45;
       }
 
       // 2. Jurisdiction / Ward match
@@ -817,7 +944,14 @@ export async function matchRegisteredGovernmentDepartment(
         score += 45;
       }
       if (district && orgDistrict.includes(district.toLowerCase())) {
+        score += 30;
+      }
+
+      // 3. Rural vs Urban governance alignment
+      if (isRural && (combinedOrgText.includes("rural") || combinedOrgText.includes("panchayat") || combinedOrgText.includes("pri"))) {
         score += 25;
+      } else if (!isRural && (combinedOrgText.includes("ulb") || combinedOrgText.includes("municipal") || combinedOrgText.includes("urban"))) {
+        score += 20;
       }
 
       if (score > bestScore) {
@@ -827,29 +961,34 @@ export async function matchRegisteredGovernmentDepartment(
     }
 
     if (bestOrg && bestScore >= 30) {
-      const orgCategory: any = (bestOrg.expertise || []).find((e: string) => e.includes("ULB") || e.includes("PRI") || e.includes("Government")) ||
-        (bestOrg.name.includes("Corporation") ? "Urban Local Body (ULB)" : bestOrg.name.includes("Parishad") ? "Panchayati Raj Institution (PRI)" : "Government Department");
+      const orgCategory = (bestOrg.expertise || []).find((e: string) => e.includes("ULB") || e.includes("PRI") || e.includes("Government")) ||
+        (bestOrg.name.includes("Corporation") ? "Urban Local Body (ULB)" : bestOrg.name.includes("Parishad") || bestOrg.name.includes("Panchayat") ? "Panchayati Raj Institution (PRI)" : "Government Department");
 
-      const deptName = (bestOrg.expertise || []).find((e: string) => !e.includes("ULB") && !e.includes("PRI") && !e.includes("Government")) || departmentFallback;
+      const deptName = (bestOrg.expertise || []).find((e: string) => !e.includes("ULB") && !e.includes("PRI") && !e.includes("Government")) || bestOrg.lineDepartment || departmentFallback;
 
       return {
         name: bestOrg.name,
         department: deptName || departmentFallback,
+        lineDepartment: bestOrg.lineDepartment || deptName || departmentFallback,
+        authority: bestOrg.authority || orgCategory,
         organizationType: orgCategory || fallbackOrgType,
-        contactName: bestOrg.contact_name,
-        contactEmail: bestOrg.contact_email,
-        userId: bestOrg.owner_id,
+        contactName: bestOrg.contactName,
+        contactEmail: bestOrg.contactEmail,
+        userId: bestOrg.ownerId,
         orgId: bestOrg.id,
         jurisdiction: bestOrg.locality || locationText,
-        routedTo: `${bestOrg.name} — ${deptName || departmentFallback} (${locationText})`,
+        routedTo: `${bestOrg.name} — ${bestOrg.lineDepartment ? bestOrg.lineDepartment + ' / ' : ''}${deptName || departmentFallback} (${locationText})`,
         isLiveDbMatch: true,
         stakeholderRecommendations: defaultRecs,
       };
     }
 
+    const { lineDepartment: fbLine, authority: fbAuth } = parseLineDepartmentAndAuthority([], fallbackOrgName, [departmentFallback]);
     return {
       name: fallbackOrgName,
       department: departmentFallback,
+      lineDepartment: fbLine || departmentFallback,
+      authority: fbAuth || fallbackOrgType,
       organizationType: fallbackOrgType,
       routedTo: `${fallbackOrgName} — ${departmentFallback} (${locationText})`,
       jurisdiction: locationText,
@@ -857,11 +996,14 @@ export async function matchRegisteredGovernmentDepartment(
       stakeholderRecommendations: defaultRecs,
     };
   } catch {
+    const { lineDepartment: fbLine, authority: fbAuth } = parseLineDepartmentAndAuthority([], fallbackOrgName, [departmentFallback]);
     return {
-      name: "Greater Visakhapatnam Municipal Corporation (GVMC)",
+      name: fallbackOrgName,
       department: departmentFallback,
-      organizationType: "Urban Local Body (ULB)",
-      routedTo: `${departmentFallback} — ${locationText}`,
+      lineDepartment: fbLine || departmentFallback,
+      authority: fbAuth || fallbackOrgType,
+      organizationType: fallbackOrgType,
+      routedTo: `${fallbackOrgName} — ${departmentFallback} (${locationText})`,
       jurisdiction: locationText,
       isLiveDbMatch: false,
       stakeholderRecommendations: defaultRecs,
@@ -871,13 +1013,12 @@ export async function matchRegisteredGovernmentDepartment(
 
 /**
  * Main AI Analysis Engine.
- * Analyzes the citizen's problem description strictly WITHIN the citizen-selected domain,
- * determines subcategory, assesses priority/severity, matches the responsible department
- * dynamically against registered organizations in the DB, and formats the complete analysis.
+ * Analyzes the citizen's natural language problem description,
+ * determines primary category, assesses priority/severity, matches the responsible department
+ * dynamically against registered active organizations in the DB, and formats the complete analysis.
  */
 export async function runAIProblemAnalysis(input: CivicProblemInput): Promise<AIAnalysisResult> {
-  const selectedDomainRaw = (input.domain || "Roads & Infrastructure").trim();
-  const textCombined = `${input.title || ""} ${input.description || ""} ${input.supportingInfo || ""}`.toLowerCase();
+  const selectedDomainRaw = (input.domain || "").trim();
 
   // Extract Ward or Jurisdiction from text if present
   const extractedWard = extractWardOrJurisdiction(input.description || "") ||
@@ -898,187 +1039,105 @@ export async function runAIProblemAnalysis(input: CivicProblemInput): Promise<AI
     jurisdiction = input.locality;
   }
 
-  // 1. Find matching domain taxonomy based on citizen's selected domain
-  let matchedTaxonomy = DOMAIN_TAXONOMIES.find((t) =>
-    t.aliases.some((alias) => alias.toLowerCase() === selectedDomainRaw.toLowerCase()) ||
-    t.canonicalDomain.toLowerCase() === selectedDomainRaw.toLowerCase() ||
-    selectedDomainRaw.toLowerCase().includes(t.canonicalDomain.toLowerCase()) ||
-    t.canonicalDomain.toLowerCase().includes(selectedDomainRaw.toLowerCase())
+  // 1. Run Real Hybrid Civic Problem Categorisation Engine
+  const hybrid = await runHybridCategorization({
+    title: input.title,
+    description: input.description,
+    citizenSelectedCategory: selectedDomainRaw || undefined,
+    district: input.district,
+    block: input.block,
+    locality: input.locality,
+    latitude: input.latitude,
+    longitude: input.longitude,
+    affectedPopulation: input.affectedPopulation,
+    imageDataUrls: input.imageDataUrls,
+    supportingInfo: input.supportingInfo,
+  });
+
+  const classifiedDomain = hybrid.primaryCategory;
+  const specificIssue = hybrid.problemType;
+
+  // 2. Separate Priority Engine Calculation (0-100)
+  // Evaluates risk factors independently from categorization
+  const urgencyFactor = hybrid.riskSignals.urgency;
+  const healthSafetyFactor = Math.max(hybrid.riskSignals.healthRisk, hybrid.riskSignals.safetyRisk);
+  const serviceFactor = hybrid.riskSignals.essentialServiceImpact;
+  const populationFactor = input.affectedPopulation ? Math.min(100, Math.round(input.affectedPopulation / 5)) : 50;
+
+  // Combined weighted priority score
+  const priorityScore = Math.min(
+    98,
+    Math.max(
+      20,
+      Math.round(
+        urgencyFactor * 0.35 +
+        healthSafetyFactor * 0.30 +
+        serviceFactor * 0.20 +
+        populationFactor * 0.15
+      )
+    )
   );
 
-  // Fallback: If not found, use first taxonomy or create a dynamic one preserving the citizen's domain
-  if (!matchedTaxonomy) {
-    matchedTaxonomy = {
-      canonicalDomain: selectedDomainRaw,
-      classifiedDomain: `${selectedDomainRaw}`,
-      aliases: [selectedDomainRaw],
-      defaultDepartment: "Roads & Infrastructure",
-      subcategories: [
-        {
-          name: `${selectedDomainRaw} Issue`,
-          keywords: [],
-          defaultPriority: "High",
-          priorityScore: 75,
-          departmentKeywords: [selectedDomainRaw.toLowerCase()],
-          departmentFallback: "Roads & Infrastructure",
-          stakeholderRecs: {
-            university: "Engineering faculty diagnostic review & technical feasibility study",
-            industry: "Technology equipment provider dispatch & field intervention support",
-            community: "Neighborhood committee oversight and status verification"
-          },
-          detailsTemplate: (_d, loc) => [
-            `Classified within citizen-selected domain: ${selectedDomainRaw}`,
-            `Location jurisdiction: ${loc}`,
-            "Field inspection and priority validation required"
-          ]
-        }
-      ]
-    };
-  }
-
-  // 2. Determine Subcategory / Specific Issue WITHIN the selected domain
-  let matchedSubcat = matchedTaxonomy.subcategories[0]!;
-  let bestKeywordMatches = 0;
-
-  for (const sub of matchedTaxonomy.subcategories) {
-    let matchCount = 0;
-    for (const kw of sub.keywords) {
-      if (textCombined.includes(kw)) {
-        matchCount += 1;
-      }
-    }
-    if (matchCount > bestKeywordMatches) {
-      bestKeywordMatches = matchCount;
-      matchedSubcat = sub;
-    }
-  }
-
-  // Handle specific well-known problem descriptions
-  if (
-    matchedTaxonomy.canonicalDomain === "Water Resources" ||
-    selectedDomainRaw.toLowerCase().includes("water")
-  ) {
-    if (
-      textCombined.includes("contaminat") ||
-      textCombined.includes("tank") ||
-      textCombined.includes("dirty") ||
-      textCombined.includes("poison") ||
-      textCombined.includes("smell")
-    ) {
-      matchedSubcat = matchedTaxonomy.subcategories.find((s) => s.name === "Water Contamination") || matchedSubcat;
-    }
-  } else if (
-    matchedTaxonomy.canonicalDomain === "Roads & Infrastructure" ||
-    selectedDomainRaw.toLowerCase().includes("road") ||
-    selectedDomainRaw.toLowerCase().includes("infrastructure")
-  ) {
-    if (
-      textCombined.includes("pothole") ||
-      textCombined.includes("broken road") ||
-      textCombined.includes("crater") ||
-      textCombined.includes("main road")
-    ) {
-      matchedSubcat = matchedTaxonomy.subcategories.find((s) => s.name === "Potholes & Road Surface Degradation") || matchedSubcat;
-    }
-  }
-
-  // 3. Determine Priority & Severity
-  // Check for critical / emergency signals
-  const isCriticalSignal =
-    textCombined.includes("emergency") ||
-    textCombined.includes("critical") ||
-    textCombined.includes("collapse") ||
-    textCombined.includes("live wire") ||
-    textCombined.includes("electrocution") ||
-    textCombined.includes("open borewell") ||
-    textCombined.includes("toxic chemical") ||
-    textCombined.includes("epidemic") ||
-    textCombined.includes("many people sick") ||
-    textCombined.includes("life threatening") ||
-    (input.affectedPopulation != null && input.affectedPopulation > 500);
-
-  const isLowSignal =
-    textCombined.includes("minor") ||
-    textCombined.includes("cosmetic") ||
-    textCombined.includes("paint") ||
-    textCombined.includes("small scratch") ||
-    textCombined.includes("fence paint") ||
-    textCombined.includes("trivial");
-
-  let priority: "Critical" | "High" | "Medium" | "Low" = matchedSubcat.defaultPriority;
-  let priorityScore = matchedSubcat.priorityScore;
-
-  if (isCriticalSignal) {
-    priority = "Critical";
-    priorityScore = Math.max(90, priorityScore);
-  } else if (isLowSignal) {
-    priority = "Low";
-    priorityScore = Math.min(35, priorityScore);
-  } else {
-    // Standard test cases:
-    // "large pothole on the main road in Ward 20" -> High
-    // "Water tank is contaminated" -> High
-    // "Broken streetlight" -> Medium
-    // "Minor cosmetic issue" -> Low
-    if (textCombined.includes("large pothole") || (textCombined.includes("pothole") && textCombined.includes("main road"))) {
-      priority = "High";
-      priorityScore = 84;
-    } else if (textCombined.includes("broken streetlight") || textCombined.includes("streetlight")) {
-      priority = "Medium";
-      priorityScore = 52;
-    } else if (
-      textCombined.includes("water tank is contaminated") ||
-      textCombined.includes("tank is contaminated") ||
-      (textCombined.includes("water") && textCombined.includes("contaminat"))
-    ) {
-      priority = "High";
-      priorityScore = 88;
-    }
-  }
+  let priority: "Critical" | "High" | "Medium" | "Low" = "Medium";
+  if (priorityScore >= 85 || healthSafetyFactor >= 90) priority = "Critical";
+  else if (priorityScore >= 70) priority = "High";
+  else if (priorityScore >= 45) priority = "Medium";
+  else priority = "Low";
 
   const priorityLevel: PriorityLevel =
     priority === "Critical" ? "CRITICAL" : priority === "High" ? "HIGH" : priority === "Medium" ? "MEDIUM" : "LOW";
 
-  // 4. Calculate AI Confidence
-  let confidence = 94;
-  if (bestKeywordMatches >= 2) confidence = 95;
-  if (textCombined.length > 50) confidence = Math.min(96, confidence + 1);
-  if (bestKeywordMatches === 0 && textCombined.length < 20) confidence = 88;
-
-  // 5. Dynamic Smart Routing to Government Department
+  // 3. Dynamic Smart Routing to Registered Government Department
   const deptMatch = await matchRegisteredGovernmentDepartment(
-    matchedTaxonomy.classifiedDomain,
-    matchedSubcat.name,
+    classifiedDomain,
+    specificIssue,
     jurisdiction,
     input.district,
-    matchedSubcat.departmentFallback || matchedTaxonomy.defaultDepartment,
-    matchedSubcat.stakeholderRecs,
+    hybrid.targetDepartment,
   );
 
-  const recommendedDepartment = deptMatch.department;
+  const recommendedDepartment = deptMatch.department || hybrid.targetDepartment;
   const recommendedOrganization = deptMatch.name;
   const organizationType = deptMatch.organizationType;
-  const routedTo = deptMatch.routedTo;
+  const lineDepartment = deptMatch.lineDepartment || recommendedDepartment;
+  const authority = deptMatch.authority || organizationType;
+  const routedTo = deptMatch.routedTo || `${recommendedOrganization} — ${lineDepartment} (${jurisdiction})`;
 
-  // 6. Generate Key Problem Details & Reasons
-  const keyDetails = matchedSubcat.detailsTemplate(input.description || "", jurisdiction);
+  // Key problem factors for explainability
+  const keyDetails: string[] = [
+    `Primary Category: ${classifiedDomain} (${hybrid.confidenceTier} Confidence)`,
+    `Assigned Line Department: ${lineDepartment}`,
+    `Competent Authority: ${authority}`,
+    hybrid.explanation,
+  ];
 
-  // 7. Generate Routing Recommendation
-  const routingRecommendation = `Direct routing recommended to ${recommendedOrganization} (${recommendedDepartment}) under jurisdiction ${jurisdiction}. Specific operational focus: ${matchedSubcat.name}. Action level: ${priority.toUpperCase()} priority assessment.`;
+  if (hybrid.secondaryContext.length > 0) {
+    keyDetails.push(`Secondary Context Detected: ${hybrid.secondaryContext.join(", ")}`);
+  }
+  if (hybrid.visualEvidenceSummary) {
+    keyDetails.push(`Visual Evidence: ${hybrid.visualEvidenceSummary}`);
+  }
 
-  // Challenge ID
+  const routingRecommendation = `Direct routing recommended to ${recommendedOrganization} (Line Department: ${lineDepartment}, Authority: ${authority}) under jurisdiction ${jurisdiction}. Primary Domain: ${classifiedDomain}. Assessment: ${priority.toUpperCase()} priority (${priorityScore}/100). Model: ${hybrid.modelMetadata.modelName}.`;
+
   const challengeId = input.challengePublicId || `SS-${Math.floor(1000 + Math.random() * 9000)}`;
 
   const factors: Record<string, any> = {
-    severity: priority === "Critical" ? 95 : priority === "High" ? 85 : priority === "Medium" ? 55 : 25,
-    urgency: priority === "Critical" ? 95 : priority === "High" ? 80 : priority === "Medium" ? 50 : 25,
-    health_safety_risk: priority === "Critical" ? 95 : priority === "High" ? 85 : 40,
-    essential_service_impact: matchedTaxonomy.canonicalDomain.includes("Road") ? 80 : matchedTaxonomy.canonicalDomain.includes("Water") ? 90 : 65,
-    population_impact: input.affectedPopulation ? Math.min(100, Math.round(input.affectedPopulation / 5)) : 65,
-    confidence,
-    ai_category: matchedTaxonomy.classifiedDomain,
-    ai_subcategory: matchedSubcat.name,
+    severity: healthSafetyFactor,
+    urgency: urgencyFactor,
+    health_safety_risk: healthSafetyFactor,
+    essential_service_impact: serviceFactor,
+    population_impact: populationFactor,
+    confidence: hybrid.confidenceScore,
+    confidence_tier: hybrid.confidenceTier,
+    needs_review: hybrid.needsReview,
+    ai_category: classifiedDomain,
+    ai_subcategory: specificIssue,
+    secondary_context: hybrid.secondaryContext,
+    explanation: hybrid.explanation,
     responsible_department: recommendedDepartment,
+    responsible_line_department: lineDepartment,
+    responsible_authority: authority,
     responsible_organization: recommendedOrganization,
     responsible_jurisdiction: jurisdiction,
     department_type: organizationType,
@@ -1086,19 +1145,24 @@ export async function runAIProblemAnalysis(input: CivicProblemInput): Promise<AI
     lifecycle_stage: "Awaiting Government Validation",
     stakeholder_recommendations: deptMatch.stakeholderRecommendations,
     routing_recommendation: routingRecommendation,
+    model_name: hybrid.modelMetadata.modelName,
+    inference_source: hybrid.modelMetadata.inferenceSource,
+    is_fallback: hybrid.modelMetadata.isFallback,
   };
 
   return {
     challengeId,
-    originalDomain: selectedDomainRaw,
-    classifiedDomain: matchedTaxonomy.classifiedDomain,
-    specificIssue: matchedSubcat.name,
+    originalDomain: selectedDomainRaw || classifiedDomain,
+    classifiedDomain,
+    specificIssue,
     priority,
     priorityLevel,
     priorityScore,
-    confidence,
+    confidence: hybrid.confidenceScore,
     recommendedDepartment,
     recommendedOrganization,
+    lineDepartment,
+    authority,
     organizationType,
     routedTo,
     jurisdiction,
@@ -1109,9 +1173,16 @@ export async function runAIProblemAnalysis(input: CivicProblemInput): Promise<AI
     stakeholderRecommendations: deptMatch.stakeholderRecommendations,
     keyDetails,
     routingRecommendation,
-    validationNotice: "AI Recommendation — Requires Human Validation",
+    validationNotice: hybrid.needsReview
+      ? "Low Model Confidence — Administrative Review Flagged"
+      : "Hybrid Civic AI Recommendation — Requires Official Verification",
     status: "AI Analysis Complete",
     factors,
     timestamp: new Date().toISOString(),
+    secondaryContext: hybrid.secondaryContext,
+    confidenceTier: hybrid.confidenceTier,
+    needsReview: hybrid.needsReview,
+    explanation: hybrid.explanation,
+    hybridResult: hybrid,
   };
 }

@@ -4,11 +4,7 @@ import {
   Inbox,
   MapPin,
   AlertTriangle,
-  Bot,
-  Copy,
   Building2,
-  GraduationCap,
-  Briefcase,
   BarChart3,
   Bell,
   Settings,
@@ -44,17 +40,72 @@ interface ULBDashboardProps {
   flash: (msg: string) => void;
 }
 
-export function ULBDashboard({ user, profile, partnerIdentity, go, flash }: ULBDashboardProps) {
+class ULBErrorBoundary extends React.Component<
+  { children: React.ReactNode; goHome: () => void },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  override componentDidCatch(error: Error, errorInfo: any) {
+    console.error("ULBDashboard Render Error:", error, errorInfo);
+  }
+
+  override render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-[500px] flex flex-col items-center justify-center p-8 text-center bg-slate-50">
+          <div className="p-6 bg-white border border-slate-200 rounded-2xl max-w-md shadow-sm space-y-3">
+            <div className="h-10 w-10 mx-auto rounded-full bg-red-50 text-red-600 flex items-center justify-center font-bold text-lg">
+              ⚠️
+            </div>
+            <h3 className="text-base font-bold text-slate-900">ULB Dashboard Notice</h3>
+            <p className="text-xs text-slate-500">
+              {this.state.error?.message || "An unexpected error occurred while rendering the dashboard."}
+            </p>
+            <div className="flex justify-center gap-2 pt-2">
+              <button
+                onClick={() => this.setState({ hasError: false, error: null })}
+                className="px-4 py-2 bg-blue-600 text-white text-xs font-bold rounded-lg hover:bg-blue-700 transition"
+              >
+                Reload Dashboard
+              </button>
+              <button
+                onClick={this.props.goHome}
+                className="px-4 py-2 border border-slate-200 text-slate-700 text-xs font-bold rounded-lg hover:bg-slate-100 transition"
+              >
+                Return Home
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export function ULBDashboard(props: ULBDashboardProps) {
+  return (
+    <ULBErrorBoundary goHome={() => props.go("home")}>
+      <ULBDashboardContent {...props} />
+    </ULBErrorBoundary>
+  );
+}
+
+function ULBDashboardContent({ user, profile, partnerIdentity, go, flash }: ULBDashboardProps) {
   const [activeTab, setActiveTab] = useState<
     | "overview"
     | "inbox"
     | "map"
     | "priority"
-    | "ai-validation"
-    | "duplicates"
     | "departments"
-    | "universities"
-    | "industry"
     | "analytics"
     | "notifications"
     | "settings"
@@ -80,9 +131,6 @@ export function ULBDashboard({ user, profile, partnerIdentity, go, flash }: ULBD
   const [selectedChallenge, setSelectedChallenge] = useState<any | null>(null);
   const [submitModalOpen, setSubmitModalOpen] = useState(false);
   const [assignModalOpen, setAssignModalOpen] = useState(false);
-  const [innovationModalOpen, setInnovationModalOpen] = useState(false);
-  const [mergeModalOpen, setMergeModalOpen] = useState(false);
-  const [targetMergeChallenge, setTargetMergeChallenge] = useState<any | null>(null);
 
   // Submission Form State
   const [newTitle, setNewTitle] = useState("");
@@ -147,8 +195,8 @@ export function ULBDashboard({ user, profile, partnerIdentity, go, flash }: ULBD
     return challenges.filter((c) => {
       const matchesSearch =
         !searchQuery.trim() ||
-        c.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        c.public_id.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (c.title && c.title.toLowerCase().includes(searchQuery.toLowerCase())) ||
+        (c.public_id && c.public_id.toLowerCase().includes(searchQuery.toLowerCase())) ||
         (c.locality && c.locality.toLowerCase().includes(searchQuery.toLowerCase())) ||
         (c.summary && c.summary.toLowerCase().includes(searchQuery.toLowerCase()));
 
@@ -159,7 +207,7 @@ export function ULBDashboard({ user, profile, partnerIdentity, go, flash }: ULBD
 
       const matchesCategory =
         filterCategory === "all" ||
-        c.domain.toLowerCase() === filterCategory.toLowerCase();
+        (c.domain && c.domain.toLowerCase() === filterCategory.toLowerCase());
 
       const matchesPriority =
         filterPriority === "all" ||
@@ -167,14 +215,14 @@ export function ULBDashboard({ user, profile, partnerIdentity, go, flash }: ULBD
 
       const matchesStatus =
         filterStatus === "all" ||
-        c.stage.toLowerCase() === filterStatus.toLowerCase();
+        (c.stage && c.stage.toLowerCase() === filterStatus.toLowerCase());
 
       const matchesVerification =
         filterVerification === "all" ||
         (filterVerification === "verified" && ["officially_verified", "community_verified"].includes(c.verification)) ||
         (filterVerification === "unverified" && c.verification === "unverified");
 
-      return (
+      return Boolean(
         matchesSearch &&
         matchesWard &&
         matchesCategory &&
@@ -192,7 +240,6 @@ export function ULBDashboard({ user, profile, partnerIdentity, go, flash }: ULBD
     const inProgress = challenges.filter((c) => ["assigned", "validated", "prototype", "pilot", "impact"].includes(c.stage)).length;
     const resolved = challenges.filter((c) => ["completed", "solved"].includes(c.stage)).length;
     const criticalHigh = challenges.filter((c) => ["CRITICAL", "HIGH"].includes(c.priority_level) || c.priority_score >= 70).length;
-    const duplicates = challenges.filter((c) => c.duplicate_status === "merged" || c.merged_into_id).length;
     const requiresVerification = challenges.filter((c) => c.verification === "unverified").length;
     const totalAffected = challenges.reduce((acc, c) => acc + (c.affected_population || 0), 0);
 
@@ -202,7 +249,6 @@ export function ULBDashboard({ user, profile, partnerIdentity, go, flash }: ULBD
       inProgress,
       resolved,
       criticalHigh,
-      duplicates,
       requiresVerification,
       totalAffected,
       resolutionRate: total > 0 ? ((resolved / total) * 100).toFixed(1) : "0.0"
@@ -226,14 +272,6 @@ export function ULBDashboard({ user, profile, partnerIdentity, go, flash }: ULBD
       .sort((a, b) => b.priority_score - a.priority_score);
   }, [challenges]);
 
-  // Universities List from DB
-  const universityPartners = useMemo(() => {
-    return organizations.filter(
-      (o) =>
-        (o.organization_type && o.organization_type.toLowerCase() === "university") ||
-        (o.name && (o.name.toLowerCase().includes("institute") || o.name.toLowerCase().includes("university") || o.name.toLowerCase().includes("college")))
-    );
-  }, [organizations]);
 
   // Handle Direct Submission
   const handleDirectSubmit = async (e: React.FormEvent) => {
@@ -361,22 +399,6 @@ export function ULBDashboard({ user, profile, partnerIdentity, go, flash }: ULBD
     }
   };
 
-  // Handle Duplicate Merge
-  const handleMergeDuplicate = async (masterId: string, duplicateId: string) => {
-    try {
-      const { error } = await supabase!.rpc("ulb_merge_challenges", {
-        master_uuid: masterId,
-        duplicate_uuid: duplicateId,
-        merge_note: `Merged into master challenge by ${ulbName}`
-      });
-      if (error) throw error;
-      flash("Duplicate merged into master challenge.");
-      setMergeModalOpen(false);
-      await loadData();
-    } catch (e: any) {
-      flash(e.message || "Merge failed");
-    }
-  };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col md:flex-row">
@@ -425,16 +447,7 @@ export function ULBDashboard({ user, profile, partnerIdentity, go, flash }: ULBD
               badge: stats.criticalHigh > 0 ? stats.criticalHigh : undefined,
               badgeColor: "bg-red-500 text-white"
             },
-            { id: "ai-validation", label: "AI Validation", icon: Bot },
-            {
-              id: "duplicates",
-              label: "Duplicate Reports",
-              icon: Copy,
-              badge: stats.duplicates > 0 ? stats.duplicates : undefined
-            },
             { id: "departments", label: "Departments & SLA", icon: Building2 },
-            { id: "universities", label: "University Innovation", icon: GraduationCap },
-            { id: "industry", label: "Industry & CSR", icon: Briefcase },
             { id: "analytics", label: "Municipal Analytics", icon: BarChart3 },
             {
               id: "notifications",
@@ -501,16 +514,8 @@ export function ULBDashboard({ user, profile, partnerIdentity, go, flash }: ULBD
                 ? "Urban Challenge Inbox"
                 : activeTab === "priority"
                 ? "Urgent & High Priority Action"
-                : activeTab === "ai-validation"
-                ? "AI Automated Problem Triage & Validation"
-                : activeTab === "duplicates"
-                ? "Duplicate Analysis & Merging"
                 : activeTab === "departments"
                 ? "Municipal Department Assignment & SLA Deadlines"
-                : activeTab === "universities"
-                ? "ULB → University R&D Collaboration"
-                : activeTab === "industry"
-                ? "Industry Enablers & CSR Funding"
                 : activeTab === "analytics"
                 ? "Municipal Performance & Domain Analytics"
                 : activeTab === "map"
@@ -589,21 +594,13 @@ export function ULBDashboard({ user, profile, partnerIdentity, go, flash }: ULBD
           </section>
 
           {/* Secondary Stats Strip */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="bg-red-50 border border-red-200/60 p-3 rounded-lg flex items-center justify-between">
               <div>
                 <span className="text-[11px] font-bold text-red-800">Critical / High Priority</span>
                 <p className="text-lg font-black text-red-700">{stats.criticalHigh}</p>
               </div>
               <AlertTriangle size={20} className="text-red-500 opacity-80" />
-            </div>
-
-            <div className="bg-amber-50 border border-amber-200/60 p-3 rounded-lg flex items-center justify-between">
-              <div>
-                <span className="text-[11px] font-bold text-amber-800">Duplicate Reports</span>
-                <p className="text-lg font-black text-amber-700">{stats.duplicates}</p>
-              </div>
-              <Copy size={20} className="text-amber-500 opacity-80" />
             </div>
 
             <div className="bg-purple-50 border border-purple-200/60 p-3 rounded-lg flex items-center justify-between">
@@ -1179,160 +1176,7 @@ export function ULBDashboard({ user, profile, partnerIdentity, go, flash }: ULBD
             </div>
           )}
 
-          {/* 5. AI VALIDATION RESULTS TAB */}
-          {activeTab === "ai-validation" && (
-            <div className="space-y-4">
-              <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
-                <h3 className="font-bold text-slate-800 text-sm">
-                  🤖 Automated AI Problem Validation & Triage
-                </h3>
-                <p className="text-xs text-slate-500 mt-1">
-                  Computer vision & NLP analysis of citizen submissions. Highlighted cases flag low-confidence predictions requiring human verification.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {challenges.map((c) => {
-                  const hasLowConfidence = c.priority_score < 40 || !c.public_latitude;
-                  return (
-                    <div
-                      key={c.id}
-                      className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-3"
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-mono text-xs font-bold text-blue-600">
-                          {c.public_id}
-                        </span>
-                        <span
-                          className={`text-[10px] font-bold px-2 py-0.5 rounded ${
-                            hasLowConfidence
-                              ? "bg-amber-100 text-amber-800 border border-amber-300"
-                              : "bg-emerald-100 text-emerald-800"
-                          }`}
-                        >
-                          {hasLowConfidence ? "⚠️ Low Confidence" : "✓ High Confidence"}
-                        </span>
-                      </div>
-
-                      <h4 className="font-bold text-xs text-slate-900 truncate">{c.title}</h4>
-
-                      {/* AI Metrics Table */}
-                      <div className="space-y-1.5 text-xs bg-slate-50 p-3 rounded-lg border border-slate-100">
-                        <div className="flex justify-between">
-                          <span className="text-slate-500">Image Relevance:</span>
-                          <span className="font-bold text-slate-800">
-                            {c.preview_image_path ? "✓ 94%" : "No media attached"}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-500">Description Match:</span>
-                          <span className="font-bold text-slate-800">
-                            {c.summary ? "✓ High (91%)" : "Brief description"}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-500">Location Captured:</span>
-                          <span className="font-bold text-slate-800">
-                            {c.public_latitude ? "✓ GPS Confirmed" : "⚠️ Approximate only"}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-500">Duplicate Probability:</span>
-                          <span className="font-bold text-slate-800">
-                            {c.duplicate_status ? "High (Merged)" : "8% (Unique)"}
-                          </span>
-                        </div>
-                        <div className="flex justify-between border-t border-slate-200 pt-1">
-                          <span className="text-slate-700 font-bold">Category Detected:</span>
-                          <span className="font-bold text-blue-600">{c.domain}</span>
-                        </div>
-                      </div>
-
-                      {hasLowConfidence ? (
-                        <div className="p-2.5 rounded bg-amber-50 border border-amber-200 text-[11px] text-amber-800">
-                          <b>⚠️ Human Review Required:</b> Inconclusive imagery or missing coordinates.
-                        </div>
-                      ) : (
-                        <div className="p-2.5 rounded bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-800">
-                          <b>✓ AI Recommendation:</b> Validated for department task allocation.
-                        </div>
-                      )}
-
-                      <div className="flex justify-end gap-2 pt-2">
-                        {c.verification === "unverified" && (
-                          <button
-                            onClick={() => void handleVerify(c)}
-                            className="px-2.5 py-1 text-xs font-bold bg-emerald-600 text-white rounded hover:bg-emerald-700"
-                          >
-                            Verify
-                          </button>
-                        )}
-                        <button
-                          onClick={() => setSelectedChallenge(c)}
-                          className="px-2.5 py-1 text-xs font-bold border border-slate-300 rounded text-slate-700 hover:bg-slate-50"
-                        >
-                          View Details
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* 6. DUPLICATE REPORTS TAB */}
-          {activeTab === "duplicates" && (
-            <div className="space-y-4">
-              <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
-                <h3 className="font-bold text-slate-800 text-sm">
-                  🔄 Duplicate & Redundant Report Analysis
-                </h3>
-                <p className="text-xs text-slate-500 mt-1">
-                  Resolve multiple citizens reporting the same street pothole, overflowing bin, or drainage issue. Merging groups reposts under one Master Challenge.
-                </p>
-              </div>
-
-              <div className="space-y-3">
-                {challenges
-                  .filter((c) => c.merged_into_id || c.duplicate_status === "merged")
-                  .map((c) => (
-                    <div
-                      key={c.id}
-                      className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3"
-                    >
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-xs font-bold text-amber-600">
-                            {c.public_id}
-                          </span>
-                          <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-bold">
-                            Merged Duplicate
-                          </span>
-                          <span className="text-xs text-slate-500">{c.domain}</span>
-                        </div>
-                        <h4 className="font-bold text-xs text-slate-800">{c.title}</h4>
-                        <p className="text-[11px] text-slate-500">
-                          {c.rejection_reason || "Merged into master record"}
-                        </p>
-                      </div>
-                      <span className="text-xs text-slate-400 font-mono">
-                        Target Master: {c.merged_into_id ? "Linked" : "Local"}
-                      </span>
-                    </div>
-                  ))}
-
-                {challenges.filter((c) => c.merged_into_id || c.duplicate_status === "merged").length ===
-                  0 && (
-                  <div className="py-12 bg-white rounded-xl border border-slate-200 text-center text-slate-400 text-xs">
-                    No duplicate reports merged. All current challenges are distinct individual submissions.
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* 7. DEPARTMENTS & SLA TAB */}
+          {/* 5. DEPARTMENTS & SLA TAB */}
           {activeTab === "departments" && (
             <div className="space-y-4">
               <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
@@ -1404,116 +1248,7 @@ export function ULBDashboard({ user, profile, partnerIdentity, go, flash }: ULBD
             </div>
           )}
 
-          {/* 8. UNIVERSITY COLLABORATION TAB */}
-          {activeTab === "universities" && (
-            <div className="space-y-4">
-              <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 className="font-bold text-slate-800 text-sm">
-                    🎓 ULB → Higher Education Innovation Matching
-                  </h3>
-                  <p className="text-xs text-slate-500 mt-1">
-                    Route complex urban engineering challenges to university engineering labs, faculty mentors, and student research teams.
-                  </p>
-                </div>
-                <button
-                  onClick={() => setInnovationModalOpen(true)}
-                  className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 transition flex items-center gap-1.5"
-                >
-                  <Sparkles size={14} /> Request Innovation Support
-                </button>
-              </div>
-
-              {/* Registered Universities in Platform */}
-              <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
-                <h4 className="font-bold text-xs text-slate-800 uppercase tracking-wider">
-                  Partner Higher Education Institutions (HEIs) ({universityPartners.length})
-                </h4>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  {universityPartners.map((u) => (
-                    <div
-                      key={u.id}
-                      className="p-3.5 rounded-lg border border-slate-200 bg-slate-50 space-y-2"
-                    >
-                      <div className="flex items-center gap-2">
-                        <GraduationCap size={16} className="text-blue-600" />
-                        <h5 className="font-bold text-xs text-slate-900 truncate">{u.name}</h5>
-                      </div>
-                      <p className="text-[11px] text-slate-500">
-                        📍 {u.district || "Regional Campus"}
-                      </p>
-                      <div className="flex flex-wrap gap-1 pt-1">
-                        {(u.expertise || ["Computer Science", "Civil Engineering"]).slice(0, 3).map((e: string) => (
-                          <span
-                            key={e}
-                            className="text-[10px] font-semibold bg-white border border-slate-200 px-1.5 py-0.5 rounded text-slate-600"
-                          >
-                            {e}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-
-                  {universityPartners.length === 0 && (
-                    <div className="col-span-3 py-6 text-center text-slate-400 text-xs">
-                      No universities registered yet. Institutional registrations will appear here.
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* 9. INDUSTRY & CSR TAB */}
-          {activeTab === "industry" && (
-            <div className="space-y-4">
-              <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
-                <h3 className="font-bold text-slate-800 text-sm">
-                  🤝 Industry Partnerships & CSR Grants
-                </h3>
-                <p className="text-xs text-slate-500 mt-1">
-                  Private sector technology partners and corporate sponsors co-funding civic prototypes, hardware, and field pilots.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {organizations
-                  .filter((o) => o.organization_type?.toLowerCase() === "industry")
-                  .map((ind) => (
-                    <div
-                      key={ind.id}
-                      className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-2"
-                    >
-                      <div className="flex items-center justify-between">
-                        <h4 className="font-bold text-xs text-slate-900">{ind.name}</h4>
-                        <span className="text-[10px] font-bold bg-blue-50 text-blue-700 px-2 py-0.5 rounded">
-                          Corporate Enabler
-                        </span>
-                      </div>
-                      <p className="text-xs text-slate-500">
-                        Capabilities: {(ind.capabilities || []).join(", ") || "CSR Funding & Mentoring"}
-                      </p>
-                      <div className="flex justify-end pt-2 border-t border-slate-100">
-                        <span className="text-xs font-semibold text-emerald-600">
-                          Active CSR Partner
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-
-                {organizations.filter((o) => o.organization_type?.toLowerCase() === "industry")
-                  .length === 0 && (
-                  <div className="col-span-2 py-8 bg-white rounded-xl border border-slate-200 text-center text-slate-400 text-xs">
-                    No industry partners currently registered. Corporate commitments will be tracked here.
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* 10. ANALYTICS TAB */}
+          {/* 6. ANALYTICS TAB */}
           {activeTab === "analytics" && (
             <div className="space-y-4">
               <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
@@ -2010,73 +1745,6 @@ export function ULBDashboard({ user, profile, partnerIdentity, go, flash }: ULBD
         </div>
       )}
 
-      {/* ─── MODAL: REQUEST INNOVATION SUPPORT FROM HEIs ─── */}
-      {innovationModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm grid place-items-center p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div>
-                <h3 className="font-bold text-slate-900 text-base">
-                  Request Higher Education R&D Support
-                </h3>
-                <p className="text-xs text-slate-500">
-                  SMART MATCH challenge with registered universities
-                </p>
-              </div>
-              <button
-                onClick={() => setInnovationModalOpen(false)}
-                className="size-8 rounded-lg hover:bg-slate-100 grid place-items-center text-slate-500"
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <div className="space-y-3 text-xs">
-              <p className="text-slate-600">
-                Urban problems requiring AI optimization, IoT sensor arrays, or advanced civil engineering prototypes are published directly to the University Innovation Network.
-              </p>
-
-              <div className="space-y-2">
-                <label className="font-bold text-slate-700 block">Matched Universities:</label>
-                {universityPartners.map((uni, i) => (
-                  <div
-                    key={uni.id}
-                    className="p-3 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-between"
-                  >
-                    <div>
-                      <b className="text-slate-800 text-xs block">{uni.name}</b>
-                      <span className="text-[11px] text-slate-500">
-                        Expertise: {(uni.expertise || []).join(", ") || "Engineering"}
-                      </span>
-                    </div>
-                    <span className="text-xs font-mono font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded">
-                      {92 - i * 6}% Match
-                    </span>
-                  </div>
-                ))}
-              </div>
-
-              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
-                <button
-                  onClick={() => setInnovationModalOpen(false)}
-                  className="px-4 py-2 border border-slate-300 rounded-lg font-bold text-slate-700"
-                >
-                  Close
-                </button>
-                <button
-                  onClick={() => {
-                    flash("Innovation challenge published to University Innovation pipeline.");
-                    setInnovationModalOpen(false);
-                  }}
-                  className="px-5 py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700"
-                >
-                  Dispatch R&D Request
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

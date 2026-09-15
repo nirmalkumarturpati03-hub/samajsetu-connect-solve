@@ -41,6 +41,7 @@ import {
 } from "lucide-react";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
+import { CollaborationChatModal } from "./CollaborationChatModal";
 
 interface IndustryDashboardProps {
   user: User | null;
@@ -145,6 +146,13 @@ export function IndustryDashboard({
   const [commitmentNote, setCommitmentNote] = useState<string>("");
   const [submittingSupport, setSubmittingSupport] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string>("");
+  const [activeChatCollab, setActiveChatCollab] = useState<{
+    collaborationId: string;
+    projectId: string;
+    projectTitle: string;
+    requestingOrgName: string;
+    targetOrgName: string;
+  } | null>(null);
 
   // Determine active organization identity from real account
   const orgName =
@@ -344,9 +352,9 @@ export function IndustryDashboard({
         <div>
           {/* Logo */}
           <div className="h-16 border-b border-slate-200 px-6 flex items-center gap-3">
-            <img src="/samajsetu-community-logo.svg" alt="SamajSetu" className="h-8 w-auto" />
+            <img src="/samajsetu-community-logo.svg" alt="Samaj Setu" className="h-8 w-auto" />
             <div className="flex flex-col">
-              <span className="font-bold text-sm text-slate-900 tracking-tight">SamajSetu</span>
+              <span className="font-bold text-sm text-slate-900 tracking-tight">Samaj Setu</span>
               <span className="text-[10px] font-semibold text-emerald-700 uppercase tracking-wider">Industry & CSR</span>
             </div>
           </div>
@@ -967,9 +975,27 @@ export function IndustryDashboard({
                             <span className="font-bold text-sm text-slate-900">₹{commitment.amount.toLocaleString()}</span>
                           </div>
                         )}
-                        <span className="px-3 py-1 rounded-full bg-blue-50 text-blue-700 text-xs font-semibold capitalize">
-                          {commitment.status}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setActiveChatCollab({
+                                collaborationId: commitment.id,
+                                projectId: commitment.project_id,
+                                projectTitle: commitment.projects?.title || "Collaboration Project",
+                                requestingOrgName: orgName,
+                                targetOrgName: "Lead University Innovation Team",
+                              });
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition shadow-2xs"
+                          >
+                            <MessageSquare size={13} />
+                            <span>Persistent Chat</span>
+                          </button>
+                          <span className="px-3 py-1 rounded-full bg-blue-50 text-blue-700 text-xs font-semibold capitalize">
+                            {commitment.status}
+                          </span>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -1408,6 +1434,21 @@ export function IndustryDashboard({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Persistent Collaboration Chat Modal */}
+      {activeChatCollab && (
+        <CollaborationChatModal
+          isOpen={Boolean(activeChatCollab)}
+          onClose={() => setActiveChatCollab(null)}
+          collaborationId={activeChatCollab.collaborationId}
+          projectId={activeChatCollab.projectId}
+          projectTitle={activeChatCollab.projectTitle}
+          requestingOrgName={activeChatCollab.requestingOrgName}
+          targetOrgName={activeChatCollab.targetOrgName}
+          currentUser={user}
+          currentOrgId={partnerIdentity?.id}
+        />
       )}
     </div>
   );

@@ -59,7 +59,7 @@ export function Shell({ children }: { children: ReactNode }) {
       <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur">
         <div className="container-page flex h-16 items-center justify-between">
           <a href="/" className="flex items-center">
-            <img src="/samajsetu-community-logo.svg" alt="SamajSetu" className="h-9 w-auto" />
+            <img src="/samajsetu-community-logo.svg" alt="Samaj Setu" className="h-9 w-auto" />
           </a>
           <nav className="hidden items-center gap-5 text-sm font-semibold md:flex">{nav}</nav>
           <button className="md:hidden" onClick={() => setOpen((v) => !v)} aria-label="Menu">
@@ -75,7 +75,7 @@ export function Shell({ children }: { children: ReactNode }) {
       {children}
       <footer className="border-t border-border bg-surface">
         <div className="container-page flex flex-col gap-1 py-8 text-xs text-muted-foreground">
-          <img src="/samajsetu-community-logo.svg" alt="SamajSetu" className="h-7 w-auto" />
+          <img src="/samajsetu-community-logo.svg" alt="Samaj Setu" className="h-7 w-auto" />
           <p>Connecting Community Problems with Collaborative Solutions.</p>
           <p>Smart India Hackathon 2026 · SIH26043 · Government of Jharkhand · Demo build.</p>
         </div>

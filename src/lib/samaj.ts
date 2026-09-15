@@ -28,7 +28,6 @@ export const ORG_TYPES = [
   "University",
   "College",
   "Polytechnic",
-  "NGO",
   "Government Department",
   "MSME / Industry",
   "Community Group",
@@ -36,7 +35,7 @@ export const ORG_TYPES = [
 
 export const PROBLEM_STATUS_FLOW = [
   { key: "reported", label: "Citizen report" },
-  { key: "assigned", label: "Institution / NGO assigned" },
+  { key: "assigned", label: "Institution assigned" },
   { key: "in_progress", label: "Tasks assigned & work in progress" },
   { key: "verification", label: "SPO verification" },
   { key: "resolved", label: "Resolved" },

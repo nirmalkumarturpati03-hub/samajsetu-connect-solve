@@ -32,6 +32,7 @@ import {
   Lightbulb,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { requestRegistrationOtp, verifyRegistrationOtp } from "@/lib/otp.functions";
 
 interface IndustryPartnerRegistrationProps {
   close: () => void;
@@ -131,27 +132,8 @@ const PARTNERSHIP_INTERESTS: PartnershipOption[] = [
   },
 ];
 
-const INDIAN_STATES = [
-  "Andhra Pradesh",
-  "Jharkhand",
-  "Karnataka",
-  "Maharashtra",
-  "Delhi (NCT)",
-  "Tamil Nadu",
-  "Telangana",
-  "Uttar Pradesh",
-  "Gujarat",
-  "West Bengal",
-  "Odisha",
-  "Kerala",
-  "Madhya Pradesh",
-  "Rajasthan",
-  "Punjab",
-  "Haryana",
-  "Bihar",
-  "Assam",
-  "Other State / UT",
-];
+import { INDIAN_STATES, getDistrictsForState } from "@/data/india-geo";
+
 
 export function IndustryPartnerRegistration({
   close,
@@ -185,11 +167,13 @@ export function IndustryPartnerRegistration({
 
   // Step 5: Verification & Security
   const [otpCode, setOtpCode] = useState("");
-  const [generatedOtp, setGeneratedOtp] = useState<string | null>(null);
+  const [otpRequestId, setOtpRequestId] = useState("");
   const [isOtpSent, setIsOtpSent] = useState(false);
   const [isEmailVerified, setIsEmailVerified] = useState(false);
   const [otpError, setOtpError] = useState("");
+  const [otpSuccessMsg, setOtpSuccessMsg] = useState("");
   const [otpTimer, setOtpTimer] = useState(0);
+  const [otpBusy, setOtpBusy] = useState(false);
 
   const [authDoc, setAuthDoc] = useState<File | null>(null);
   const [password, setPassword] = useState("");
@@ -206,7 +190,7 @@ export function IndustryPartnerRegistration({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // OTP Countdown timer
+  // OTP Countdown timer (strictly 60 seconds)
   useEffect(() => {
     if (otpTimer > 0) {
       const timer = setTimeout(() => setOtpTimer(otpTimer - 1), 1000);
@@ -215,28 +199,61 @@ export function IndustryPartnerRegistration({
     return undefined;
   }, [otpTimer]);
 
-  const handleSendOtp = () => {
+  const handleSendOtp = async () => {
     if (!officialEmail.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(officialEmail)) {
       setOtpError("Please ensure a valid official email address was entered in Step 2.");
       return;
     }
     setOtpError("");
-    const mockCode = Math.floor(100000 + Math.random() * 900000).toString();
-    setGeneratedOtp(mockCode);
-    setIsOtpSent(true);
-    setOtpTimer(60);
+    setOtpSuccessMsg("");
+    setOtpBusy(true);
+
+    try {
+      const res = await requestRegistrationOtp({
+        data: {
+          email: officialEmail.trim(),
+          name: repName.trim() || orgName.trim() || "Industry Representative",
+          purpose: "registration_verification",
+        },
+      });
+
+      setOtpRequestId(res.requestId);
+      setIsOtpSent(true);
+      setOtpTimer(60); // strictly 60 seconds validity
+      setOtpSuccessMsg(res.message);
+    } catch (err: any) {
+      setOtpError(err?.message || "Failed to dispatch verification code. Please retry.");
+    } finally {
+      setOtpBusy(false);
+    }
   };
 
-  const handleVerifyOtp = () => {
-    if (!otpCode.trim()) {
+  const handleVerifyOtp = async () => {
+    if (!otpCode.trim() || otpCode.trim().length !== 6) {
       setOtpError("Please enter the 6-digit code.");
       return;
     }
-    if (otpCode.trim() === generatedOtp || otpCode.trim() === "123456") {
+    if (!otpRequestId) {
+      setOtpError("No active verification session. Please request a new OTP.");
+      return;
+    }
+    setOtpError("");
+    setOtpBusy(true);
+
+    try {
+      await verifyRegistrationOtp({
+        data: {
+          email: officialEmail.trim(),
+          requestId: otpRequestId,
+          otp: otpCode.trim(),
+        },
+      });
       setIsEmailVerified(true);
-      setOtpError("");
-    } else {
-      setOtpError("Invalid verification code. Please check and retry.");
+      setOtpSuccessMsg("Official email address verified successfully.");
+    } catch (err: any) {
+      setOtpError(err?.message || "Invalid or expired verification code.");
+    } finally {
+      setOtpBusy(false);
     }
   };
 
@@ -428,7 +445,7 @@ export function IndustryPartnerRegistration({
                 Industry & Innovation Partner Registration
               </h1>
               <p className="mt-1 text-xs sm:text-sm text-slate-600 leading-relaxed max-w-xl">
-                Join SamajSetu to discover societal challenges, collaborate with universities and communities, and support solutions through mentoring, technology, funding and implementation.
+                Join Samaj Setu to discover societal challenges, collaborate with universities and communities, and support solutions through mentoring, technology, funding and implementation.
               </p>
             </div>
           </div>
@@ -561,7 +578,7 @@ export function IndustryPartnerRegistration({
                 onClick={close}
                 className="w-full sm:w-auto rounded-xl border border-slate-300 bg-white px-6 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
               >
-                Back to SamajSetu
+                Back to Samaj Setu
               </button>
             </div>
           </div>
@@ -669,10 +686,13 @@ export function IndustryPartnerRegistration({
                     <select
                       required
                       value={state}
-                      onChange={(e) => setState(e.target.value)}
+                      onChange={(e) => {
+                        setState(e.target.value);
+                        setDistrict("");
+                      }}
                       className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
                     >
-                      <option value="">-- Select State --</option>
+                      <option value="">-- Select State / UT --</option>
                       {INDIAN_STATES.map((st) => (
                         <option key={st} value={st}>
                           {st}
@@ -685,14 +705,31 @@ export function IndustryPartnerRegistration({
                     <label className="block text-xs font-semibold text-slate-700 mb-1.5">
                       District <span className="text-rose-600">*</span>
                     </label>
-                    <input
-                      type="text"
-                      required
-                      value={district}
-                      onChange={(e) => setDistrict(e.target.value)}
-                      placeholder="e.g. Bengaluru Urban, Ranchi, Pune"
-                      className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
-                    />
+                    {state && getDistrictsForState(state).length > 0 ? (
+                      <select
+                        required
+                        value={district}
+                        onChange={(e) => setDistrict(e.target.value)}
+                        className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm font-medium"
+                      >
+                        <option value="">-- Select District ({getDistrictsForState(state).length} in {state}) --</option>
+                        {getDistrictsForState(state).map((d) => (
+                          <option key={d} value={d}>
+                            {d}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <select
+                        required
+                        disabled={!state}
+                        value={district}
+                        onChange={(e) => setDistrict(e.target.value)}
+                        className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3.5 py-2.5 text-sm text-slate-500 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
+                      >
+                        <option value="">{state ? "-- Select District --" : "-- Select State First --"}</option>
+                      </select>
+                    )}
                   </div>
 
                   <div className="sm:col-span-2">
@@ -723,7 +760,7 @@ export function IndustryPartnerRegistration({
                     Step 2 — Authorized Representative
                   </h2>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    Official primary contact who represents your enterprise on SamajSetu.
+                    Official primary contact who represents your enterprise on Samaj Setu.
                   </p>
                 </div>
 
@@ -900,7 +937,7 @@ export function IndustryPartnerRegistration({
 
                 {/* Helper text as specified */}
                 <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-xs text-slate-600">
-                  💡 These capabilities help SamajSetu match your organization with relevant societal challenges and university projects.
+                  💡 These capabilities help Samaj Setu match your organization with relevant societal challenges and university projects.
                 </div>
               </div>
             )}
@@ -977,7 +1014,11 @@ export function IndustryPartnerRegistration({
                         Official Email Verification
                       </p>
                       <p className="text-[11px] text-slate-500">
-                        Sending verification code to <strong>{officialEmail}</strong>
+                        {isOtpSent ? (
+                          <>We've sent a 6-digit verification code to: <strong className="text-slate-700">{officialEmail}</strong></>
+                        ) : (
+                          <>Sending verification code to <strong>{officialEmail || "your email address"}</strong></>
+                        )}
                       </p>
                     </div>
                     {isEmailVerified ? (
@@ -989,13 +1030,31 @@ export function IndustryPartnerRegistration({
                       <button
                         type="button"
                         onClick={handleSendOtp}
-                        disabled={otpTimer > 0}
+                        disabled={otpBusy || otpTimer > 0}
                         className="inline-flex items-center justify-center rounded-lg bg-blue-700 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-blue-800 disabled:opacity-50 transition-colors shrink-0"
                       >
-                        {isOtpSent ? (otpTimer > 0 ? `Resend in ${otpTimer}s` : "Resend OTP") : "Send Verification OTP"}
+                        {otpBusy
+                          ? "Sending..."
+                          : isOtpSent
+                            ? otpTimer > 0
+                              ? `Resend in 00:${otpTimer < 10 ? "0" : ""}${otpTimer}`
+                              : "Resend OTP"
+                            : "Send Verification OTP"}
                       </button>
                     )}
                   </div>
+
+                  {otpError && (
+                    <p className="text-xs text-rose-600 font-medium bg-rose-50 p-2.5 rounded-lg border border-rose-200/70">
+                      {otpError}
+                    </p>
+                  )}
+
+                  {otpSuccessMsg && !isEmailVerified && (
+                    <p className="text-xs text-emerald-700 font-medium bg-emerald-50 p-2.5 rounded-lg border border-emerald-200/70">
+                      {otpSuccessMsg}
+                    </p>
+                  )}
 
                   {isOtpSent && !isEmailVerified && (
                     <div className="pt-2 border-t border-slate-200/80 space-y-2">
@@ -1006,24 +1065,26 @@ export function IndustryPartnerRegistration({
                           value={otpCode}
                           onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))}
                           placeholder="Enter 6-digit OTP"
+                          disabled={otpBusy}
                           className="w-full sm:w-48 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm tracking-widest text-center font-mono font-bold focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none"
                         />
                         <button
                           type="button"
                           onClick={handleVerifyOtp}
-                          className="rounded-lg bg-emerald-700 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-800 transition-colors"
+                          disabled={otpBusy || otpCode.length !== 6}
+                          className="rounded-lg bg-emerald-700 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-800 disabled:opacity-50 transition-colors"
                         >
-                          Verify OTP
+                          {otpBusy ? "Verifying..." : "Verify OTP"}
                         </button>
                       </div>
-                      {generatedOtp && (
-                        <p className="text-[11px] text-blue-700 font-medium bg-blue-50/80 p-2 rounded-lg border border-blue-200/50">
-                          Verification code sent to email. (Demo code: <strong>{generatedOtp}</strong>)
-                        </p>
-                      )}
-                      {otpError && (
-                        <p className="text-xs text-rose-600 font-medium">{otpError}</p>
-                      )}
+                      <div className="flex items-center justify-between text-[11px] text-slate-500 font-medium">
+                        <span>Code expires strictly in <strong>60 seconds</strong></span>
+                        {otpTimer > 0 ? (
+                          <span className="text-amber-700 font-mono font-semibold">00:{otpTimer < 10 ? "0" : ""}${otpTimer}</span>
+                        ) : (
+                          <span className="text-rose-600 font-semibold">Expired — Please click Resend OTP</span>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1138,7 +1199,7 @@ export function IndustryPartnerRegistration({
                         className="mt-0.5 size-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                       />
                       <span className="text-xs sm:text-sm text-slate-700">
-                        I agree to the SamajSetu <span className="font-semibold text-blue-700 underline">Terms of Use</span> and <span className="font-semibold text-blue-700 underline">Privacy Policy</span>.
+                        I agree to the Samaj Setu <span className="font-semibold text-blue-700 underline">Terms of Use</span> and <span className="font-semibold text-blue-700 underline">Privacy Policy</span>.
                       </span>
                     </label>
                   </div>

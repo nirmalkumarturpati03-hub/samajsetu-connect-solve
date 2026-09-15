@@ -23,6 +23,7 @@ import {
   FileCheck2,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { requestRegistrationOtp, verifyRegistrationOtp } from "@/lib/otp.functions";
 
 interface GovernmentOfficialRegistrationProps {
   close: () => void;
@@ -30,26 +31,129 @@ interface GovernmentOfficialRegistrationProps {
   complete: (type: string) => void;
 }
 
+export interface GovernmentDepartmentMapping {
+  domain: string;
+  department: string;
+  shortName: string;
+}
+
+export const GOVERNMENT_LINE_DEPARTMENTS: GovernmentDepartmentMapping[] = [
+  {
+    domain: "Roads & Infrastructure",
+    department: "Rural Development / Panchayati Raj / Public Works Department (PWD)",
+    shortName: "Public Works Department (PWD)",
+  },
+  {
+    domain: "Water Supply",
+    department: "Rural Water Supply & Sanitation / Public Health Engineering Department (PHED)",
+    shortName: "Public Health Engineering Department (PHED)",
+  },
+  {
+    domain: "Sanitation & Waste Management",
+    department: "Panchayati Raj / Rural Development / Municipal or Local Body authority",
+    shortName: "Sanitation & Waste Management Authority",
+  },
+  {
+    domain: "Electricity",
+    department: "State Electricity Distribution Company (DISCOM) / Energy Department",
+    shortName: "Electricity Distribution Company (DISCOM) / Energy Department",
+  },
+  {
+    domain: "Health & Medical Services",
+    department: "Health & Family Welfare Department",
+    shortName: "Health & Family Welfare Department",
+  },
+  {
+    domain: "Education",
+    department: "School Education Department / Department of School Education",
+    shortName: "School Education Department",
+  },
+  {
+    domain: "Agriculture",
+    department: "Agriculture Department",
+    shortName: "Agriculture Department",
+  },
+  {
+    domain: "Rural Development",
+    department: "Rural Development Department",
+    shortName: "Rural Development Department",
+  },
+  {
+    domain: "Women & Child Welfare",
+    department: "Women & Child Development (WCD) Department",
+    shortName: "Women & Child Development (WCD) Department",
+  },
+  {
+    domain: "Public Safety & Security",
+    department: "Police Department / Home Department",
+    shortName: "Police Department / Home Department",
+  },
+  {
+    domain: "Housing & Public Facilities",
+    department: "Rural Development / Housing Department / Panchayati Raj",
+    shortName: "Housing Department / Rural Development",
+  },
+  {
+    domain: "Transport",
+    department: "Transport Department / State Road Transport authority",
+    shortName: "Transport Department / State Road Transport",
+  },
+  {
+    domain: "Environment",
+    department: "Environment & Forest Department / State Pollution Control Board",
+    shortName: "Environment & Forest Department / Pollution Control Board",
+  },
+  {
+    domain: "Revenue & Land",
+    department: "Revenue Department",
+    shortName: "Revenue Department",
+  },
+  {
+    domain: "Social Welfare",
+    department: "Social Welfare Department",
+    shortName: "Social Welfare Department",
+  },
+  {
+    domain: "Other / General",
+    department: "District Administration / appropriate department after classification",
+    shortName: "District Administration (General Oversight)",
+  },
+];
+
 const PRESET_ORGANIZATIONS = [
-  { name: "Greater Visakhapatnam Municipal Corporation (GVMC)", category: "Urban Local Body (ULB)", state: "Andhra Pradesh", district: "Visakhapatnam" },
-  { name: "Bruhat Bengaluru Mahanagara Palike (BBMP)", category: "Urban Local Body (ULB)", state: "Karnataka", district: "Bengaluru Urban" },
-  { name: "Municipal Corporation of Delhi (MCD)", category: "Urban Local Body (ULB)", state: "Delhi (NCT)", district: "New Delhi" },
-  { name: "Greater Hyderabad Municipal Corporation (GHMC)", category: "Urban Local Body (ULB)", state: "Telangana", district: "Hyderabad" },
-  { name: "Brihanmumbai Municipal Corporation (BMC)", category: "Urban Local Body (ULB)", state: "Maharashtra", district: "Mumbai" },
-  { name: "Ranchi Municipal Corporation (RMC)", category: "Urban Local Body (ULB)", state: "Jharkhand", district: "Ranchi" },
-  { name: "Dhanbad Municipal Corporation", category: "Urban Local Body (ULB)", state: "Jharkhand", district: "Dhanbad" },
-  { name: "Zilla Parishad Ranchi", category: "Panchayati Raj Institution (PRI)", state: "Jharkhand", district: "Ranchi" },
-  { name: "Zilla Parishad East Singhbhum", category: "Panchayati Raj Institution (PRI)", state: "Jharkhand", district: "East Singhbhum" },
-  { name: "Zilla Parishad Visakhapatnam", category: "Panchayati Raj Institution (PRI)", state: "Andhra Pradesh", district: "Visakhapatnam" },
-  { name: "District Panchayat Office, Krishna", category: "Panchayati Raj Institution (PRI)", state: "Andhra Pradesh", district: "Krishna" },
-  { name: "Block Development Office, Kanke", category: "Panchayati Raj Institution (PRI)", state: "Jharkhand", district: "Ranchi" },
-  { name: "Department of Drinking Water & Sanitation", category: "Government Department", state: "Jharkhand", district: "Ranchi" },
-  { name: "Public Works Department (PWD)", category: "Government Department", state: "Jharkhand", district: "Ranchi" },
-  { name: "Urban Development & Housing Department", category: "Government Department", state: "Jharkhand", district: "Ranchi" },
-  { name: "Department of Health & Family Welfare", category: "Government Department", state: "Jharkhand", district: "Ranchi" },
-  { name: "Andhra Pradesh State Disaster Management Authority (APSDMA)", category: "Government Department", state: "Andhra Pradesh", district: "Visakhapatnam" },
-  { name: "Department of School Education & Literacy", category: "Government Department", state: "Jharkhand", district: "Ranchi" },
-  { name: "Panchayati Raj & Rural Development Department", category: "Government Department", state: "Andhra Pradesh", district: "Visakhapatnam" },
+  // Urban Local Bodies
+  { name: "Greater Visakhapatnam Municipal Corporation (GVMC)", category: "Urban Local Body (ULB)", state: "Andhra Pradesh", district: "Visakhapatnam", sector: "Sanitation & Waste Management" },
+  { name: "Bruhat Bengaluru Mahanagara Palike (BBMP)", category: "Urban Local Body (ULB)", state: "Karnataka", district: "Bengaluru Urban", sector: "Sanitation & Waste Management" },
+  { name: "Municipal Corporation of Delhi (MCD)", category: "Urban Local Body (ULB)", state: "Delhi (NCT)", district: "New Delhi", sector: "Sanitation & Waste Management" },
+  { name: "Greater Hyderabad Municipal Corporation (GHMC)", category: "Urban Local Body (ULB)", state: "Telangana", district: "Hyderabad", sector: "Sanitation & Waste Management" },
+  { name: "Brihanmumbai Municipal Corporation (BMC)", category: "Urban Local Body (ULB)", state: "Maharashtra", district: "Mumbai", sector: "Sanitation & Waste Management" },
+  { name: "Ranchi Municipal Corporation (RMC)", category: "Urban Local Body (ULB)", state: "Jharkhand", district: "Ranchi", sector: "Sanitation & Waste Management" },
+  { name: "Dhanbad Municipal Corporation", category: "Urban Local Body (ULB)", state: "Jharkhand", district: "Dhanbad", sector: "Sanitation & Waste Management" },
+  
+  // Panchayati Raj Institutions
+  { name: "Zilla Parishad Ranchi", category: "Panchayati Raj Institution (PRI)", state: "Jharkhand", district: "Ranchi", sector: "Rural Development" },
+  { name: "Zilla Parishad East Singhbhum", category: "Panchayati Raj Institution (PRI)", state: "Jharkhand", district: "East Singhbhum", sector: "Rural Development" },
+  { name: "Zilla Parishad Visakhapatnam", category: "Panchayati Raj Institution (PRI)", state: "Andhra Pradesh", district: "Visakhapatnam", sector: "Rural Development" },
+  { name: "District Panchayat Office, Krishna", category: "Panchayati Raj Institution (PRI)", state: "Andhra Pradesh", district: "Krishna", sector: "Rural Development" },
+  { name: "Block Development Office, Kanke", category: "Panchayati Raj Institution (PRI)", state: "Jharkhand", district: "Ranchi", sector: "Rural Development" },
+  
+  // Government Line Departments (All 16 Official Domains)
+  { name: "Public Works Department (PWD)", category: "Government Department", state: "Jharkhand", district: "Ranchi", sector: "Rural Development / Panchayati Raj / Public Works Department (PWD)" },
+  { name: "Rural Water Supply & Sanitation / PHED", category: "Government Department", state: "Jharkhand", district: "Ranchi", sector: "Rural Water Supply & Sanitation / Public Health Engineering Department (PHED)" },
+  { name: "Panchayati Raj & Rural Sanitation Authority", category: "Government Department", state: "Jharkhand", district: "Ranchi", sector: "Panchayati Raj / Rural Development / Municipal or Local Body authority" },
+  { name: "Jharkhand Bijli Vitran Nigam (DISCOM) / Energy Dept", category: "Government Department", state: "Jharkhand", district: "Ranchi", sector: "State Electricity Distribution Company (DISCOM) / Energy Department" },
+  { name: "Department of Health & Family Welfare", category: "Government Department", state: "Jharkhand", district: "Ranchi", sector: "Health & Family Welfare Department" },
+  { name: "Department of School Education & Literacy", category: "Government Department", state: "Jharkhand", district: "Ranchi", sector: "School Education Department / Department of School Education" },
+  { name: "Department of Agriculture & Sugarcane Development", category: "Government Department", state: "Jharkhand", district: "Ranchi", sector: "Agriculture Department" },
+  { name: "Rural Development Department", category: "Government Department", state: "Jharkhand", district: "Ranchi", sector: "Rural Development Department" },
+  { name: "Women & Child Development & Social Security", category: "Government Department", state: "Jharkhand", district: "Ranchi", sector: "Women & Child Development (WCD) Department" },
+  { name: "Police Department / Home Department", category: "Government Department", state: "Jharkhand", district: "Ranchi", sector: "Police Department / Home Department" },
+  { name: "Urban Development & Housing Department", category: "Government Department", state: "Jharkhand", district: "Ranchi", sector: "Rural Development / Housing Department / Panchayati Raj" },
+  { name: "Transport Department / State Road Transport", category: "Government Department", state: "Jharkhand", district: "Ranchi", sector: "Transport Department / State Road Transport authority" },
+  { name: "Department of Forest, Environment & Climate Change", category: "Government Department", state: "Jharkhand", district: "Ranchi", sector: "Environment & Forest Department / State Pollution Control Board" },
+  { name: "Department of Revenue, Registration & Land Reforms", category: "Government Department", state: "Jharkhand", district: "Ranchi", sector: "Revenue Department" },
+  { name: "Social Welfare & Disability Empowerment Department", category: "Government Department", state: "Jharkhand", district: "Ranchi", sector: "Social Welfare Department" },
+  { name: "District Administration & Disaster Management (Ranchi)", category: "Government Department", state: "Jharkhand", district: "Ranchi", sector: "District Administration / appropriate department after classification" },
 ];
 
 const ORG_CATEGORIES = [
@@ -60,36 +164,25 @@ const ORG_CATEGORIES = [
 
 const DEPARTMENTS_SECTORS = [
   "Roads & Infrastructure",
-  "Sanitation",
   "Water Supply",
-  "Public Health",
+  "Sanitation & Waste Management",
+  "Electricity",
+  "Health & Medical Services",
   "Education",
+  "Agriculture",
+  "Rural Development",
+  "Women & Child Welfare",
+  "Public Safety & Security",
+  "Housing & Public Facilities",
+  "Transport",
   "Environment",
-  "Disaster Management",
-  "Other",
+  "Revenue & Land",
+  "Social Welfare",
+  "Other / General",
 ] as const;
 
-const INDIAN_STATES = [
-  "Andhra Pradesh",
-  "Jharkhand",
-  "Bihar",
-  "Delhi (NCT)",
-  "Karnataka",
-  "Maharashtra",
-  "Tamil Nadu",
-  "Telangana",
-  "Uttar Pradesh",
-  "West Bengal",
-  "Odisha",
-  "Madhya Pradesh",
-  "Rajasthan",
-  "Gujarat",
-  "Kerala",
-  "Punjab",
-  "Haryana",
-  "Assam",
-  "Other State / UT",
-];
+import { INDIAN_STATES, getDistrictsForState } from "@/data/india-geo";
+
 
 export function GovernmentOfficialRegistration({
   close,
@@ -114,15 +207,24 @@ export function GovernmentOfficialRegistration({
   const [officeUnit, setOfficeUnit] = useState("");
   const [jurisdiction, setJurisdiction] = useState("");
 
+  // PRI-Specific Fields (when orgCategory is Panchayati Raj Institution)
+  const [priTier, setPriTier] = useState<string>("Gram Panchayat");
+  const [block, setBlock] = useState<string>("");
+  const [gramPanchayat, setGramPanchayat] = useState<string>("");
+  const [village, setVillage] = useState<string>("");
+  const [contactPhone, setContactPhone] = useState<string>("");
+
   // Section 4: Official Verification
   const [officialId, setOfficialId] = useState("");
   const [idFile, setIdFile] = useState<File | null>(null);
   const [otpCode, setOtpCode] = useState("");
-  const [generatedOtp, setGeneratedOtp] = useState<string | null>(null);
+  const [otpRequestId, setOtpRequestId] = useState("");
   const [isOtpSent, setIsOtpSent] = useState(false);
   const [isEmailVerified, setIsEmailVerified] = useState(false);
   const [otpError, setOtpError] = useState("");
+  const [otpSuccessMsg, setOtpSuccessMsg] = useState("");
   const [otpTimer, setOtpTimer] = useState(0);
+  const [otpBusy, setOtpBusy] = useState(false);
 
   // Section 5: Account Security
   const [password, setPassword] = useState("");
@@ -150,7 +252,7 @@ export function GovernmentOfficialRegistration({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // OTP Countdown timer
+  // OTP Countdown timer (strictly 60 seconds)
   useEffect(() => {
     if (otpTimer > 0) {
       const timer = setTimeout(() => setOtpTimer(otpTimer - 1), 1000);
@@ -159,28 +261,61 @@ export function GovernmentOfficialRegistration({
     return undefined;
   }, [otpTimer]);
 
-  const handleSendOtp = () => {
+  const handleSendOtp = async () => {
     if (!officialEmail.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(officialEmail)) {
       setOtpError("Please enter a valid official email address first.");
       return;
     }
     setOtpError("");
-    const mockCode = Math.floor(100000 + Math.random() * 900000).toString();
-    setGeneratedOtp(mockCode);
-    setIsOtpSent(true);
-    setOtpTimer(60);
+    setOtpSuccessMsg("");
+    setOtpBusy(true);
+
+    try {
+      const res = await requestRegistrationOtp({
+        data: {
+          email: officialEmail.trim(),
+          name: fullName.trim() || "Government Official",
+          purpose: "registration_verification",
+        },
+      });
+
+      setOtpRequestId(res.requestId);
+      setIsOtpSent(true);
+      setOtpTimer(60); // strictly 60 seconds validity
+      setOtpSuccessMsg(res.message);
+    } catch (err: any) {
+      setOtpError(err?.message || "Failed to dispatch verification code. Please retry.");
+    } finally {
+      setOtpBusy(false);
+    }
   };
 
-  const handleVerifyOtp = () => {
-    if (!otpCode.trim()) {
+  const handleVerifyOtp = async () => {
+    if (!otpCode.trim() || otpCode.trim().length !== 6) {
       setOtpError("Please enter the 6-digit verification code.");
       return;
     }
-    if (otpCode.trim() === generatedOtp || otpCode.trim() === "123456") {
+    if (!otpRequestId) {
+      setOtpError("No active verification session. Please request a new OTP.");
+      return;
+    }
+    setOtpError("");
+    setOtpBusy(true);
+
+    try {
+      await verifyRegistrationOtp({
+        data: {
+          email: officialEmail.trim(),
+          requestId: otpRequestId,
+          otp: otpCode.trim(),
+        },
+      });
       setIsEmailVerified(true);
-      setOtpError("");
-    } else {
-      setOtpError("Invalid verification code. Please check and re-enter.");
+      setOtpSuccessMsg("Official email address verified successfully.");
+    } catch (err: any) {
+      setOtpError(err?.message || "Invalid or expired verification code.");
+    } finally {
+      setOtpBusy(false);
     }
   };
 
@@ -208,6 +343,9 @@ export function GovernmentOfficialRegistration({
     setOrgCategory(org.category);
     if (org.district) setDistrict(org.district);
     if (org.state) setState(org.state);
+    if ((org as any).sector) {
+      setDepartmentSector((org as any).sector);
+    }
     setIsOrgDropdownOpen(false);
     setOrgSearchQuery("");
   };
@@ -216,24 +354,59 @@ export function GovernmentOfficialRegistration({
     e.preventDefault();
     setFormError("");
 
+    const isPri = orgCategory === "Panchayati Raj Institution (PRI)";
+    const isDept = orgCategory === "Government Department";
+    const userRole = isPri ? "pri" : isDept ? "government_department" : "government";
+    const userAccountType = isPri ? "pri" : isDept ? "department" : "organization";
+
     // Validations
     if (!fullName.trim()) return setFormError("Full Name is required.");
     if (!officialEmail.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(officialEmail)) {
       return setFormError("A valid Official Email ID is required.");
     }
-    if (!orgName.trim()) return setFormError("Organization Name is required.");
     if (!orgCategory) return setFormError("Please select an Organization Category.");
     if (!district.trim()) return setFormError("District is required.");
     if (!state.trim()) return setFormError("State is required.");
-    if (!departmentSector) return setFormError("Please select a Department / Sector.");
-    if (!designation.trim()) return setFormError("Designation is required.");
-    if (!officeUnit.trim()) return setFormError("Office / Unit is required.");
-    if (!jurisdiction.trim()) return setFormError("Jurisdiction / Areas Served is required.");
+
+    if (isPri) {
+      if (!block.trim()) return setFormError("Block / Mandal is required for Panchayati Raj Institution.");
+      if (priTier === "Gram Panchayat" && !gramPanchayat.trim()) {
+        return setFormError("Gram Panchayat name is required.");
+      }
+      if (!designation.trim()) return setFormError("Official Designation is required.");
+    } else {
+      if (!orgName.trim()) return setFormError("Organization Name is required.");
+      if (!departmentSector) return setFormError("Please select a Department / Sector.");
+      if (!designation.trim()) return setFormError("Designation is required.");
+      if (!officeUnit.trim()) return setFormError("Office / Unit is required.");
+      if (!jurisdiction.trim()) return setFormError("Jurisdiction / Areas Served is required.");
+    }
+
     if (!officialId.trim()) return setFormError("Government Employee / Official ID is required.");
     if (!password) return setFormError("Password is required.");
     if (password.length < 6) return setFormError("Password must be at least 6 characters long.");
     if (password !== confirmPassword) return setFormError("Password and Confirm Password do not match.");
     if (!agreeTerms) return setFormError("You must agree to the Terms of Use and Privacy Policy.");
+
+    const computedOrgName = isPri
+      ? (orgName.trim() || (gramPanchayat.trim() ? `${gramPanchayat.trim()} Gram Panchayat` : (block.trim() ? `${block.trim()} Panchayat Samiti` : `Zilla Parishad ${district.trim()}`)))
+      : orgName.trim();
+    const effectiveSector = departmentSector || (isPri ? "Rural Development & Panchayati Raj" : "General Administration");
+    const effectiveOfficeUnit = isPri
+      ? (gramPanchayat.trim() ? `${gramPanchayat.trim()} GP Office` : (block.trim() ? `${block.trim()} BDO Office` : `${district.trim()} ZP Office`))
+      : officeUnit.trim();
+    const effectiveJurisdiction = isPri
+      ? (jurisdiction.trim() || [village.trim(), gramPanchayat.trim() ? `${gramPanchayat.trim()} GP` : null, block.trim() ? `Block: ${block.trim()}` : null, district.trim()].filter(Boolean).join(", "))
+      : jurisdiction.trim();
+    const matchedDept = GOVERNMENT_LINE_DEPARTMENTS.find(
+      (d) =>
+        departmentSector.includes(d.domain) ||
+        departmentSector.includes(d.department) ||
+        departmentSector === d.department ||
+        (effectiveSector && (effectiveSector.includes(d.domain) || effectiveSector.includes(d.department)))
+    );
+    const effectiveDomain = matchedDept ? matchedDept.domain : "";
+    const effectiveDeptName = matchedDept ? matchedDept.department : effectiveSector;
 
     setBusy(true);
 
@@ -246,16 +419,23 @@ export function GovernmentOfficialRegistration({
           options: {
             data: {
               display_name: fullName.trim(),
-              account_type: "organization",
+              account_type: userAccountType,
+              role: userRole,
               organization_type: "Government",
               official_category: orgCategory,
-              organization_name: orgName.trim(),
-              department_sector: departmentSector,
+              organization_name: computedOrgName,
+              department_sector: effectiveDeptName,
+              domain: effectiveDomain || undefined,
               designation: designation.trim(),
-              office_unit: officeUnit.trim(),
-              jurisdiction: jurisdiction.trim(),
+              office_unit: effectiveOfficeUnit,
+              jurisdiction: effectiveJurisdiction,
               district: district.trim(),
               state: state.trim(),
+              block: block.trim(),
+              gram_panchayat: gramPanchayat.trim(),
+              village: village.trim(),
+              pri_tier: isPri ? priTier : undefined,
+              contact_phone: contactPhone.trim(),
               employee_id: officialId.trim(),
               email_verified: isEmailVerified,
             },
@@ -268,25 +448,38 @@ export function GovernmentOfficialRegistration({
           return;
         }
 
+        if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+          setFormError("An account with this email address already exists. Please use the Sign In option below or reset your password.");
+          setBusy(false);
+          return;
+        }
+
         if (data.user && data.session) {
           // Only provision when there is a live session (auto-confirmed email).
           // If email confirmation is required, loadProfile handles this on first sign-in.
           await supabase.from("organization_accounts").upsert(
             {
               owner_id: data.user.id,
-              name: orgName.trim(),
+              name: computedOrgName,
               organization_type: "Government",
               contact_name: fullName.trim(),
               contact_email: officialEmail.trim(),
+              contact_phone: contactPhone.trim() || null,
               district: district.trim(),
-              locality: `${officeUnit.trim()} (${jurisdiction.trim()})`,
-              expertise: [departmentSector, orgCategory, jurisdiction.trim()].filter(Boolean),
-              capabilities: [designation.trim(), `Jurisdiction: ${jurisdiction.trim()}`, `ID: ${officialId.trim()}`].filter(Boolean),
+              locality: isPri
+                ? [village.trim(), gramPanchayat.trim() ? `${gramPanchayat.trim()} GP` : null, block.trim() ? `Block: ${block.trim()}` : null, district.trim()].filter(Boolean).join(", ")
+                : `${effectiveOfficeUnit} (${effectiveJurisdiction})`,
+              expertise: isPri
+                ? ["Panchayati Raj Institution (PRI)", priTier, effectiveSector].filter(Boolean)
+                : [effectiveDeptName, effectiveDomain, orgCategory, effectiveJurisdiction].filter(Boolean),
+              capabilities: isPri
+                ? [designation.trim(), `GP: ${gramPanchayat.trim()}`, `Block: ${block.trim()}`, `District: ${district.trim()}`, `ID: ${officialId.trim()}`].filter(Boolean)
+                : [designation.trim(), `Jurisdiction: ${effectiveJurisdiction}`, `ID: ${officialId.trim()}`].filter(Boolean),
             },
             { onConflict: "owner_id" }
           );
           setHasSession(true);
-          void supabase.from("profiles").update({ role: "government" }).eq("id", data.user.id);
+          void supabase.from("profiles").update({ role: userRole, district: district.trim() }).eq("id", data.user.id);
         } else if (data.user && !data.session) {
           // Email confirmation required — data will be provisioned by loadProfile on first login.
           setHasSession(false);
@@ -381,21 +574,21 @@ export function GovernmentOfficialRegistration({
                 onClick={() => {
                   close();
                   if (hasSession) {
-                    complete("government");
+                    complete(orgCategory === "Panchayati Raj Institution (PRI)" ? "pri" : "government");
                   } else {
                     onLogin();
                   }
                 }}
                 className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-blue-700 px-6 py-3 text-sm font-bold text-white shadow-sm hover:bg-blue-800 transition-colors"
               >
-                {hasSession ? "Go to Official Dashboard" : "Proceed to Sign In"} <ArrowRight size={16} />
+                {hasSession ? (orgCategory === "Panchayati Raj Institution (PRI)" ? "Go to PRI Dashboard" : "Go to Official Dashboard") : "Proceed to Sign In"} <ArrowRight size={16} />
               </button>
               <button
                 type="button"
                 onClick={close}
                 className="w-full sm:w-auto rounded-xl border border-slate-300 bg-white px-6 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
               >
-                Return to SamajSetu
+                Return to Samaj Setu
               </button>
             </div>
           </div>
@@ -560,6 +753,44 @@ export function GovernmentOfficialRegistration({
                   </select>
                 </div>
 
+                {/* When Category is Government Department: Dedicated Line Department Selector */}
+                {orgCategory === "Government Department" && (
+                  <div className="sm:col-span-2 rounded-xl bg-blue-50/70 border border-blue-200/80 p-4 space-y-2.5 animate-in fade-in duration-200">
+                    <div className="flex items-center gap-2">
+                      <Landmark size={18} className="text-blue-700" />
+                      <span className="text-xs font-bold uppercase tracking-wider text-blue-900">
+                        Select Authorized Line Department
+                      </span>
+                    </div>
+                    <p className="text-xs text-blue-800/90 leading-relaxed">
+                      Choose your official government department. This sets your technical oversight domain and jurisdiction.
+                    </p>
+                    <select
+                      value={departmentSector}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setDepartmentSector(val);
+                        const matched = GOVERNMENT_LINE_DEPARTMENTS.find(
+                          (d) => d.department === val || `${d.department} (${d.domain})` === val || val.includes(d.domain)
+                        );
+                        if (matched && (!orgName.trim() || orgName.includes("Department") || orgName.includes("Authority") || orgName.includes("Corporation"))) {
+                          setOrgName(matched.shortName || matched.department);
+                        }
+                      }}
+                      className="w-full rounded-xl border border-blue-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm font-medium"
+                    >
+                      <option value="">-- Choose from all 16 Government Line Departments --</option>
+                      {GOVERNMENT_LINE_DEPARTMENTS.map((item) => (
+                        <optgroup key={item.domain} label={`🏛️ Domain: ${item.domain}`}>
+                          <option value={`${item.department} (${item.domain})`}>
+                            {item.department}
+                          </option>
+                        </optgroup>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 {/* State */}
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1.5">
@@ -568,10 +799,13 @@ export function GovernmentOfficialRegistration({
                   <select
                     required
                     value={state}
-                    onChange={(e) => setState(e.target.value)}
+                    onChange={(e) => {
+                      setState(e.target.value);
+                      setDistrict("");
+                    }}
                     className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
                   >
-                    <option value="">-- Select State --</option>
+                    <option value="">-- Select State / UT --</option>
                     {INDIAN_STATES.map((s) => (
                       <option key={s} value={s}>
                         {s}
@@ -580,19 +814,36 @@ export function GovernmentOfficialRegistration({
                   </select>
                 </div>
 
-                {/* District */}
+                {/* District Dropdown Cascaded from Selected State */}
                 <div className="sm:col-span-2">
                   <label className="block text-xs font-semibold text-slate-700 mb-1.5">
                     District <span className="text-rose-600">*</span>
                   </label>
-                  <input
-                    type="text"
-                    required
-                    value={district}
-                    onChange={(e) => setDistrict(e.target.value)}
-                    placeholder="e.g. Visakhapatnam, Ranchi, Dhanbad"
-                    className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
-                  />
+                  {state && getDistrictsForState(state).length > 0 ? (
+                    <select
+                      required
+                      value={district}
+                      onChange={(e) => setDistrict(e.target.value)}
+                      className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm font-medium"
+                    >
+                      <option value="">-- Select District ({getDistrictsForState(state).length} in {state}) --</option>
+                      {getDistrictsForState(state).map((d) => (
+                        <option key={d} value={d}>
+                          {d}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <select
+                      required
+                      disabled={!state}
+                      value={district}
+                      onChange={(e) => setDistrict(e.target.value)}
+                      className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3.5 py-2.5 text-sm text-slate-500 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
+                    >
+                      <option value="">{state ? "-- Select District --" : "-- Select a State First to view districts --"}</option>
+                    </select>
+                  )}
                 </div>
               </div>
             </div>
@@ -604,76 +855,223 @@ export function GovernmentOfficialRegistration({
                   3
                 </span>
                 <h2 className="text-sm sm:text-base font-bold text-slate-900 tracking-wide uppercase">
-                  Official Role
+                  {orgCategory === "Panchayati Raj Institution (PRI)" ? "Panchayat Raj Official Role & Jurisdiction" : "Official Role"}
                 </h2>
               </div>
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                {/* Department / Sector Dropdown */}
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                    Department / Sector <span className="text-rose-600">*</span>
-                  </label>
-                  <select
-                    required
-                    value={departmentSector}
-                    onChange={(e) => setDepartmentSector(e.target.value)}
-                    className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
-                  >
-                    <option value="">-- Select Department / Sector --</option>
-                    {DEPARTMENTS_SECTORS.map((dept) => (
-                      <option key={dept} value={dept}>
-                        {dept}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              {orgCategory === "Panchayati Raj Institution (PRI)" ? (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {/* PRI Tier */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Panchayat Raj Tier <span className="text-rose-600">*</span>
+                    </label>
+                    <select
+                      value={priTier}
+                      onChange={(e) => setPriTier(e.target.value)}
+                      className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
+                    >
+                      <option value="Gram Panchayat">Gram Panchayat (Village Level)</option>
+                      <option value="Panchayat Samiti / Block Panchayat">Panchayat Samiti / Mandal Parishad (Block Level)</option>
+                      <option value="Zilla Parishad">Zilla Parishad (District Level)</option>
+                    </select>
+                  </div>
 
-                {/* Designation */}
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                    Designation <span className="text-rose-600">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={designation}
-                    onChange={(e) => setDesignation(e.target.value)}
-                    placeholder="e.g. Executive Engineer / BDO / Commissioner"
-                    className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
-                  />
-                </div>
+                  {/* Block / Mandal */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Block / Mandal / Taluka <span className="text-rose-600">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={block}
+                      onChange={(e) => setBlock(e.target.value)}
+                      placeholder="e.g. Kanke, Bheemunipatnam, Anandapuram"
+                      className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
+                    />
+                  </div>
 
-                {/* Office / Unit */}
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                    Office / Unit <span className="text-rose-600">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={officeUnit}
-                    onChange={(e) => setOfficeUnit(e.target.value)}
-                    placeholder="e.g. Zone 3 Engineering Division / Ward Office 14"
-                    className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
-                  />
-                </div>
+                  {/* Gram Panchayat Name */}
+                  {priTier === "Gram Panchayat" && (
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                        Gram Panchayat Name <span className="text-rose-600">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={gramPanchayat}
+                        onChange={(e) => {
+                          setGramPanchayat(e.target.value);
+                          if (!orgName.trim() || orgName.includes("Gram Panchayat")) {
+                            setOrgName(`${e.target.value.trim()} Gram Panchayat`);
+                          }
+                        }}
+                        placeholder="e.g. Pithoria, Thagarapuvalasa"
+                        className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
+                      />
+                    </div>
+                  )}
 
-                {/* Jurisdiction / Wards / Areas Served */}
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                    Jurisdiction / Wards / Areas Served <span className="text-rose-600">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={jurisdiction}
-                    onChange={(e) => setJurisdiction(e.target.value)}
-                    placeholder="e.g. Wards 12-25, Central Zone, or Panchayats A-E"
-                    className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
-                  />
+                  {/* Village / Habitation */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Village / Habitation / Hamlets
+                    </label>
+                    <input
+                      type="text"
+                      value={village}
+                      onChange={(e) => setVillage(e.target.value)}
+                      placeholder="e.g. Rampur, Main Village, Ward 4"
+                      className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
+                    />
+                  </div>
+
+                  {/* Official Designation */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Official Designation <span className="text-rose-600">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={designation}
+                      onChange={(e) => setDesignation(e.target.value)}
+                      placeholder="e.g. Sarpanch / Mukhiya, Panchayat Secretary, GRS, BDO"
+                      className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
+                    />
+                  </div>
+
+                  {/* Mobile Number */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Official Mobile Number
+                    </label>
+                    <input
+                      type="tel"
+                      value={contactPhone}
+                      onChange={(e) => setContactPhone(e.target.value)}
+                      placeholder="e.g. +91 9876543210"
+                      className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
+                    />
+                  </div>
+
+                  {/* Department / Sector Dropdown */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Sector / Focus Area
+                    </label>
+                    <select
+                      value={departmentSector}
+                      onChange={(e) => setDepartmentSector(e.target.value)}
+                      className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
+                    >
+                      <option value="">Rural Development & Panchayati Raj (Default)</option>
+                      {GOVERNMENT_LINE_DEPARTMENTS.map((dept) => (
+                        <option key={dept.domain} value={`${dept.domain} - ${dept.department}`}>
+                          {dept.domain} — {dept.department}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Custom Administrative Jurisdiction */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Administrative Jurisdiction Scope
+                    </label>
+                    <input
+                      type="text"
+                      value={jurisdiction}
+                      onChange={(e) => setJurisdiction(e.target.value)}
+                      placeholder="Auto-derived or e.g. Entire Panchayat / Wards 1-9"
+                      className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
+                    />
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {/* Department / Sector Dropdown */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      {orgCategory === "Government Department" ? "Government Line Department" : "Department / Sector"} <span className="text-rose-600">*</span>
+                    </label>
+                    <select
+                      required
+                      value={departmentSector}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setDepartmentSector(val);
+                        const matched = GOVERNMENT_LINE_DEPARTMENTS.find(
+                          (d) => d.department === val || `${d.department} (${d.domain})` === val || val.includes(d.domain)
+                        );
+                        if (matched && (!orgName.trim() || orgName.includes("Department") || orgName.includes("Authority") || orgName.includes("Corporation"))) {
+                          setOrgName(matched.shortName || matched.department);
+                        }
+                      }}
+                      className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm font-medium"
+                    >
+                      <option value="">-- Select Government Line Department / Sector --</option>
+                      {GOVERNMENT_LINE_DEPARTMENTS.map((item) => (
+                        <optgroup key={item.domain} label={`🏛️ Domain: ${item.domain}`}>
+                          <option value={`${item.department} (${item.domain})`}>
+                            {item.department}
+                          </option>
+                        </optgroup>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Select your authorized department to oversee challenges in its technical domain.
+                    </p>
+                  </div>
+
+                  {/* Designation */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Designation <span className="text-rose-600">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={designation}
+                      onChange={(e) => setDesignation(e.target.value)}
+                      placeholder="e.g. Executive Engineer / BDO / Commissioner"
+                      className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
+                    />
+                  </div>
+
+                  {/* Office / Unit */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Office / Unit <span className="text-rose-600">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={officeUnit}
+                      onChange={(e) => setOfficeUnit(e.target.value)}
+                      placeholder="e.g. Zone 3 Engineering Division / Ward Office 14"
+                      className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
+                    />
+                  </div>
+
+                  {/* Jurisdiction / Wards / Areas Served */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Jurisdiction / Wards / Areas Served <span className="text-rose-600">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={jurisdiction}
+                      onChange={(e) => setJurisdiction(e.target.value)}
+                      placeholder="e.g. Wards 12-25, Central Zone, or Panchayats A-E"
+                      className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* SECTION 4 — OFFICIAL VERIFICATION */}
@@ -767,7 +1165,11 @@ export function GovernmentOfficialRegistration({
                         Official Email Verification
                       </p>
                       <p className="text-[11px] text-slate-500">
-                        Verify access to {officialEmail || "your official email address"}
+                        {isOtpSent ? (
+                          <>We've sent a 6-digit verification code to: <strong className="text-slate-700">{officialEmail}</strong></>
+                        ) : (
+                          <>Verify access to {officialEmail || "your official email address"}</>
+                        )}
                       </p>
                     </div>
                     {isEmailVerified ? (
@@ -779,13 +1181,31 @@ export function GovernmentOfficialRegistration({
                       <button
                         type="button"
                         onClick={handleSendOtp}
-                        disabled={otpTimer > 0}
+                        disabled={otpBusy || otpTimer > 0}
                         className="inline-flex items-center justify-center rounded-lg bg-blue-700 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-blue-800 disabled:opacity-50 transition-colors shrink-0"
                       >
-                        {isOtpSent ? (otpTimer > 0 ? `Resend in ${otpTimer}s` : "Resend OTP") : "Send Verification OTP"}
+                        {otpBusy
+                          ? "Sending..."
+                          : isOtpSent
+                            ? otpTimer > 0
+                              ? `Resend in 00:${otpTimer < 10 ? "0" : ""}${otpTimer}`
+                              : "Resend OTP"
+                            : "Send Verification OTP"}
                       </button>
                     )}
                   </div>
+
+                  {otpError && (
+                    <p className="text-xs text-rose-600 font-medium bg-rose-50 p-2.5 rounded-lg border border-rose-200/70">
+                      {otpError}
+                    </p>
+                  )}
+
+                  {otpSuccessMsg && !isEmailVerified && (
+                    <p className="text-xs text-emerald-700 font-medium bg-emerald-50 p-2.5 rounded-lg border border-emerald-200/70">
+                      {otpSuccessMsg}
+                    </p>
+                  )}
 
                   {isOtpSent && !isEmailVerified && (
                     <div className="pt-2 border-t border-slate-200/80 space-y-2">
@@ -796,24 +1216,26 @@ export function GovernmentOfficialRegistration({
                           value={otpCode}
                           onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))}
                           placeholder="Enter 6-digit OTP"
+                          disabled={otpBusy}
                           className="w-full sm:w-48 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm tracking-widest text-center font-mono font-bold focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none"
                         />
                         <button
                           type="button"
                           onClick={handleVerifyOtp}
-                          className="rounded-lg bg-emerald-700 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-800 transition-colors"
+                          disabled={otpBusy || otpCode.length !== 6}
+                          className="rounded-lg bg-emerald-700 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-800 disabled:opacity-50 transition-colors"
                         >
-                          Verify OTP
+                          {otpBusy ? "Verifying..." : "Verify OTP"}
                         </button>
                       </div>
-                      {generatedOtp && (
-                        <p className="text-[11px] text-blue-700 font-medium bg-blue-50/80 p-2 rounded-lg border border-blue-200/50">
-                          Verification code sent to official email. (Demonstration code: <strong>{generatedOtp}</strong>)
-                        </p>
-                      )}
-                      {otpError && (
-                        <p className="text-xs text-rose-600 font-medium">{otpError}</p>
-                      )}
+                      <div className="flex items-center justify-between text-[11px] text-slate-500 font-medium">
+                        <span>Code expires strictly in <strong>60 seconds</strong></span>
+                        {otpTimer > 0 ? (
+                          <span className="text-amber-700 font-mono font-semibold">00:{otpTimer < 10 ? "0" : ""}${otpTimer}</span>
+                        ) : (
+                          <span className="text-rose-600 font-semibold">Expired — Please click Resend OTP</span>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -823,7 +1245,7 @@ export function GovernmentOfficialRegistration({
               <div className="rounded-xl bg-blue-50/70 border border-blue-100 p-3.5 text-xs text-blue-900 leading-relaxed flex items-start gap-2.5">
                 <Landmark size={16} className="text-blue-700 shrink-0 mt-0.5" />
                 <span>
-                  Your organization, department and jurisdiction help SamajSetu route relevant challenges to the appropriate authority.
+                  Your organization, department and jurisdiction help Samaj Setu route relevant challenges to the appropriate authority.
                 </span>
               </div>
             </div>

@@ -1,0 +1,72 @@
+[
+  {
+    "problem_text": "Every time it rains, water collects near the school and children cannot cross the road.",
+    "category": "Drainage / Waterlogging",
+    "subcategory": "Urban Drainage",
+    "technical_domain": "Water & Sanitation",
+    "track": "Track A"
+  },
+  {
+    "problem_text": "Recurrent flooding requiring sensor-based waterlogging warning and topographical drainage design.",
+    "category": "Drainage / Waterlogging",
+    "subcategory": "Stormwater Overflow",
+    "technical_domain": "Water & Sanitation",
+    "track": "Track B"
+  },
+  {
+    "problem_text": "Drinking water pipeline leak causing muddy contaminated water to flow from taps in Ward 4.",
+    "category": "Water & Sanitation",
+    "subcategory": "Drinking Water Supply",
+    "technical_domain": "Water Resources & Public Health",
+    "track": "Track A"
+  },
+  {
+    "problem_text": "Groundwater contamination with high fluoride levels requiring novel low-cost arsenic filter and telemetry.",
+    "category": "Water & Sanitation",
+    "subcategory": "Water Contamination",
+    "technical_domain": "Water Resources & Public Health",
+    "track": "Track B"
+  },
+  {
+    "problem_text": "Deep crater pothole outside primary school entrance causing accidents for two-wheelers.",
+    "category": "Roads & Transport",
+    "subcategory": "Pothole Repair",
+    "technical_domain": "Civil Infrastructure & Transportation",
+    "track": "Track A"
+  },
+  {
+    "problem_text": "Garbage dump lying uncollected for two weeks near vegetable market creating foul stench and disease risk.",
+    "category": "Waste Management",
+    "subcategory": "Garbage Dump",
+    "technical_domain": "Municipal Sanitation & Environmental Science",
+    "track": "Track A"
+  },
+  {
+    "problem_text": "Transformer spark and hanging wire exposed near street corner posing electrocution hazard.",
+    "category": "Electricity / Energy",
+    "subcategory": "Hanging Wire",
+    "technical_domain": "Electrical & Energy Engineering",
+    "track": "Track A"
+  },
+  {
+    "problem_text": "Dengue cases spreading in village due to stagnant water, Primary Health Centre has no doctor available.",
+    "category": "Health",
+    "subcategory": "Primary Health Centre",
+    "technical_domain": "Public Health & Epidemiology",
+    "track": "Track A"
+  },
+  {
+    "problem_text": "Irrigation canal breached flooding paddy fields, farmers unable to stop water loss.",
+    "category": "Agriculture",
+    "subcategory": "Irrigation Canal",
+    "technical_domain": "Agricultural Sciences & Water Resources",
+    "track": "Track A"
+  },
+  {
+    "problem_text": "Dark street with broken streetlights leading to multiple theft incidents at night.",
+    "category": "Safety",
+    "subcategory": "Dark Street / Lighting",
+    "technical_domain": "Public Safety & Home Department",
+    "track": "Track A"
+  }
+]

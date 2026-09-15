@@ -77,13 +77,13 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "SamajSetu — Community Innovation Platform" },
+      { title: "Samaj Setu — SIH26043 | Community Innovation Platform" },
       {
         name: "description",
-        content: "Connecting community problems with collaborative solutions across Jharkhand.",
+        content: "A digital platform to crowdsource societal challenges and facilitate collaborative problem solving through universities and industry partnerships.",
       },
-      { name: "author", content: "SamajSetu" },
-      { property: "og:title", content: "SamajSetu" },
+      { name: "author", content: "Samaj Setu" },
+      { property: "og:title", content: "Samaj Setu — SIH26043" },
       { property: "og:description", content: "From community problems to measurable impact." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -112,7 +112,7 @@ function RootShell({ children }: { children: ReactNode }) {
       </head>
       <body>
         {children}
-        <Scripts />
+      <Scripts />
       </body>
     </html>
   );

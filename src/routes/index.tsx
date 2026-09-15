@@ -24,6 +24,7 @@ import {
   FileUp,
   Filter,
   GraduationCap,
+  Handshake,
   Image as ImageIcon,
   Landmark,
   LocateFixed,
@@ -37,11 +38,13 @@ import {
   Paperclip,
   Plus,
   Repeat2,
+  Rocket,
   Search,
   Shield,
   ShieldCheck,
   Sparkles,
   TreePine,
+  TrendingUp,
   Upload,
   UserRound,
   Users,
@@ -55,11 +58,24 @@ import { CursorParticleField } from "@/components/CursorParticleField";
 import { ProblemMap } from "@/components/ProblemMap";
 import { GovernmentOfficialRegistration } from "@/components/GovernmentOfficialRegistration";
 import { IndustryPartnerRegistration } from "@/components/IndustryPartnerRegistration";
+import { UniversityRegistration } from "@/components/UniversityRegistration";
+import { UniversityDashboard } from "@/components/UniversityDashboard";
 import { IndustryDashboard } from "@/components/IndustryDashboard";
 import { ULBDashboard } from "@/components/ULBDashboard";
+import { PRIDashboard } from "@/components/PRIDashboard";
+import { GovernmentDepartmentDashboard } from "@/components/GovernmentDepartmentDashboard";
 import { distanceKm } from "@/lib/samaj";
 import { runAIProblemAnalysis, type AIAnalysisResult } from "@/lib/civic-ai";
+import { APPROVED_CIVIC_CATEGORIES, DEPARTMENT_TAXONOMY, normalizeCivicCategory, type CivicCategory } from "@/lib/hybrid-categorization/taxonomy";
 import { createElevenLabsScribeToken } from "@/lib/elevenlabs.functions";
+import {
+  autoTranslateToEnglish,
+  isLikelyRegionalOrNonEnglish,
+  detectScriptLanguage,
+  REGIONAL_LANGUAGE_NAMES,
+} from "@/lib/translation";
+import { INDIAN_STATES, getDistrictsForState } from "@/data/india-geo";
+import { classifyCivicProblemNLP } from "@/lib/nlp-categorization";
 import type { User } from "@supabase/supabase-js";
 
 export const Route = createFileRoute("/")({ component: SamajSetu });
@@ -78,9 +94,12 @@ type Screen =
   | "coordinator"
   | "volunteer"
   | "industry-dashboard"
-  | "ulb-dashboard";
+  | "ulb-dashboard"
+  | "pri-dashboard"
+  | "department-dashboard"
+  | "university-dashboard";
 type Profile = { id: string; display_name: string | null; role: string; district: string | null };
-type PartnerIdentity = { id: string; name: string; organization_type: string };
+type PartnerIdentity = { id: string; name: string; organization_type: string; expertise?: string[]; locality?: string; district?: string };
 type Challenge = {
   id: string;
   public_id: string;
@@ -88,6 +107,9 @@ type Challenge = {
   summary: string;
   domain: string;
   district: string;
+  block?: string | null;
+  locality?: string | null;
+  merged_into_id?: string | null;
   priority_score: number;
   priority_level?: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "MINOR";
   verification: string;
@@ -184,6 +206,7 @@ function SamajSetu() {
     [user, setUser] = useState<User | null>(null),
     [profile, setProfile] = useState<Profile | null>(null),
     [partnerIdentity, setPartnerIdentity] = useState<PartnerIdentity | null>(null),
+    [institution, setInstitution] = useState<any | null>(null),
     [challenges, setChallenges] = useState<Challenge[]>([]),
     [supportedIds, setSupportedIds] = useState<string[]>([]),
     [language, setLanguage] = useState("en"),
@@ -193,12 +216,43 @@ function SamajSetu() {
   useEffect(() => {
     const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
     const viewParam = urlParams?.get("view");
+    const hash = typeof window !== "undefined" ? window.location.hash : "";
+    const isRecovery =
+      urlParams?.get("recovery") === "true" ||
+      urlParams?.get("type") === "recovery" ||
+      hash.includes("type=recovery") ||
+      hash.includes("access_token=");
+
+    if (isRecovery) {
+      setPasswordRecovery(true);
+    }
+
+    const authCode = urlParams?.get("code");
+    if (authCode && supabase) {
+      void supabase.auth.exchangeCodeForSession(authCode).then(({ data, error }) => {
+        if (!error && data?.session) {
+          if (isRecovery || urlParams?.has("recovery")) {
+            setPasswordRecovery(true);
+            setScreen("auth");
+          }
+        }
+      });
+    }
+
     const initialScreen: Screen =
-      viewParam === "report"
-        ? "report"
-        : viewParam === "explore" || viewParam === "problems" || viewParam === "track" || urlParams?.has("track")
-        ? "explore"
-        : ((window.history.state?.samajsetuScreen as Screen | undefined) ?? "home");
+      isRecovery
+        ? "auth"
+        : typeof window !== "undefined" && window.location.pathname.startsWith("/government/department")
+        ? "department-dashboard"
+        : typeof window !== "undefined" && window.location.pathname.startsWith("/pri")
+          ? "pri-dashboard"
+          : typeof window !== "undefined" && window.location.pathname.startsWith("/university")
+            ? "university-dashboard"
+          : viewParam === "report"
+          ? "report"
+          : viewParam === "explore" || viewParam === "problems" || viewParam === "track" || urlParams?.has("track")
+            ? "explore"
+            : ((window.history.state?.samajsetuScreen as Screen | undefined) ?? "home");
 
     if (!window.history.state?.samajsetuScreen) {
       window.history.replaceState({ ...(window.history.state ?? {}), samajsetuScreen: initialScreen }, "", window.location.href);
@@ -254,23 +308,23 @@ function SamajSetu() {
         const expertiseArray = Array.isArray(meta["capabilities"])
           ? meta["capabilities"]
           : Array.isArray(meta["expertise"])
-          ? meta["expertise"]
-          : meta["department_sector"]
-          ? [meta["department_sector"], meta["official_category"], meta["jurisdiction"]].filter(Boolean)
-          : String(meta["expertise"] || "")
-              .split(",")
-              .map((item) => item.trim())
-              .filter(Boolean);
+            ? meta["expertise"]
+            : meta["department_sector"]
+              ? [meta["department_sector"], meta["official_category"], meta["jurisdiction"]].filter(Boolean)
+              : String(meta["expertise"] || "")
+                .split(",")
+                .map((item) => item.trim())
+                .filter(Boolean);
         const capabilitiesArray = Array.isArray(meta["partnership_interests"])
           ? meta["partnership_interests"]
           : Array.isArray(meta["capabilities"])
-          ? meta["capabilities"]
-          : meta["designation"]
-          ? [meta["designation"], meta["jurisdiction"] ? `Jurisdiction: ${meta["jurisdiction"]}` : null, meta["employee_id"] ? `ID: ${meta["employee_id"]}` : null].filter(Boolean)
-          : String(meta["resources"] || "")
-              .split(",")
-              .map((item) => item.trim())
-              .filter(Boolean);
+            ? meta["capabilities"]
+            : meta["designation"]
+              ? [meta["designation"], meta["jurisdiction"] ? `Jurisdiction: ${meta["jurisdiction"]}` : null, meta["employee_id"] ? `ID: ${meta["employee_id"]}` : null].filter(Boolean)
+              : String(meta["resources"] || "")
+                .split(",")
+                .map((item) => item.trim())
+                .filter(Boolean);
 
         await supabase.from("organization_accounts").upsert(
           {
@@ -282,9 +336,9 @@ function SamajSetu() {
             district: String(meta["district"] || ""),
             locality: String(
               meta["locality"] ||
-                (meta["city"]
-                  ? `${meta["city"]}, ${meta["state"] || ""}`
-                  : meta["office_unit"]
+              (meta["city"]
+                ? `${meta["city"]}, ${meta["state"] || ""}`
+                : meta["office_unit"]
                   ? `${meta["office_unit"]} (${meta["jurisdiction"] || ""})`
                   : "")
             ),
@@ -305,13 +359,48 @@ function SamajSetu() {
 
       // Sync role in profiles if not set
       const orgTypeLower = String(meta["organization_type"] || "").toLowerCase();
-      if (orgTypeLower === "government" && data?.role !== "government") {
+      const officialCatLower = String(meta["official_category"] || "").toLowerCase();
+      const accountTypeLower = String(meta["account_type"] || "").toLowerCase();
+      const isPri =
+        data?.role === "pri" ||
+        officialCatLower.includes("pri") ||
+        officialCatLower.includes("panchayat") ||
+        accountTypeLower === "pri";
+
+      if (isPri && data?.role !== "pri") {
+        void supabase.from("profiles").update({ role: "pri" }).eq("id", u.id);
+      } else if (orgTypeLower === "government" && data?.role !== "government" && data?.role !== "pri") {
         void supabase.from("profiles").update({ role: "government" }).eq("id", u.id);
       } else if (orgTypeLower === "industry" && data?.role !== "industry") {
         void supabase.from("profiles").update({ role: "industry" }).eq("id", u.id);
       }
     } else {
       setPartnerIdentity(null);
+    }
+
+    // Fetch university institution if applicable
+    if (u) {
+      const { data: instData } = await supabase
+        .from("institutions")
+        .select("*")
+        .eq("owner_id", u.id)
+        .maybeSingle();
+      if (instData) {
+        setInstitution(instData);
+      } else {
+        const { data: memData } = await supabase
+          .from("institution_members")
+          .select("institution_id, institutions(*)")
+          .eq("profile_id", u.id)
+          .maybeSingle();
+        if (memData?.institutions) {
+          setInstitution(memData.institutions);
+        } else {
+          setInstitution(null);
+        }
+      }
+    } else {
+      setInstitution(null);
     }
   };
   const flash = (x: string) => {
@@ -382,7 +471,17 @@ function SamajSetu() {
   }, []);
   if (!isSupabaseConfigured) return <Setup />;
   const go = (v: Screen) => {
-    if (v !== screen) window.history.pushState({ ...(window.history.state ?? {}), samajsetuScreen: v }, "", window.location.href);
+    const targetUrl =
+      v === "department-dashboard"
+        ? "/government/department/dashboard"
+        : v === "pri-dashboard"
+          ? "/pri/dashboard"
+          : v === "university-dashboard"
+            ? "/university/dashboard"
+          : window.location.pathname.startsWith("/pri") || window.location.pathname.startsWith("/government") || window.location.pathname.startsWith("/university")
+            ? "/"
+            : window.location.href;
+    if (v !== screen) window.history.pushState({ ...(window.history.state ?? {}), samajsetuScreen: v }, "", targetUrl);
     setScreen(v);
     scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -445,19 +544,25 @@ function SamajSetu() {
       {screen === "auth" && (
         <Auth recovery={passwordRecovery}
           complete={(accountType) => {
-            flash("Welcome to SamajSetu.");
+            flash("Welcome to Samaj Setu.");
             go(
-              accountType === "admin"
-                ? "admin"
-                : accountType === "industry"
-                ? "industry-dashboard"
-                : accountType === "government"
-                ? "coordinator"
-                : accountType === "organization"
-                ? "coordinator"
-                : accountType === "volunteer"
-                  ? "volunteer"
-                  : "my-reports",
+              accountType === "pri"
+                ? "pri-dashboard"
+                : accountType === "department"
+                  ? "department-dashboard"
+                  : accountType === "university"
+                    ? "university-dashboard"
+                  : accountType === "admin"
+                    ? "admin"
+                    : accountType === "industry"
+                      ? "industry-dashboard"
+                      : accountType === "government"
+                        ? "ulb-dashboard"
+                        : accountType === "organization"
+                          ? "coordinator"
+                          : accountType === "volunteer"
+                            ? "volunteer"
+                            : "my-reports",
             );
           }}
         />
@@ -486,6 +591,7 @@ function SamajSetu() {
           supportedIds={supportedIds}
           repost={repost}
           go={go}
+          flash={flash}
         />
       )}{" "}
       {screen === "my-reports" && <MyReports user={user} go={go} />}{" "}
@@ -512,6 +618,45 @@ function SamajSetu() {
           partnerIdentity={partnerIdentity}
           go={go}
           flash={flash}
+        />
+      )}{" "}
+      {screen === "pri-dashboard" && (
+        <PRIDashboard
+          user={user}
+          profile={profile}
+          partnerIdentity={partnerIdentity}
+          go={go}
+          flash={flash}
+          logout={async () => {
+            await supabase!.auth.signOut();
+            go("home");
+          }}
+        />
+      )}{" "}
+      {screen === "department-dashboard" && (
+        <GovernmentDepartmentDashboard
+          user={user}
+          profile={profile}
+          partnerIdentity={partnerIdentity}
+          go={go}
+          flash={flash}
+          logout={async () => {
+            await supabase!.auth.signOut();
+            go("home");
+          }}
+        />
+      )}{" "}
+      {screen === "university-dashboard" && (
+        <UniversityDashboard
+          user={user}
+          profile={profile}
+          institution={institution}
+          go={go}
+          flash={flash}
+          logout={async () => {
+            await supabase!.auth.signOut();
+            go("home");
+          }}
         />
       )}{" "}
       {screen === "volunteer" && <VolunteerDashboard user={user} />}{" "}
@@ -548,39 +693,65 @@ function Header({
   setLanguage: (language: string) => void;
   logout: () => void;
 }) {
+  const userRole = String(profile?.role ?? "").trim().toLowerCase();
+  const accountType = String(user?.user_metadata?.["account_type"] ?? "").trim().toLowerCase();
+  const orgType = String(user?.user_metadata?.["organization_type"] ?? partnerIdentity?.organization_type ?? "").trim().toLowerCase();
+  const officialCat = String(user?.user_metadata?.["official_category"] ?? "").trim().toLowerCase();
+  const expertise = Array.isArray(partnerIdentity?.expertise) ? partnerIdentity.expertise : [];
+
+  const isPri = userRole === "pri" || orgType === "pri" || accountType === "pri";
+  const isDept =
+    userRole === "government_department" ||
+    officialCat.includes("department") ||
+    expertise.includes("Government Department") ||
+    (userRole === "government" && !officialCat.includes("urban local body") && !officialCat.includes("ulb") && !isPri);
+  const isUniversity =
+    userRole === "university_admin" ||
+    userRole === "faculty" ||
+    userRole === "student" ||
+    userRole === "research" ||
+    orgType === "university" ||
+    accountType === "university";
+
   const identityName = profile?.role === "admin"
     ? profile.display_name || user?.email
     : partnerIdentity?.name || profile?.display_name || user?.email;
   const identityRole = profile?.role === "admin"
     ? "Admin"
-    : partnerIdentity?.organization_type || user?.user_metadata?.["organization_type"] || user?.user_metadata?.["account_type"] || "Member";
+    : isPri
+      ? "Panchayati Raj Institution (PRI)"
+      : isDept
+        ? "Government Line Department"
+        : isUniversity
+          ? "Higher-Education Institution"
+          : partnerIdentity?.organization_type || user?.user_metadata?.["organization_type"] || user?.user_metadata?.["account_type"] || "Member";
   const [menuOpen, setMenuOpen] = useState(false);
   const navigate = (screen: Screen) => { setMenuOpen(false); go(screen); };
-  const accountType = String(user?.user_metadata?.["account_type"] ?? "").trim().toLowerCase();
-  const orgType = String(user?.user_metadata?.["organization_type"] ?? partnerIdentity?.organization_type ?? "").trim().toLowerCase();
-  const userRole = String(profile?.role ?? "").trim().toLowerCase();
   const dashboardScreen: Screen = userRole === "admin"
     ? "admin"
-    : orgType === "government" || accountType === "government" || userRole === "government"
-      ? "ulb-dashboard"
-      : orgType === "industry" || accountType === "industry" || userRole === "industry"
-        ? "industry-dashboard"
-        : accountType === "volunteer"
-          ? "volunteer"
-          : ["organization", "ngo", "university"].includes(accountType) || ["university", "ngo"].includes(orgType)
-            ? "coordinator"
-            : "my-reports";
+    : isPri
+      ? "pri-dashboard"
+      : isDept
+        ? "department-dashboard"
+        : isUniversity
+          ? "university-dashboard"
+          : orgType === "government" || accountType === "government" || userRole === "government"
+            ? "ulb-dashboard"
+            : orgType === "industry" || accountType === "industry" || userRole === "industry"
+              ? "industry-dashboard"
+              : accountType === "volunteer"
+                ? "volunteer"
+                : ["organization", "ngo"].includes(accountType) || ["ngo"].includes(orgType)
+                  ? "coordinator"
+                  : "my-reports";
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur">
       <div className="container-page flex h-16 items-center justify-between sm:h-17">
         <button onClick={() => navigate("home")} className="flex min-w-0 items-center">
-          <img src="/samajsetu-community-logo.svg" alt="SamajSetu" className="h-9 w-auto sm:h-10" />
+          <img src="/samajsetu-community-logo.svg" alt="Samaj Setu" className="h-9 w-auto sm:h-10" />
         </button>
         <nav className="hidden items-center gap-3 text-sm font-bold sm:flex">
           <LanguageSelector onLanguageChange={setLanguage} />
-          <button onClick={() => navigate("ulb-dashboard")} className="rounded-lg border border-blue-200 bg-blue-50/80 px-3 py-1.5 text-xs font-bold text-blue-700 hover:bg-blue-100 transition">
-            🏙️ ULB Portal
-          </button>
           {user ? <><button onClick={() => navigate(dashboardScreen)} title="Open dashboard" className="text-right text-xs leading-4"><b className="block text-foreground">{identityName}</b><span className="capitalize text-muted-foreground">{identityRole}</span></button><button onClick={logout} title="Sign out" className="rounded-lg border border-border p-2"><LogOut size={16} /></button></> : <><button onClick={() => go("explore")}>Challenges</button><button onClick={() => go("auth")} className="rounded-lg border border-border px-3 py-2">Sign in / register</button><button onClick={() => navigate("report-role")} className="rounded-lg bg-primary px-4 py-2 text-primary-foreground">Report</button></>}
         </nav>
         <button onClick={() => setMenuOpen((open) => !open)} aria-label={menuOpen ? "Close navigation menu" : "Open navigation menu"} className="grid size-11 place-items-center rounded-lg border border-border sm:hidden">
@@ -588,14 +759,17 @@ function Header({
         </button>
       </div>
       {menuOpen && <nav className="container-page grid gap-1 border-t border-border py-3 text-sm font-bold sm:hidden">
+        <button onClick={() => navigate("department-dashboard")} className="rounded-lg bg-indigo-950/40 border border-indigo-800/40 px-3 py-3 text-left font-bold text-indigo-300">🏛️ GOVT LINE DEPARTMENT PORTAL</button>
+        <button onClick={() => navigate("university-dashboard")} className="rounded-lg bg-blue-950/40 border border-blue-800/40 px-3 py-3 text-left font-bold text-blue-300">🎓 UNIVERSITY / HEI RESEARCH PORTAL</button>
         <button onClick={() => navigate("ulb-dashboard")} className="rounded-lg bg-blue-50 px-3 py-3 text-left font-bold text-blue-700">🏙️ ULB MUNICIPAL PORTAL</button>
+        <button onClick={() => navigate("pri-dashboard")} className="rounded-lg bg-emerald-50 px-3 py-3 text-left font-bold text-emerald-700">🌾 PRI PANCHAYAT RAJ PORTAL</button>
         {user ? <><button onClick={() => navigate(dashboardScreen)} className="rounded-lg bg-surface px-3 py-3 text-left"><b className="block">{identityName}</b><span className="text-xs capitalize text-muted-foreground">{identityRole}</span></button><div className="px-2 py-2"><LanguageSelector onLanguageChange={setLanguage} /></div><button onClick={() => { setMenuOpen(false); logout(); }} className="rounded-lg px-3 py-3 text-left text-destructive hover:bg-destructive-soft">Sign out</button></> : <><button onClick={() => navigate("report-role")} className="rounded-lg bg-primary px-3 py-3 text-left text-primary-foreground">REPORT</button><button onClick={() => navigate("explore")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">CHALLENGES</button><button onClick={() => navigate("auth")} className="rounded-lg px-3 py-3 text-left hover:bg-surface">SIGN IN / REGISTER</button></>}
       </nav>}
     </header>
   );
 }
 function LaunchScreen() {
-  return <div className="launch-screen" role="status" aria-label="Loading SamajSetu"><div className="launch-mark"><img src="/samajsetu-community-logo.svg" alt="SamajSetu" className="launch-logo" /></div></div>;
+  return <div className="launch-screen" role="status" aria-label="Loading Samaj Setu"><div className="launch-mark"><img src="/samajsetu-community-logo.svg" alt="Samaj Setu" className="launch-logo" /></div></div>;
 }
 function Setup() {
   return (
@@ -639,12 +813,6 @@ function Home({ go, count, user, profile, flash }: { go: (x: Screen) => void; co
               >
                 Explore challenges
               </button>
-              <button
-                onClick={() => go("ulb-dashboard")}
-                className="rounded-lg border border-blue-500/30 bg-blue-500/10 px-5 py-3 font-bold text-blue-700 hover:bg-blue-500/20 transition"
-              >
-                🏙️ ULB Municipal Portal
-              </button>
             </div>
           </div>
           <figure className="hero-scene" aria-label="A connected community moving from reports to impact">
@@ -654,7 +822,7 @@ function Home({ go, count, user, profile, flash }: { go: (x: Screen) => void; co
               alt="Bridge crossing a forested river at sunrise"
               className="hero-scene-art"
             />
-            <figcaption>People / Ideas / Collaboration / Impact</figcaption><aside className="hero-impact-quote"><Sparkles size={24} /><p><b>Stronger communities,<br />a brighter tomorrow.</b><br /><small>SamajSetu</small></p></aside>
+            <figcaption>People / Ideas / Collaboration / Impact</figcaption><aside className="hero-impact-quote"><Sparkles size={24} /><p><b>Stronger communities,<br />a brighter tomorrow.</b><br /><small>Samaj Setu</small></p></aside>
           </figure>
         </div>
       </section>
@@ -662,7 +830,7 @@ function Home({ go, count, user, profile, flash }: { go: (x: Screen) => void; co
         <HeroMetric icon={<Users size={23} />} value={count} label="Live challenges" />
         <HeroMetric icon={<Activity size={23} />} value="Realtime" label="Database updates" />
         <HeroMetric icon={<BadgeCheck size={23} />} value="Human-led" label="Verification" />
-        <p className="hero-metrics-quote">&quot;Real change begins when people<br />come together.&quot;<br /><span>- SamajSetu</span></p>
+        <p className="hero-metrics-quote">&quot;Real change begins when people<br />come together.&quot;<br /><span>- Samaj Setu</span></p>
       </section>
       <section id="featured-challenges" className="featured-challenges container-page py-14 sm:py-18">
         <div className="flex flex-wrap items-end justify-between gap-4">
@@ -783,7 +951,6 @@ function AuthLegacy({ complete }: { complete: (accountType: string) => void }) {
 }
 type PartnerKind =
   | "University"
-  | "NGO"
   | "Government"
   | "Industry"
   | "Organization";
@@ -795,39 +962,31 @@ const partnerTypes: {
   action: string;
   icon: React.ReactNode;
 }[] = [
-  {
-    kind: "University",
-    title: "University",
-    description:
-      "Register an academic team that contributes skilled researchers, student volunteers, and institutional resources.",
-    action: "Register university",
-    icon: <GraduationCap size={22} />,
-  },
-  {
-    kind: "NGO",
-    title: "NGO",
-    description:
-      "Register a non-profit team to contribute expertise and community resources.",
-    action: "Register NGO",
-    icon: <ShieldCheck size={22} />,
-  },
-  {
-    kind: "Government",
-    title: "Government",
-    description:
-      "Register verified officials from Government Departments, Urban Local Bodies (ULBs), and Panchayati Raj Institutions (PRIs).",
-    action: "Register government",
-    icon: <Landmark size={22} />,
-  },
-  {
-    kind: "Industry",
-    title: "Industry & Innovation",
-    description:
-      "Register a company, startup, MSME, or CSR entity to collaborate through mentoring, tech development, funding, and pilot deployments.",
-    action: "Register industry",
-    icon: <Factory size={22} />,
-  },
-];
+    {
+      kind: "University",
+      title: "University",
+      description:
+        "Register an academic team that contributes skilled researchers, student volunteers, and institutional resources.",
+      action: "Register university",
+      icon: <GraduationCap size={22} />,
+    },
+    {
+      kind: "Government",
+      title: "Government",
+      description:
+        "Register verified officials from Government Departments, Urban Local Bodies (ULBs), and Panchayati Raj Institutions (PRIs).",
+      action: "Register government",
+      icon: <Landmark size={22} />,
+    },
+    {
+      kind: "Industry",
+      title: "Industry & Innovation",
+      description:
+        "Register a company, startup, MSME, or CSR entity to collaborate through mentoring, tech development, funding, and pilot deployments.",
+      action: "Register industry",
+      icon: <Factory size={22} />,
+    },
+  ];
 
 function Auth({ complete, recovery = false }: { complete: (accountType: string) => void; recovery?: boolean }) {
   const [kind, setKind] = useState<PartnerKind | null>(null);
@@ -856,14 +1015,20 @@ function Auth({ complete, recovery = false }: { complete: (accountType: string) 
       if (profileError || !accountProfile) {
         await supabase.auth.signOut();
         setBusy(false);
-        setError("We could not determine this account's SamajSetu role. Please contact support.");
+        setError("We could not determine this account's Samaj Setu role. Please contact support.");
         return;
       }
       setBusy(false);
       const role = accountProfile.role.trim().toLowerCase();
       const orgType = String(data.user.user_metadata?.["organization_type"] ?? "").trim().toLowerCase();
+      const accountType = String(data.user.user_metadata?.["account_type"] ?? "").trim().toLowerCase();
+      const officialCat = String(data.user.user_metadata?.["official_category"] ?? "").trim().toLowerCase();
       if (orgType === "industry" || role === "industry") {
         complete("industry");
+      } else if (role === "pri" || orgType === "pri" || accountType === "pri") {
+        complete("pri");
+      } else if (role === "government_department" || officialCat.includes("department")) {
+        complete("department");
       } else if (orgType === "government" || role === "government") {
         complete("government");
       } else {
@@ -876,8 +1041,13 @@ function Auth({ complete, recovery = false }: { complete: (accountType: string) 
     setBusy(true); setError("");
     const { data: registeredAccount, error: limitError } = await supabase.rpc("request_password_reset", { requested_email: email.trim().toLowerCase() });
     if (limitError) { setBusy(false); setError(limitError.message); return; }
+    const currentOrigin = typeof window !== "undefined" ? window.location.origin : "";
+    const redirectUrl = currentOrigin ? `${currentOrigin}/?recovery=true` : undefined;
     const { error: resetError } = registeredAccount
-      ? await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: `${window.location.origin}/` })
+      ? await supabase.auth.resetPasswordForEmail(
+          email.trim(),
+          redirectUrl ? { redirectTo: redirectUrl } : undefined
+        )
       : { error: null };
     setBusy(false);
     if (resetError) setError(resetError.message);
@@ -894,8 +1064,8 @@ function Auth({ complete, recovery = false }: { complete: (accountType: string) 
     <section className="auth-page container-page max-w-6xl py-8 sm:py-14">
       <div className="auth-shell card-surface overflow-hidden p-0">
         <aside className="auth-intro">
-          <img src="/samajsetu-community-logo.svg" alt="SamajSetu" className="h-14 w-auto max-w-full" />
-          <p className="mt-7 text-xs font-bold tracking-[.14em] text-white/75">SAMAJSETU PARTNER NETWORK</p>
+          <img src="/samajsetu-community-logo.svg" alt="Samaj Setu" className="h-14 w-auto max-w-full" />
+          <p className="mt-7 text-xs font-bold tracking-[.14em] text-white/75">SAMAJ SETU PARTNER NETWORK</p>
           <h2 className="mt-3 font-display text-3xl font-bold leading-tight text-white">Work together for stronger communities.</h2>
           <p className="mt-4 text-sm leading-6 text-white/80">Bring your organization&apos;s expertise, volunteers, and resources to verified local problems.</p>
           <div className="auth-intro-points">
@@ -905,73 +1075,72 @@ function Auth({ complete, recovery = false }: { complete: (accountType: string) 
           </div>
         </aside>
         <div className="auth-panel p-6 sm:p-10">
-        <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
-          SECURE PARTNER ACCESS
-        </span>
-        <h1 className="mt-4 text-3xl font-bold">{recovery ? "Create a new password" : signIn ? "Welcome back" : "Create a partner account"}</h1>
-        {recovery ? <div className="mt-6 grid max-w-md gap-3">{resetComplete ? <p className="rounded-lg bg-accent-soft p-4 text-sm font-semibold">Password reset successful. You can now sign in with your new password.</p> : <><div className="relative"><input type={showPassword ? "text" : "password"} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="New password" className="w-full rounded-lg border border-input p-3 pr-12"/><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Hide password" : "Show password"} className="absolute right-1 top-1 grid size-10 place-items-center rounded-md text-muted-foreground">{showPassword ? <EyeOff size={18}/> : <Eye size={18}/>}</button></div><button disabled={busy} onClick={() => void saveNewPassword()} className="rounded-lg bg-primary py-3 font-bold text-primary-foreground disabled:opacity-50">{busy ? "Saving..." : "Save new password"}</button></>}</div> : <>
-        <p className="mt-2 text-muted-foreground">
-          Choose the type of team you represent. You can always sign in with the same secure account.
-        </p>
-        <div className="mt-7 grid gap-4 sm:grid-cols-2">
-          {partnerTypes.map((partner, index) => (
-            <button
-              key={partner.title}
-              type="button"
-              onClick={() => setKind(partner.kind)}
-              className={`auth-choice flex flex-col justify-between rounded-2xl border border-border p-5 text-left ${
-                index === partnerTypes.length - 1 && partnerTypes.length % 2 === 1 ? "sm:col-span-2" : ""
-              }`}
-            >
-              <div>
-                <span className="auth-choice-icon">{partner.icon}</span>
-                <h2 className="mt-4 text-xl font-bold">{partner.title}</h2>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  {partner.description}
-                </p>
-              </div>
-              <span className="auth-choice-action mt-5 inline-flex items-center gap-2 text-sm font-bold text-primary">
-                {partner.action} <ArrowRight size={16} />
-              </span>
-            </button>
-          ))}
-        </div>
-        <div className="auth-login-section mt-8 border-t border-border pt-6 text-center">
-          <button
-            onClick={() => {
-              setSignIn(!signIn);
-              setError("");
-            }}
-            className="auth-login-toggle text-sm font-bold text-primary"
-          >
-            Already registered? Sign in securely
-          </button>
-          {signIn && (
-            <div className="auth-login-form mx-auto mt-5 grid max-w-md gap-4 text-left">
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="Official email ID"
-                className="rounded-xl border border-input p-3"
-              />
-              <div className="relative">
-                <input type={showPassword ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" className="w-full rounded-xl border border-input p-3 pr-12" />
-                <button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Hide password" : "Show password"} className="absolute right-1 top-1 grid size-10 place-items-center rounded-lg text-muted-foreground">{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button>
-              </div>
-              <button type="button" onClick={() => { setForgotPassword(true); setResetSent(false); setError(""); }} className="justify-self-start text-sm font-bold text-primary">Forgot Password?</button>
-              {error && <p className="text-sm text-destructive">{error}</p>}
-              <button
-                disabled={busy || !email || !password}
-                onClick={() => void login()}
-                className="auth-submit rounded-xl bg-primary py-3 font-bold text-primary-foreground disabled:opacity-50"
-              >
-                {busy ? "Signing in..." : "Sign in"}
-              </button>
-              {forgotPassword && <div className="auth-reset rounded-xl border border-primary/20 bg-primary-soft p-4"><p className="font-bold">Reset your password</p>{resetSent ? <p className="mt-1 text-sm text-muted-foreground">If this registered email exists, a secure reset link has been sent.</p> : <><p className="mt-1 text-sm text-muted-foreground">We will send a secure, single-use reset link. Requests are limited to four per cooldown window.</p><button disabled={busy || !email} onClick={() => void requestReset()} className="mt-3 rounded-xl bg-primary px-4 py-2 text-sm font-bold text-primary-foreground disabled:opacity-50">{busy ? "Sending..." : "Send reset link"}</button></>}</div>}
+          <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
+            SECURE PARTNER ACCESS
+          </span>
+          <h1 className="mt-4 text-3xl font-bold">{recovery ? "Create a new password" : signIn ? "Welcome back" : "Create a partner account"}</h1>
+          {recovery ? <div className="mt-6 grid max-w-md gap-3">{resetComplete ? <p className="rounded-lg bg-accent-soft p-4 text-sm font-semibold">Password reset successful. You can now sign in with your new password.</p> : <><div className="relative"><input type={showPassword ? "text" : "password"} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="New password" className="w-full rounded-lg border border-input p-3 pr-12" /><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Hide password" : "Show password"} className="absolute right-1 top-1 grid size-10 place-items-center rounded-md text-muted-foreground">{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></div><button disabled={busy} onClick={() => void saveNewPassword()} className="rounded-lg bg-primary py-3 font-bold text-primary-foreground disabled:opacity-50">{busy ? "Saving..." : "Save new password"}</button></>}</div> : <>
+            <p className="mt-2 text-muted-foreground">
+              Choose the type of team you represent. You can always sign in with the same secure account.
+            </p>
+            <div className="mt-7 grid gap-4 sm:grid-cols-2">
+              {partnerTypes.map((partner, index) => (
+                <button
+                  key={partner.title}
+                  type="button"
+                  onClick={() => setKind(partner.kind)}
+                  className={`auth-choice flex flex-col justify-between rounded-2xl border border-border p-5 text-left ${index === partnerTypes.length - 1 && partnerTypes.length % 2 === 1 ? "sm:col-span-2" : ""
+                    }`}
+                >
+                  <div>
+                    <span className="auth-choice-icon">{partner.icon}</span>
+                    <h2 className="mt-4 text-xl font-bold">{partner.title}</h2>
+                    <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                      {partner.description}
+                    </p>
+                  </div>
+                  <span className="auth-choice-action mt-5 inline-flex items-center gap-2 text-sm font-bold text-primary">
+                    {partner.action} <ArrowRight size={16} />
+                  </span>
+                </button>
+              ))}
             </div>
-          )}
-        </div></>}
+            <div className="auth-login-section mt-8 border-t border-border pt-6 text-center">
+              <button
+                onClick={() => {
+                  setSignIn(!signIn);
+                  setError("");
+                }}
+                className="auth-login-toggle text-sm font-bold text-primary"
+              >
+                Already registered? Sign in securely
+              </button>
+              {signIn && (
+                <div className="auth-login-form mx-auto mt-5 grid max-w-md gap-4 text-left">
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="Official email ID"
+                    className="rounded-xl border border-input p-3"
+                  />
+                  <div className="relative">
+                    <input type={showPassword ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" className="w-full rounded-xl border border-input p-3 pr-12" />
+                    <button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Hide password" : "Show password"} className="absolute right-1 top-1 grid size-10 place-items-center rounded-lg text-muted-foreground">{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button>
+                  </div>
+                  <button type="button" onClick={() => { setForgotPassword(true); setResetSent(false); setError(""); }} className="justify-self-start text-sm font-bold text-primary">Forgot Password?</button>
+                  {error && <p className="text-sm text-destructive">{error}</p>}
+                  <button
+                    disabled={busy || !email || !password}
+                    onClick={() => void login()}
+                    className="auth-submit rounded-xl bg-primary py-3 font-bold text-primary-foreground disabled:opacity-50"
+                  >
+                    {busy ? "Signing in..." : "Sign in"}
+                  </button>
+                  {forgotPassword && <div className="auth-reset rounded-xl border border-primary/20 bg-primary-soft p-4"><p className="font-bold">Reset your password</p>{resetSent ? <p className="mt-1 text-sm text-muted-foreground">If this registered email exists, a secure reset link has been sent.</p> : <><p className="mt-1 text-sm text-muted-foreground">We will send a secure, single-use reset link. Requests are limited to four per cooldown window.</p><button disabled={busy || !email} onClick={() => void requestReset()} className="mt-3 rounded-xl bg-primary px-4 py-2 text-sm font-bold text-primary-foreground disabled:opacity-50">{busy ? "Sending..." : "Send reset link"}</button></>}</div>}
+                </div>
+              )}
+            </div></>}
         </div>
       </div>
       {kind === "Government" ? (
@@ -985,6 +1154,15 @@ function Auth({ complete, recovery = false }: { complete: (accountType: string) 
         />
       ) : kind === "Industry" ? (
         <IndustryPartnerRegistration
+          close={() => setKind(null)}
+          onLogin={() => {
+            setKind(null);
+            setSignIn(true);
+          }}
+          complete={complete}
+        />
+      ) : kind === "University" ? (
+        <UniversityRegistration
           close={() => setKind(null)}
           onLogin={() => {
             setKind(null);
@@ -1198,7 +1376,7 @@ function PartnerRegistration({
             )}
           </div>
           <label className="text-sm font-bold">
-            {kind === "NGO" ? "Email ID" : "Official Email ID"}
+            Official Email ID
             <input
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -1304,7 +1482,7 @@ function ReportRoleSelection({
       <header className="sticky top-0 z-40 border-b border-[#0B5D2A]/15 bg-white/95 backdrop-blur">
         <div className="container-page flex h-16 items-center justify-between sm:h-17">
           <button onClick={() => go("home")} className="flex items-center gap-3">
-            <img src="/samajsetu-community-logo.svg" alt="SamajSetu" className="h-9 w-auto sm:h-10" />
+            <img src="/samajsetu-community-logo.svg" alt="Samaj Setu" className="h-9 w-auto sm:h-10" />
           </button>
           <button
             onClick={() => go("home")}
@@ -1364,14 +1542,7 @@ function ReportRoleSelection({
   );
 }
 
-const CORE_REPORT_DOMAINS = [
-  "Water Supply",
-  "Sanitation",
-  "Roads & Infrastructure",
-  "Healthcare",
-  "Education",
-  "Agriculture",
-] as const;
+const CORE_REPORT_DOMAINS = APPROVED_CIVIC_CATEGORIES;
 
 interface DepartmentMapping {
   title: string;
@@ -1379,50 +1550,16 @@ interface DepartmentMapping {
   jurisdiction: string;
 }
 
-const CATEGORY_DEPARTMENT_MAP: Record<string, DepartmentMapping> = {
-  "Water Supply": {
-    title: "Department of Drinking Water and Sanitation",
-    scope:
-      "Responsible for rural and urban piped drinking water delivery, potable water quality monitoring, and maintenance of civic water supply infrastructure.\nJurisdiction covers municipal pipeline networks, district water boards, and rural Jal Jeevan Mission supply assets.",
-    jurisdiction: "District Drinking Water & Sanitation Division / Municipal Water Works",
-  },
-  "Water": {
-    title: "Department of Drinking Water and Sanitation",
-    scope:
-      "Responsible for rural and urban piped drinking water delivery, potable water quality monitoring, and maintenance of civic water supply infrastructure.\nJurisdiction covers municipal pipeline networks, district water boards, and rural Jal Jeevan Mission supply assets.",
-    jurisdiction: "District Drinking Water & Sanitation Division / Municipal Water Works",
-  },
-  "Sanitation": {
-    title: "Directorate of Swachh Bharat Mission & Municipal Sanitation",
-    scope:
-      "Oversees public sanitation complexes, community solid and liquid waste processing, and urban-rural drainage network maintenance.\nJurisdiction encompasses municipal ward sanitation, gram panchayat cleanliness operations, and civic waste treatment facilities.",
-    jurisdiction: "Municipal Public Health & Sanitation Wing / Zilla Swachhata Cell",
-  },
-  "Roads & Infrastructure": {
-    title: "Public Works Department (PWD) & Rural Road Development Agency",
-    scope:
-      "Governs road connectivity, structural bridge maintenance, pothole restorations, and integrated storm-water runoff drainage systems.\nJurisdiction includes state highways, major district thoroughfares, municipal avenues, and PMGSY village access corridors.",
-    jurisdiction: "State Public Works Department (PWD) / Rural Engineering Services",
-  },
-  "Healthcare": {
-    title: "Department of Health and Family Welfare",
-    scope:
-      "Administers primary and community healthcare facilities, essential drug supplies, disease outbreak control, and maternal care services.\nJurisdiction spans primary health centres (PHCs), urban community health clinics, and district civil medical authorities.",
-    jurisdiction: "District Chief Medical Officer (CMO) / Public Health Directorate",
-  },
-  "Education": {
-    title: "Department of School Education and Literacy",
-    scope:
-      "Manages public school physical infrastructure, drinking water and toilet facilities for students, classroom safety, and midday meal operations.\nJurisdiction extends across government and government-aided primary, secondary, and senior secondary institutions.",
-    jurisdiction: "District Education Office (DEO) / Block Education Resource Centres",
-  },
-  "Agriculture": {
-    title: "Department of Agriculture and Farmers Welfare",
-    scope:
-      "Facilitates public canal irrigation maintenance, farm drainage solutions, soil health diagnostics, and agrarian pest outbreak response.\nJurisdiction covers agricultural sub-divisions, block Krishi Vigyan Kendras (KVK), and district irrigation command areas.",
-    jurisdiction: "District Agriculture Office / Command Area Development Authority",
-  },
-};
+const CATEGORY_DEPARTMENT_MAP: Record<string, DepartmentMapping> = Object.fromEntries(
+  APPROVED_CIVIC_CATEGORIES.map((cat) => [
+    cat,
+    {
+      title: DEPARTMENT_TAXONOMY[cat].department,
+      scope: DEPARTMENT_TAXONOMY[cat].departmentScope,
+      jurisdiction: DEPARTMENT_TAXONOMY[cat].jurisdictionScope,
+    },
+  ])
+);
 function AIClassificationRoutingPanel({
   aiResult,
   isAnalyzing,
@@ -1468,8 +1605,12 @@ function AIClassificationRoutingPanel({
               <Clock3 size={12} className="animate-spin" /> Analyzing...
             </span>
           ) : aiResult ? (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-bold text-emerald-900">
-              <CheckCircle2 size={12} className="text-emerald-700" /> AI Analysis Complete
+            <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ${aiResult.needsReview
+              ? "bg-amber-100 text-amber-900 border border-amber-300"
+              : "bg-emerald-100 text-emerald-900 border border-emerald-300"
+              }`}>
+              <CheckCircle2 size={12} className={aiResult.needsReview ? "text-amber-700" : "text-emerald-700"} />
+              {aiResult.needsReview ? "Needs Review" : "Analysis Complete"}
             </span>
           ) : (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-primary-soft px-2.5 py-1 text-xs font-bold text-primary">
@@ -1522,15 +1663,14 @@ function AIClassificationRoutingPanel({
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Priority</span>
                 <span
-                  className={`rounded-full px-3 py-0.5 text-xs font-black uppercase tracking-wider ${
-                    aiResult.priorityLevel === "CRITICAL"
-                      ? "bg-red-100 text-red-900 border border-red-300"
-                      : aiResult.priorityLevel === "HIGH"
+                  className={`rounded-full px-3 py-0.5 text-xs font-black uppercase tracking-wider ${aiResult.priorityLevel === "CRITICAL"
+                    ? "bg-red-100 text-red-900 border border-red-300"
+                    : aiResult.priorityLevel === "HIGH"
                       ? "bg-amber-100 text-amber-900 border border-amber-300"
                       : aiResult.priorityLevel === "MEDIUM"
-                      ? "bg-sky-100 text-sky-900 border border-sky-300"
-                      : "bg-slate-100 text-slate-800 border border-slate-300"
-                  }`}
+                        ? "bg-sky-100 text-sky-900 border border-sky-300"
+                        : "bg-slate-100 text-slate-800 border border-slate-300"
+                    }`}
                 >
                   {aiResult.priorityLevel}
                 </span>
@@ -1546,7 +1686,13 @@ function AIClassificationRoutingPanel({
               <p className="font-bold text-foreground text-sm leading-snug">{aiResult.routedTo || aiResult.recommendedDepartment}</p>
               <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-muted-foreground">
                 <span className="flex items-center gap-1"><Landmark size={13} className="text-primary shrink-0" /> Dept: <b className="text-foreground">{aiResult.recommendedDepartment}</b></span>
-                {aiResult.organizationType && (
+                {aiResult.lineDepartment && (
+                  <span className="flex items-center gap-1"><ShieldCheck size={13} className="text-primary shrink-0" /> Line Dept: <b className="text-foreground">{aiResult.lineDepartment}</b></span>
+                )}
+                {aiResult.authority && (
+                  <span className="rounded bg-primary-soft px-1.5 py-0.5 text-[10px] font-bold text-primary">{aiResult.authority}</span>
+                )}
+                {aiResult.organizationType && !aiResult.authority && (
                   <span className="rounded bg-primary-soft px-1.5 py-0.5 text-[10px] font-bold text-primary">{aiResult.organizationType}</span>
                 )}
               </div>
@@ -1561,11 +1707,23 @@ function AIClassificationRoutingPanel({
               </p>
             </div>
 
-            {/* AI Confidence */}
+            {/* AI Confidence & Tier */}
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs font-bold">
                 <span className="text-[10px] uppercase tracking-wider text-muted-foreground">AI Confidence</span>
-                <span className="font-mono text-primary">{aiResult.confidence}%</span>
+                <div className="flex items-center gap-1.5">
+                  {aiResult.confidenceTier && (
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${aiResult.confidenceTier === "High"
+                      ? "bg-emerald-100 text-emerald-800 border border-emerald-200"
+                      : aiResult.confidenceTier === "Medium"
+                        ? "bg-sky-100 text-sky-800 border border-sky-200"
+                        : "bg-amber-100 text-amber-800 border border-amber-200"
+                      }`}>
+                      {aiResult.confidenceTier} Tier
+                    </span>
+                  )}
+                  <span className="font-mono text-primary">{aiResult.confidence}%</span>
+                </div>
               </div>
               <div className="h-2 w-full rounded-full bg-surface overflow-hidden">
                 <div
@@ -1574,6 +1732,38 @@ function AIClassificationRoutingPanel({
                 />
               </div>
             </div>
+
+            {/* Why This Category (Grounded AI Reasoning) */}
+            {aiResult.explanation && (
+              <div className="rounded-xl border border-primary/25 bg-[#F6FBF8] p-3.5 space-y-1.5">
+                <div className="flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider text-primary">
+                  <BrainCircuit size={13} />
+                  <span>Why this Category</span>
+                </div>
+                <p className="text-xs text-foreground leading-relaxed font-normal">{aiResult.explanation}</p>
+              </div>
+            )}
+
+            {/* Secondary Context Identified */}
+            {aiResult.secondaryContext && aiResult.secondaryContext.length > 0 && (
+              <div className="rounded-xl bg-surface/80 border border-border/70 p-3 text-xs space-y-1.5">
+                <span className="font-bold text-foreground block">Secondary Context Identified:</span>
+                <p className="text-[11px] text-muted-foreground leading-snug">
+                  Mentions detected as incidental context, not the primary civic domain:
+                </p>
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {aiResult.secondaryContext.map((sec, idx) => (
+                    <span
+                      key={idx}
+                      className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground border border-border"
+                    >
+                      <span>{sec}</span>
+                      <span className="text-[9px] text-muted-foreground uppercase">(Context)</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Key Problem Details */}
             {aiResult.keyDetails && aiResult.keyDetails.length > 0 && (
@@ -1584,31 +1774,6 @@ function AIClassificationRoutingPanel({
                     <li key={idx}>{detail}</li>
                   ))}
                 </ul>
-              </div>
-            )}
-
-            {/* Multi-Stakeholder Recommendations */}
-            {aiResult.stakeholderRecommendations && (
-              <div className="rounded-xl bg-surface/70 p-3 text-xs space-y-2">
-                <span className="font-bold text-foreground block">Multi-Stakeholder Collaboration:</span>
-                {aiResult.stakeholderRecommendations.university && (
-                  <div className="flex items-start gap-2 text-[11px] text-muted-foreground">
-                    <GraduationCap size={14} className="text-blue-600 shrink-0 mt-0.5" />
-                    <div><b className="text-foreground">University:</b> {aiResult.stakeholderRecommendations.university}</div>
-                  </div>
-                )}
-                {aiResult.stakeholderRecommendations.industry && (
-                  <div className="flex items-start gap-2 text-[11px] text-muted-foreground">
-                    <Briefcase size={14} className="text-amber-600 shrink-0 mt-0.5" />
-                    <div><b className="text-foreground">Industry / CSR:</b> {aiResult.stakeholderRecommendations.industry}</div>
-                  </div>
-                )}
-                {aiResult.stakeholderRecommendations.community && (
-                  <div className="flex items-start gap-2 text-[11px] text-muted-foreground">
-                    <Users size={14} className="text-emerald-600 shrink-0 mt-0.5" />
-                    <div><b className="text-foreground">Community:</b> {aiResult.stakeholderRecommendations.community}</div>
-                  </div>
-                )}
               </div>
             )}
 
@@ -1667,7 +1832,7 @@ function AIClassificationRoutingPanel({
             <div>
               <p className="font-bold text-foreground">AI Intelligence Analyzing Report...</p>
               <p className="mt-1 text-xs text-muted-foreground max-w-xs mx-auto">
-                Understanding problem description within <b className="text-primary">{selectedDomain || "selected domain"}</b>, assessing severity and querying registered departments.
+                Extracting semantic signals, classifying civic category, calculating priority, and matching registered government & line departments.
               </p>
             </div>
           </div>
@@ -1678,8 +1843,8 @@ function AIClassificationRoutingPanel({
               <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Live Input Stream</span>
               <div className="space-y-1 text-xs">
                 <p>
-                  <span className="text-muted-foreground">Selected Domain: </span>
-                  <b className="text-foreground">{selectedDomain || "Waiting for selection..."}</b>
+                  <span className="text-muted-foreground">Category & Routing: </span>
+                  <b className="text-primary font-bold">Civic AI Auto-Classification</b>
                 </p>
                 <p>
                   <span className="text-muted-foreground">Jurisdiction: </span>
@@ -1701,15 +1866,15 @@ function AIClassificationRoutingPanel({
               <ol className="space-y-2 text-[11px]">
                 <li className="flex items-start gap-2">
                   <span className="grid size-4 shrink-0 place-items-center rounded-full bg-primary-soft text-[10px] font-bold text-primary">1</span>
-                  <span>AI analyzes problem description strictly within the selected domain.</span>
+                  <span>AI classifies problem category & sector from your natural language description.</span>
                 </li>
                 <li className="flex items-start gap-2">
                   <span className="grid size-4 shrink-0 place-items-center rounded-full bg-primary-soft text-[10px] font-bold text-primary">2</span>
-                  <span>Extracts specific issue subcategory and calculates seriousness priority.</span>
+                  <span>Extracts specific issue subcategory and calculates urgency priority score.</span>
                 </li>
                 <li className="flex items-start gap-2">
                   <span className="grid size-4 shrink-0 place-items-center rounded-full bg-primary-soft text-[10px] font-bold text-primary">3</span>
-                  <span>Dynamically matches registered government department covering the jurisdiction.</span>
+                  <span>Dynamically matches active registered government, line department & authority from the real database.</span>
                 </li>
                 <li className="flex items-start gap-2">
                   <span className="grid size-4 shrink-0 place-items-center rounded-full bg-primary-soft text-[10px] font-bold text-primary">4</span>
@@ -1755,13 +1920,16 @@ function Report({
 
   const [title, setTitle] = useState(""),
     [description, setDescription] = useState(""),
-    [category, setCategory] = useState(""),
+    [severity, setSeverity] = useState("2"),
+    [urgency, setUrgency] = useState("2"),
+    [affectedPopulation, setAffectedPopulation] = useState(""),
     [supportingInfo, setSupportingInfo] = useState(""),
     [nearProblem, setNearProblem] = useState<"yes" | "no" | "">(""),
     [voiceTranscript, setVoiceTranscript] = useState(""),
     [voiceRecording, setVoiceRecording] = useState<"title" | "description" | null>(null),
     [voiceError, setVoiceError] = useState(""),
     [reviewing, setReviewing] = useState(false),
+    [state, setState] = useState(""),
     [district, setDistrict] = useState(""),
     [block, setBlock] = useState(""),
     [locality, setLocality] = useState(""),
@@ -1794,9 +1962,15 @@ function Report({
       file: File;
       preview: string;
       type: "image" | "video" | "audio" | "document";
-    }[]>([]);
-
-  const assignedDept = category ? CATEGORY_DEPARTMENT_MAP[category] || null : null;
+    }[]>([]),
+    [isTranslatingVoice, setIsTranslatingVoice] = useState(false),
+    [translationStatus, setTranslationStatus] = useState(""),
+    [voiceTranslationInfo, setVoiceTranslationInfo] = useState<{
+      field: "title" | "description";
+      originalText: string;
+      translatedText: string;
+      sourceLanguageName: string;
+    } | null>(null);
 
   const voiceSession = useRef<{
     socket: WebSocket;
@@ -1806,6 +1980,7 @@ function Report({
     gain: GainNode;
     context: AudioContext;
   } | null>(null);
+  const browserSpeechSession = useRef<any>(null);
   const voiceCommittedText = useRef("");
   const voicePartialText = useRef("");
   const voiceBaseText = useRef("");
@@ -1831,7 +2006,7 @@ function Report({
         setCopiedLink(true);
         setTimeout(() => setCopiedLink(false), 2000);
       }
-    } catch {}
+    } catch { }
   };
 
   const nearby = challenges
@@ -1857,10 +2032,10 @@ function Report({
       const type = file.type.startsWith("image/")
         ? "image"
         : file.type.startsWith("video/")
-        ? "video"
-        : file.type.startsWith("audio/")
-        ? "audio"
-        : "document";
+          ? "video"
+          : file.type.startsWith("audio/")
+            ? "audio"
+            : "document";
 
       if (type === "image") {
         const reader = new FileReader();
@@ -1913,6 +2088,10 @@ function Report({
   };
 
   const stopVoiceResources = () => {
+    if (browserSpeechSession.current) {
+      try { browserSpeechSession.current.stop(); } catch {}
+      browserSpeechSession.current = null;
+    }
     const session = voiceSession.current;
     if (!session) return;
     session.processor.disconnect();
@@ -1930,9 +2109,98 @@ function Report({
     (field === "title" ? setTitle : setDescription)(fullText);
   };
 
+  const finalizeAndTranslateVoice = async (field: "title" | "description") => {
+    const transcript = [voiceCommittedText.current, voicePartialText.current].filter(Boolean).join(" ").trim();
+    if (!transcript) return;
+
+    setVoiceTranscript(transcript);
+
+    // If speech is in a regional language, automatically translate to English
+    if (isLikelyRegionalOrNonEnglish(transcript, speechLanguage)) {
+      setIsTranslatingVoice(true);
+      const detectedScript = detectScriptLanguage(transcript);
+      const langHint = detectedScript || speechLanguage;
+      const langCode = langHint.split("-")[0]?.toLowerCase() || "regional";
+      const langName = REGIONAL_LANGUAGE_NAMES[langCode] || "Regional Language";
+      setTranslationStatus(`Translating ${langName} speech to English...`);
+
+      try {
+        const res = await autoTranslateToEnglish(transcript, speechLanguage);
+        if (res.isTranslated && res.translatedText) {
+          const fullEnglish = [voiceBaseText.current, res.translatedText].filter(Boolean).join(voiceBaseText.current && res.translatedText ? " " : "");
+          (field === "title" ? setTitle : setDescription)(fullEnglish);
+          setVoiceTranslationInfo({
+            field,
+            originalText: transcript,
+            translatedText: res.translatedText,
+            sourceLanguageName: res.sourceLanguageName,
+          });
+        }
+      } catch (err) {
+        console.warn("Auto-translation of regional speech failed:", err);
+      } finally {
+        setIsTranslatingVoice(false);
+        setTranslationStatus("");
+      }
+    }
+  };
+
+  const startBrowserSpeechRecognition = (field: "title" | "description") => {
+    const SpeechRecognitionClass = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionClass) {
+      setVoiceError("Microphone transcription is not supported in this browser. Please try Chrome, Edge, Safari, or an updated browser.");
+      return;
+    }
+    try {
+      const recognition = new SpeechRecognitionClass();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = speechLanguage || "hi-IN";
+
+      voiceBaseText.current = (field === "title" ? title : description).trim();
+      voiceCommittedText.current = "";
+      voicePartialText.current = "";
+      browserSpeechSession.current = recognition;
+      setVoiceRecording(field);
+
+      recognition.onresult = (event: any) => {
+        let interim = "";
+        let final = "";
+        for (let i = 0; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            final += event.results[i][0].transcript + " ";
+          } else {
+            interim += event.results[i][0].transcript;
+          }
+        }
+        if (final) voiceCommittedText.current = final.trim();
+        voicePartialText.current = interim.trim();
+        updateLiveTranscript(field);
+      };
+
+      recognition.onerror = (event: any) => {
+        if (event.error !== "no-speech") {
+          setVoiceError(`Voice recognition notice: ${event.error}`);
+        }
+        setVoiceRecording(null);
+      };
+
+      recognition.onend = () => {
+        setVoiceRecording(null);
+        void finalizeAndTranslateVoice(field);
+      };
+
+      recognition.start();
+    } catch (e: any) {
+      setVoiceError(e?.message || "Could not start voice transcription.");
+      setVoiceRecording(null);
+    }
+  };
+
   const startVoiceTranscription = async (field: "title" | "description") => {
     setVoiceError("");
     setError("");
+    setVoiceTranslationInfo(null);
     if (!window.isSecureContext) {
       setVoiceError("Microphone access requires a secure (HTTPS) connection. Open the deployed HTTPS site or use localhost.");
       return;
@@ -1992,8 +2260,15 @@ function Report({
       socket.onclose = () => {
         stopVoiceResources();
         setVoiceRecording(null);
+        void finalizeAndTranslateVoice(field);
       };
     } catch (cause: any) {
+      // Seamlessly fall back to native browser speech recognition if ElevenLabs token is unavailable
+      const SpeechRecognitionClass = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRecognitionClass) {
+        startBrowserSpeechRecognition(field);
+        return;
+      }
       stopVoiceResources();
       setVoiceRecording(null);
       setVoiceError(cause?.name === "NotAllowedError" ? "Microphone permission was blocked. Allow it in your browser site settings, then try again." : cause?.message || "We could not start live transcription. Please try again.");
@@ -2001,17 +2276,55 @@ function Report({
   };
 
   const stopVoiceTranscription = () => {
+    const activeField = voiceRecording;
+    if (browserSpeechSession.current) {
+      try { browserSpeechSession.current.stop(); } catch {}
+      browserSpeechSession.current = null;
+    }
     const session = voiceSession.current;
-    if (!session) return;
-    session.processor.disconnect();
-    session.source.disconnect();
-    session.stream.getTracks().forEach((track) => track.stop());
-    if (session.socket.readyState === WebSocket.OPEN) {
-      session.socket.send(JSON.stringify({ message_type: "input_audio_chunk", audio_base_64: "", commit: true }));
-      window.setTimeout(() => session.socket.close(), 650);
+    if (session) {
+      session.processor.disconnect();
+      session.source.disconnect();
+      session.gain.disconnect();
+      session.stream.getTracks().forEach((track) => track.stop());
+      if (session.socket.readyState === WebSocket.OPEN) {
+        session.socket.send(JSON.stringify({ message_type: "input_audio_chunk", audio_base_64: "", commit: true }));
+        window.setTimeout(() => {
+          session.socket.close();
+          if (activeField) void finalizeAndTranslateVoice(activeField);
+        }, 500);
+      } else {
+        stopVoiceResources();
+        setVoiceRecording(null);
+        if (activeField) void finalizeAndTranslateVoice(activeField);
+      }
     } else {
-      stopVoiceResources();
       setVoiceRecording(null);
+      if (activeField) void finalizeAndTranslateVoice(activeField);
+    }
+  };
+
+  const translateFieldManually = async (field: "title" | "description") => {
+    const currentText = (field === "title" ? title : description).trim();
+    if (!currentText) return;
+    setIsTranslatingVoice(true);
+    setTranslationStatus("Translating to English...");
+    try {
+      const res = await autoTranslateToEnglish(currentText, speechLanguage);
+      if (res.isTranslated && res.translatedText) {
+        (field === "title" ? setTitle : setDescription)(res.translatedText);
+        setVoiceTranslationInfo({
+          field,
+          originalText: currentText,
+          translatedText: res.translatedText,
+          sourceLanguageName: res.sourceLanguageName,
+        });
+      }
+    } catch (err) {
+      console.warn("Manual translation failed:", err);
+    } finally {
+      setIsTranslatingVoice(false);
+      setTranslationStatus("");
     }
   };
 
@@ -2022,7 +2335,7 @@ function Report({
     const duplicateArgs = {
       problem_title: title.trim(),
       problem_description: description.trim(),
-      problem_domain: category,
+      problem_domain: null,
       problem_lat: latitude,
       problem_lng: longitude,
       problem_district: nearProblem === "yes" ? null : district.trim() || null,
@@ -2046,7 +2359,6 @@ function Report({
     setError("");
     if (!nearProblem) return setError("Please select whether you are currently near the problem location.");
     if (!title.trim() || description.trim().length < 10) return setError("Enter a problem title and a description of at least 10 characters.");
-    if (!category) return setError("Select the category / domain that best describes this problem.");
     if (nearProblem === "yes" && (latitude == null || longitude == null)) return setError("We need your GPS location. Retry GPS, or choose 'No, I am elsewhere' to enter it manually.");
     if (nearProblem === "no" && (!district.trim() || !block.trim() || !locality.trim())) return setError("District, Block / Mandal, and Village / City are required when entering the location manually.");
     if (nearProblem === "yes" && !consentLocation) return setError("Confirm consent before sharing your exact GPS location with authorised responders.");
@@ -2087,14 +2399,18 @@ function Report({
       }
     }
 
-    const domain = category;
     const savedDistrict = nearProblem === "yes" ? "GPS-detected location" : district.trim();
     const savedBlock = nearProblem === "yes" ? null : block.trim() || null;
     const savedLocality = nearProblem === "yes" ? null : locality.trim() || null;
 
-    // AI analyzes the problem description WITHIN the selected domain
+    // Extract image previews as data URLs for multimodal vision analysis if available
+    const imageDataUrls = stagedFiles
+      .filter((m) => m.type === "image" && Boolean(m.preview))
+      .map((m) => m.preview);
+
+    // AI analyzes the problem description & multimodal evidence (no manual category/department required)
     const ai = await runAIProblemAnalysis({
-      domain,
+      domain: undefined,
       title: title.trim(),
       description: description.trim(),
       district: savedDistrict,
@@ -2102,35 +2418,54 @@ function Report({
       locality: savedLocality || undefined,
       latitude,
       longitude,
-      affectedPopulation: null,
+      affectedPopulation: affectedPopulation ? parseInt(affectedPopulation, 10) : null,
       supportingInfo: supportingInfo.trim() || undefined,
+      imageDataUrls: imageDataUrls.length > 0 ? imageDataUrls : undefined,
     });
     setAiResult(ai);
+
+    // Run AI/NLP problem categorization with controlled taxonomy and genuine confidence
+    const nlpResult = classifyCivicProblemNLP({
+      title: title.trim(),
+      description: description.trim(),
+      district: savedDistrict,
+      block: savedBlock,
+      locality: savedLocality,
+    });
+    const verifiedDomain = nlpResult.category;
+    const verifiedSubdomain = nlpResult.subcategory;
+    const priorityReviewStatus = nlpResult.needs_review ? "HUMAN_REVIEW_REQUIRED" : "NOT_REVIEWED";
+    const suggestedTrack = nlpResult.track === "Track B" ? "B" : "A";
+
     const { data: c, error: ce } = await supabase
       .from("challenges")
       .insert({
         title: title.trim(),
         summary: `${description}\n\n[Reporting Entity: ${role}]${supportingInfo ? `\n\nSupporting information: ${supportingInfo}` : ""}`,
-        domain,
-        subdomain: ai.specificIssue,
+        domain: verifiedDomain,
+        subdomain: verifiedSubdomain,
+        track: suggestedTrack,
         district: savedDistrict,
         block: savedBlock,
         locality: savedLocality,
-        severity: 2,
-        urgency: 2,
-        affected_population: null,
+        severity: parseInt(severity, 10) || 2,
+        urgency: parseInt(urgency, 10) || 2,
+        affected_population: affectedPopulation ? parseInt(affectedPopulation, 10) : null,
         evidence_quality: 1,
         created_by: actor.id,
         public_latitude: latitude,
         public_longitude: longitude,
         priority_score: ai.priorityScore,
         priority_level: ai.priorityLevel,
-        priority_confidence: ai.confidence,
+        priority_confidence: Math.round(nlpResult.confidence * 100),
         priority_factors: ai.factors,
         priority_reasons: ai.keyDetails,
         priority_explanation: [ai.routingRecommendation],
         priority_analysis_status: "AI_COMPLETE",
+        priority_review_status: priorityReviewStatus,
         priority_analyzed_at: ai.timestamp,
+        responsible_department: ai.lineDepartment || ai.recommendedDepartment,
+        duplicate_status: duplicateDecision ? "MANUAL_OVERRIDE" : null,
       })
       .select("id,public_id")
       .single();
@@ -2158,7 +2493,7 @@ function Report({
         latitude,
         longitude,
         voice_transcript: voiceTranscript.trim() || null,
-        category: domain,
+        category: verifiedDomain,
         severity: 2,
         urgency: 2,
         affected_population: null,
@@ -2173,7 +2508,7 @@ function Report({
     try {
       await supabase.from("challenge_priority_analyses").insert({
         challenge_id: c.id,
-        source_hash: `${title.trim()}|${description.trim()}|${domain}|${savedDistrict}`,
+        source_hash: `${title.trim()}|${description.trim()}|${verifiedDomain}|${savedDistrict}`,
         ai_analysis: ai as any,
         validated_factors: ai.factors,
         confidence: ai.confidence,
@@ -2287,7 +2622,7 @@ function Report({
       .from("support_information")
       .select("id,title,support_type,official_url,contact_information")
       .eq("verification_status", "verified")
-      .or(`categories.cs.{${domain}},districts.cs.{${district}}`)
+      .or(`categories.cs.{${verifiedDomain}},districts.cs.{${savedDistrict}}`)
       .limit(4);
     setSupportSuggestions((support ?? []) as typeof supportSuggestions);
   };
@@ -2302,7 +2637,6 @@ function Report({
             setPublicId(null);
             setTitle("");
             setDescription("");
-            setCategory("");
             setSupportingInfo("");
             setDistrict("");
             setBlock("");
@@ -2347,7 +2681,7 @@ function Report({
           <MediaUpload
             reportId={reportId}
             challengeId={challengeId ?? undefined}
-            onMediaAdded={() => {}}
+            onMediaAdded={() => { }}
             onError={setMediaError}
           />
           {mediaError && <p className="mt-4 text-sm text-destructive">{mediaError}</p>}
@@ -2396,355 +2730,6 @@ function Report({
             </div>
           </div>
 
-          <div className="mt-5">
-            <h1 className="text-3xl font-bold">Report a community problem</h1>
-            <p className="mt-2 text-muted-foreground">
-              Share what you see in plain language. You will receive a Problem ID and tracking link after submission.
-            </p>
-                        getProblemGps();
-                      } else {
-                        setLatitude(null);
-                        setLongitude(null);
-                        setLocationLabel("Enter the problem location manually below. Your current GPS will not be requested.");
-                      }
-                    }}
-                  />
-                  {value === "yes" ? "Yes, I am nearby" : "No, I am elsewhere"}
-                </label>
-              ))}
-            </div>
-
-            {nearProblem === "yes" && (
-              <div className="mt-2 text-sm space-y-1.5">
-                <button
-                  type="button"
-                  onClick={getProblemGps}
-                  className="font-bold text-primary hover:underline inline-flex items-center gap-1"
-                >
-                  <LocateFixed size={16} /> Get / retry GPS location
-                </button>
-                {latitude != null && longitude != null && (
-                  <p className="font-mono text-xs text-muted-foreground">
-                    Latitude: {latitude.toFixed(6)} | Longitude: {longitude.toFixed(6)}
-                  </p>
-                )}
-                {locationLabel && (
-                  <p className="text-xs font-medium text-accent">{locationLabel}</p>
-                )}
-              </div>
-            )}
-
-            {nearProblem === "no" && (
-              <div className="mt-3 space-y-2">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-bold text-foreground">Problem location (manual entry)</span>
-                  <span className="text-muted-foreground">All fields required</span>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <input
-                    value={district}
-                    onChange={(e) => setDistrict(e.target.value)}
-                    placeholder="District *"
-                    className="rounded-lg border border-input bg-background p-2.5 text-sm"
-                  />
-                  <input
-                    value={block}
-                    onChange={(e) => setBlock(e.target.value)}
-                    placeholder="Block / Mandal *"
-                    className="rounded-lg border border-input bg-background p-2.5 text-sm"
-                  />
-                  <input
-                    value={locality}
-                    onChange={(e) => setLocality(e.target.value)}
-                    placeholder="Village / City *"
-                    className="rounded-lg border border-input bg-background p-2.5 text-sm"
-                  />
-                </div>
-              </div>
-            )}
-
-            <div className="pt-2 border-t border-primary/10">
-              <label className="flex items-start gap-2 text-xs text-muted-foreground cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={consentLocation}
-                  onChange={(event) => setConsentLocation(event.target.checked)}
-                  className="mt-0.5"
-                />
-                <span>I consent to authorised verifiers and assigned partners using my exact location. Public discovery uses an approximate location only.</span>
-              </label>
-            </div>
-          </div>
-
-          {/* Supporting Information Section */}
-          <div className="space-y-3 pt-2">
-            <label className="block text-sm font-bold">Supporting Information</label>
-            <textarea
-              value={supportingInfo}
-              onChange={(e) => setSupportingInfo(e.target.value)}
-              placeholder="Supporting information (optional)"
-              rows={3}
-              className="w-full rounded-lg border border-input bg-background p-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary resize-y"
-            />
-
-            {/* File/photo upload area */}
-            <div className="rounded-xl border border-dashed border-border bg-surface/30 p-4 transition-colors hover:border-primary/40">
-              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-                <div className="flex items-center gap-2">
-                  <Paperclip size={16} className="text-primary" />
-                  <span className="text-xs font-bold text-foreground">Attach photos or evidence (optional)</span>
-                </div>
-                <span className="text-[11px] text-muted-foreground">Max 25MB per file</span>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2.5">
-                <label className="inline-flex items-center gap-2 rounded-lg bg-card border border-border px-3.5 py-2 text-xs font-semibold text-foreground hover:bg-surface cursor-pointer transition-colors shadow-xs">
-                  <Upload size={14} className="text-primary" />
-                  <span>Choose files / photos</span>
-                  <input
-                    type="file"
-                    multiple
-                    accept="image/*,.pdf,video/*,audio/*"
-                    onChange={handleFileInput}
-                    className="sr-only"
-                  />
-                </label>
-
-                <label className="inline-flex items-center gap-2 rounded-lg bg-card border border-border px-3.5 py-2 text-xs font-semibold text-foreground hover:bg-surface cursor-pointer transition-colors shadow-xs">
-                  <ImageIcon size={14} className="text-primary" />
-                  <span>Take photo</span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    capture="environment"
-                    onChange={handleFileInput}
-                    className="sr-only"
-                  />
-                </label>
-              </div>
-
-              {stagedFiles.length > 0 && (
-                <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-2 pt-2 border-t border-border/50">
-                  {stagedFiles.map((m) => (
-                    <div
-                      key={m.id}
-                      className="group relative flex items-center gap-2 rounded-lg border border-border bg-card p-2 text-xs shadow-xs"
-                    >
-                      {m.type === "image" && m.preview ? (
-                        <img src={m.preview} alt="Upload preview" className="size-10 rounded object-cover shrink-0" />
-                      ) : (
-                        <div className="size-10 rounded bg-primary-soft text-primary grid place-items-center shrink-0">
-                          <Paperclip size={16} />
-                        </div>
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate font-medium text-[11px]">{m.file.name}</p>
-                        <p className="text-[10px] text-muted-foreground">{Math.round(m.file.size / 1024)} KB</p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => removeStagedFile(m.id)}
-                        className="rounded-full p-1 text-muted-foreground hover:bg-destructive-soft hover:text-destructive transition-colors"
-                        title="Remove file"
-                      >
-                        <X size={14} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Data consent checkboxes */}
-            <div className="space-y-2 rounded-lg bg-surface p-3 text-xs text-muted-foreground">
-              <label className="flex items-start gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={consentMedia}
-                  onChange={(event) => setConsentMedia(event.target.checked)}
-                  className="mt-0.5"
-                />
-                <span>I consent to secure storage and authorised review of any evidence I upload.</span>
-              </label>
-              <label className="flex items-start gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={consentAi}
-                  onChange={(event) => setConsentAi(event.target.checked)}
-                  className="mt-0.5"
-                />
-                <span>I consent to optional future AI-assisted analysis. It will never replace my original report.</span>
-              </label>
-            </div>
-
-            {error && <p className="text-sm text-destructive font-medium">{error}</p>}
-
-            {/* Submit for review CTA button */}
-            <button
-              type="button"
-              disabled={busy || reviewing}
-              onClick={review}
-              className="mt-2 w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-6 py-3.5 text-sm font-bold text-primary-foreground hover:opacity-95 disabled:opacity-50 transition-opacity"
-            >
-              {busy ? "Saving..." : "Submit for review"}
-            </button>
-          </div>
-
-          {(showNearby || locality.length > 2) && nearby.length > 0 && (
-            <div className="mt-5 rounded-xl border border-primary/20 bg-primary-soft/40 p-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="font-bold">Possible matches nearby</p>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Avoid duplicate reports by supporting an existing problem.
-                  </p>
-                </div>
-                <Navigation className="text-primary" size={20} />
-              </div>
-              <div className="mt-3 space-y-2">
-                {nearby.map(({ challenge, distance }) => (
-                  <div
-                    key={challenge.id}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-card p-3"
-                  >
-                    <div>
-                      <b className="text-sm">{challenge.title}</b>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        <MapPin className="mr-1 inline" size={12} />
-                        {distance.toFixed(1)} km away | {challenge.stage.replaceAll("_", " ")}
-                      </p>
-                    </div>
-                    <button
-                      disabled={supportedIds.includes(challenge.id)}
-                      onClick={() =>
-                        void repost(challenge, "Also affected - submitted from report flow.")
-                      }
-                      className="rounded-lg border border-primary px-3 py-2 text-xs font-bold text-primary disabled:opacity-50"
-                    >
-                      {supportedIds.includes(challenge.id) ? "Supporting" : "I am also affected"}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <p className="rounded-lg bg-surface p-3 text-xs text-muted-foreground">
-            <ShieldCheck className="mr-2 inline text-accent" size={16} />
-            Sensitive evidence and exact locations stay private.
-          </p>
-
-          {/* Review Report Modal / Box */}
-          {reviewing && (
-            <div className="rounded-xl border border-primary bg-primary-soft/40 p-5">
-              <h2 className="text-lg font-bold">Review Report</h2>
-              <div className="mt-3 space-y-2 text-sm">
-                <p><b>Problem:</b> {title} - {description}</p>
-                <p><b>Category:</b> {category} {assignedDept && <span className="text-muted-foreground font-normal">({assignedDept.title})</span>}</p>
-                {voiceTranscript && <p><b>Voice transcription:</b> {voiceTranscript}</p>}
-                <p><b>Near the problem:</b> {nearProblem === "yes" ? "Yes" : "No"}</p>
-                {nearProblem === "yes" && latitude != null && <p><b>Reporter GPS:</b> {latitude.toFixed(6)}, {longitude?.toFixed(6)}</p>}
-                {nearProblem === "no" && <p><b>Problem location:</b> {district}, {block}, {locality}</p>}
-                {supportingInfo && <p><b>Supporting information:</b> {supportingInfo}</p>}
-                {stagedFiles.length > 0 && <p><b>Attached evidence:</b> {stagedFiles.length} file(s) staged for upload</p>}
-              </div>
-              {duplicateMatches.length > 0 && !duplicateDecision && (
-                <div className="mt-4 rounded-lg border border-[#DDEBE2] bg-[#F6FBF8] p-3 text-sm">
-                  <b>A problem with similar details has already been reported.</b>
-                  <p className="mt-1">Choose repost if this is the same issue. It adds your support to the existing problem without creating a duplicate.</p>
-                  {duplicateMatches.map((item) => (
-                    <div key={item.challenge_id} className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                      <p><b>{item.public_id}</b> | {item.title} ({Math.round(item.duplicate_score)}% match)</p>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const match = challenges.find((challenge) => challenge.id === item.challenge_id);
-                          if (match) void repost(match);
-                        }}
-                        className="rounded-lg border border-primary px-3 py-2 text-xs font-bold text-primary"
-                      >
-                        This is the same problem - repost
-                      </button>
-                    </div>
-                  ))}
-                  <button
-                    type="button"
-                    onClick={() => setDuplicateDecision(true)}
-                    className="mt-3 rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground"
-                  >
-                    These are different - continue reporting
-                  </button>
-                </div>
-              )}
-              {(duplicateMatches.length === 0 || duplicateDecision) && (
-                <button
-                  onClick={() => void submit()}
-                  disabled={busy}
-                  className="mt-5 rounded-lg bg-primary px-5 py-3 font-bold text-primary-foreground disabled:opacity-50"
-                >
-                  {busy ? "Submitting..." : "Submit Report"}
-                </button>
-              )}
-              <button
-                onClick={() => setReviewing(false)}
-                className="ml-3 text-sm font-bold text-primary"
-              >
-                Edit report
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Dynamic Right Sidebar: 30% width (3 of 10 cols on lg) */}
-        <aside className="lg:col-span-3 lg:sticky lg:top-6 space-y-4">
-          {assignedDept ? (
-            <div className="card-surface p-5 border border-primary/30 bg-gradient-to-br from-card via-surface/30 to-primary-soft/20 shadow-sm rounded-xl transition-all duration-200">
-              <div className="flex items-center justify-between gap-2">
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 border border-primary/20 px-2.5 py-1 text-[11px] font-bold tracking-wider text-primary uppercase">
-                  <Sparkles size={13} className="text-primary animate-pulse" />
-                  AI Assigned Department
-                </span>
-              </div>
-              <h3 className="mt-3 text-base font-bold text-foreground leading-snug">
-                {assignedDept.title}
-              </h3>
-              <div className="mt-3 pt-3 border-t border-border text-xs text-muted-foreground leading-relaxed whitespace-pre-line">
-                {assignedDept.scope}
-              </div>
-              <div className="mt-4 rounded-lg bg-surface/80 p-2.5 text-[11px] text-muted-foreground flex items-start gap-2">
-                <Building2 size={14} className="mt-0.5 shrink-0 text-primary" />
-                <span>Jurisdiction: {assignedDept.jurisdiction}</span>
-              </div>
-            </div>
-          ) : (
-            <div className="card-surface p-5 border border-dashed border-border/80 rounded-xl text-center text-muted-foreground/80 py-8">
-              <Building2 size={28} className="mx-auto mb-2 text-muted-foreground/50" />
-              <p className="text-xs font-semibold text-foreground/80">AI Assigned Department</p>
-              <p className="mt-1 text-[11px] leading-relaxed">
-                Select a category from the form to view the mapped civic authority and its jurisdictional scope.
-              </p>
-            </div>
-          )}
-        </aside>
-=======
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-accent-soft px-3 py-1 text-xs font-bold text-accent">
-                NO SIGN-IN REQUIRED
-              </span>
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">
-                REPORTING AS: {role.toUpperCase()}
-                <button
-                  type="button"
-                  onClick={() => go("report-role")}
-                  className="ml-1 text-[11px] underline opacity-85 hover:opacity-100"
-                  title="Change role"
-                >
-                  Change
-                </button>
-              </span>
-            </div>
-          </div>
-
           {reportId ? (
             /* Post-Submission View */
             <div className="space-y-6">
@@ -2757,7 +2742,6 @@ function Report({
                     setAiResult(null);
                     setTitle("");
                     setDescription("");
-                    setCategory("");
                     setSeverity("2");
                     setUrgency("2");
                     setAffectedPopulation("");
@@ -2824,7 +2808,7 @@ function Report({
                 <MediaUpload
                   reportId={reportId}
                   challengeId={challengeId ?? undefined}
-                  onMediaAdded={() => {}}
+                  onMediaAdded={() => { }}
                   onError={setMediaError}
                 />
                 {mediaError && <p className="mt-4 text-sm text-destructive">{mediaError}</p>}
@@ -2868,74 +2852,117 @@ function Report({
                   />
                   <button
                     type="button"
-                    onClick={() => voiceRecording === "title" ? stopVoiceTranscription() : startVoiceTranscription("title")}
+                    onClick={() => voiceRecording === "title" ? stopVoiceTranscription() : void startVoiceTranscription("title")}
                     disabled={voiceRecording === "description"}
                     aria-label={voiceRecording === "title" ? "Stop dictating problem title" : "Dictate problem title"}
-                    title={voiceRecording === "title" ? "Stop listening" : "Start listening"}
+                    title={voiceRecording === "title" ? "Stop listening" : "Start listening in your regional language"}
                     className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-2 text-primary hover:bg-primary-soft disabled:opacity-50"
                   >
-                    <Mic size={19} className={voiceRecording === "title" ? "animate-pulse" : ""} />
+                    <Mic size={19} className={voiceRecording === "title" ? "animate-pulse text-red-600" : ""} />
                   </button>
                 </div>
+                {title && detectScriptLanguage(title) && (
+                  <div className="mt-1 flex items-center justify-between text-[11px]">
+                    <span className="text-muted-foreground">Regional script detected</span>
+                    <button
+                      type="button"
+                      onClick={() => void translateFieldManually("title")}
+                      className="font-bold text-primary hover:underline flex items-center gap-1"
+                    >
+                      <Sparkles size={12} /> Translate title to English
+                    </button>
+                  </div>
+                )}
                 <div className="relative mt-3">
                   <label className="sr-only" htmlFor="problem-description">Problem description</label>
                   <textarea
                     id="problem-description"
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
-                    placeholder="What is happening? Who is affected? (e.g. My water tank is contaminated)"
+                    placeholder="What is happening? Who is affected? (e.g. My water tank is contaminated / हमारे गांव में हैंडपंप खराब है)"
                     className="min-h-36 w-full rounded-lg border border-input p-3 pr-14"
                   />
                   <button
                     type="button"
-                    onClick={() => voiceRecording === "description" ? stopVoiceTranscription() : startVoiceTranscription("description")}
+                    onClick={() => voiceRecording === "description" ? stopVoiceTranscription() : void startVoiceTranscription("description")}
                     disabled={voiceRecording === "title"}
                     aria-label={voiceRecording === "description" ? "Stop dictating problem description" : "Dictate problem description"}
-                    title={voiceRecording === "description" ? "Stop listening" : "Start listening"}
+                    title={voiceRecording === "description" ? "Stop listening" : "Start listening in your regional language"}
                     className="absolute right-2 top-3 rounded-full p-2 text-primary hover:bg-primary-soft disabled:opacity-50"
                   >
-                    <Mic size={19} className={voiceRecording === "description" ? "animate-pulse" : ""} />
+                    <Mic size={19} className={voiceRecording === "description" ? "animate-pulse text-red-600" : ""} />
                   </button>
                 </div>
-                {(voiceRecording || voiceError) && (
-                  <div className="mt-3 rounded-lg bg-primary-soft/40 p-3 text-sm">
-                    <p className="font-medium text-primary">
-                      {voiceRecording ? `Listening for the problem ${voiceRecording}. Live transcription appears as you speak; click the microphone again to stop listening.` : null}
-                    </p>
-                    {voiceError && <p className="text-destructive">{voiceError}</p>}
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      ElevenLabs transcribes in your selected language. Review the live transcript before submitting.
-                    </p>
+                {description && detectScriptLanguage(description) && (
+                  <div className="mt-1 flex items-center justify-between text-[11px]">
+                    <span className="text-muted-foreground">Regional script detected in description</span>
+                    <button
+                      type="button"
+                      onClick={() => void translateFieldManually("description")}
+                      className="font-bold text-primary hover:underline flex items-center gap-1"
+                    >
+                      <Sparkles size={12} /> Translate description to English
+                    </button>
                   </div>
                 )}
-                <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <label className="text-sm font-bold">Problem Domain / Category
-                    <select
-                      value={category}
-                      onChange={(event) => setCategory(event.target.value)}
-                      className="mt-1 w-full rounded-lg border border-input bg-background p-3 font-normal"
-                    >
-                      <option value="">Select domain *</option>
-                      {[
-                        "Water Resources",
-                        "Water",
-                        "Sanitation & Waste Management",
-                        "Sanitation",
-                        "Roads & Infrastructure",
-                        "Electricity & Energy",
-                        "Healthcare",
-                        "Education",
-                        "Agriculture",
-                        "Environment",
-                        "Accessibility",
-                        "Urban Infrastructure",
-                        "Public Services",
-                        "Rural Livelihoods",
-                      ].map((item) => (
-                        <option key={item} value={item}>{item}</option>
-                      ))}
-                    </select>
-                  </label>
+                {(voiceRecording || voiceError || isTranslatingVoice || voiceTranslationInfo) && (
+                  <div className="mt-3 rounded-xl border border-primary/25 bg-[#F6FBF8] p-3.5 text-sm space-y-2.5">
+                    {voiceRecording && (
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 text-xs font-bold text-foreground">
+                          <span className="relative flex size-2.5">
+                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75"></span>
+                            <span className="relative inline-flex size-2.5 rounded-full bg-red-500"></span>
+                          </span>
+                          <span>Listening for {voiceRecording === "title" ? "Problem Title" : "Description"}...</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Speak freely in your regional language (Hindi, Telugu, Tamil, Bengali, etc.). Speech will be automatically translated to English when done.
+                        </p>
+                        {voiceTranscript && (
+                          <div className="rounded-lg bg-surface border border-border p-2 text-xs text-foreground font-mono">
+                            &ldquo;{voiceTranscript}&rdquo;
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {isTranslatingVoice && (
+                      <div className="flex items-center gap-2 text-xs font-bold text-primary animate-pulse">
+                        <Sparkles size={14} className="animate-spin text-primary shrink-0" />
+                        <span>{translationStatus || "Automatically translating regional speech to English..."}</span>
+                      </div>
+                    )}
+                    {voiceTranslationInfo && !voiceRecording && !isTranslatingVoice && (
+                      <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-3 text-xs text-emerald-950 space-y-1.5">
+                        <div className="flex flex-wrap items-center justify-between gap-1.5">
+                          <span className="font-bold flex items-center gap-1 text-emerald-800">
+                            <Sparkles size={13} className="text-emerald-600 shrink-0" />
+                            Spoken in {voiceTranslationInfo.sourceLanguageName} &mdash; Automatically translated to English
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const f = voiceTranslationInfo.field;
+                              if (f === "title") {
+                                setTitle((prev) => prev === voiceTranslationInfo.translatedText ? voiceTranslationInfo.originalText : voiceTranslationInfo.translatedText);
+                              } else {
+                                setDescription((prev) => prev === voiceTranslationInfo.translatedText ? voiceTranslationInfo.originalText : voiceTranslationInfo.translatedText);
+                              }
+                            }}
+                            className="font-bold text-primary underline text-[11px] hover:text-primary-hover"
+                          >
+                            Toggle Original / English
+                          </button>
+                        </div>
+                        <p className="text-[11px] text-emerald-900/80">
+                          <b>Spoken words:</b> &ldquo;{voiceTranslationInfo.originalText}&rdquo; <span className="text-muted-foreground">(preserved in secure audio audit transcript)</span>
+                        </p>
+                      </div>
+                    )}
+                    {voiceError && <p className="text-xs text-destructive font-semibold">{voiceError}</p>}
+                  </div>
+                )}
+                <div className="mt-4 grid gap-3 sm:grid-cols-3">
                   <label className="text-sm font-bold">Affected people (optional)
                     <input
                       value={affectedPopulation}
@@ -2970,6 +2997,10 @@ function Report({
                       <option value="4">Critical</option>
                     </select>
                   </label>
+                </div>
+                <div className="mt-3 flex items-center gap-2 rounded-xl border border-primary/20 bg-primary-soft/40 px-3.5 py-2.5 text-xs text-primary font-medium">
+                  <Sparkles size={15} className="shrink-0 text-primary" />
+                  <span>Category, registered Line Department, and Authority are automatically classified by Civic AI from your problem details.</span>
                 </div>
                 <div className="mt-4 rounded-xl border border-primary/20 bg-primary-soft/40 p-4">
                   <p className="font-bold">Are you currently near the location where the problem exists? <span className="text-destructive">*</span></p>
@@ -3022,23 +3053,49 @@ function Report({
                       <label className="text-sm font-bold">Problem location</label>
                       <span className="text-xs text-muted-foreground">Manual entry</span>
                     </div>
-                    <div className="mt-2 grid gap-3 sm:grid-cols-3">
-                      <input
-                        value={district}
-                        onChange={(e) => setDistrict(e.target.value)}
-                        placeholder="District *"
-                        className="rounded-lg border border-input p-3 text-sm"
-                      />
+                    <div className="mt-2 grid gap-3 sm:grid-cols-4">
+                      <select
+                        value={state}
+                        onChange={(e) => {
+                          setState(e.target.value);
+                          setDistrict("");
+                        }}
+                        className="rounded-lg border border-input bg-background p-3 text-sm"
+                      >
+                        <option value="">-- State / UT * --</option>
+                        {INDIAN_STATES.map((s) => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
+                      {state && getDistrictsForState(state).length > 0 ? (
+                        <select
+                          value={district}
+                          onChange={(e) => setDistrict(e.target.value)}
+                          className="rounded-lg border border-input bg-background p-3 text-sm font-medium"
+                        >
+                          <option value="">-- District * ({getDistrictsForState(state).length}) --</option>
+                          {getDistrictsForState(state).map((d) => (
+                            <option key={d} value={d}>{d}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          value={district}
+                          onChange={(e) => setDistrict(e.target.value)}
+                          placeholder="District *"
+                          className="rounded-lg border border-input p-3 text-sm"
+                        />
+                      )}
                       <input
                         value={block}
                         onChange={(e) => setBlock(e.target.value)}
-                        placeholder="Block"
+                        placeholder="Block / Mandal *"
                         className="rounded-lg border border-input p-3 text-sm"
                       />
                       <input
                         value={locality}
                         onChange={(e) => setLocality(e.target.value)}
-                        placeholder="Village / city"
+                        placeholder="Village / City *"
                         className="rounded-lg border border-input p-3 text-sm"
                       />
                     </div>
@@ -3110,7 +3167,7 @@ function Report({
                     <h2 className="text-lg font-bold">Review Report</h2>
                     <div className="mt-3 space-y-2 text-sm">
                       <p><b>Problem:</b> {title} - {description}</p>
-                      <p><b>Category:</b> {category} | <b>Severity:</b> {severity}/4 | <b>Urgency:</b> {urgency}/4</p>
+                      <p><b>Classification:</b> Automatically determined by Civic AI | <b>Severity:</b> {severity}/4 | <b>Urgency:</b> {urgency}/4</p>
                       {voiceTranscript && <p><b>Voice transcription:</b> {voiceTranscript}</p>}
                       <p><b>Near the problem:</b> {nearProblem === "yes" ? "Yes" : "No"}</p>
                       {nearProblem === "yes" && latitude != null && <p><b>Reporter GPS:</b> {latitude.toFixed(6)}, {longitude?.toFixed(6)}</p>}
@@ -3118,31 +3175,67 @@ function Report({
                       {supportingInfo && <p><b>Supporting information:</b> {supportingInfo}</p>}
                     </div>
                     {duplicateMatches.length > 0 && !duplicateDecision && (
-                      <div className="mt-4 rounded-lg border border-[#DDEBE2] bg-[#F6FBF8] p-3 text-sm">
-                        <b>A problem with similar problem is already reported.</b>
-                        <p className="mt-1">Choose repost if this is the same issue. It adds your support to the existing problem without creating a duplicate.</p>
-                        {duplicateMatches.map((item) => (
-                          <div key={item.challenge_id} className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                            <p><b>{item.public_id}</b> | {item.title} ({Math.round(item.duplicate_score)}% match)</p>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const match = challenges.find((challenge) => challenge.id === item.challenge_id);
-                                if (match) void repost(match);
-                              }}
-                              className="rounded-lg border border-primary px-3 py-2 text-xs font-bold text-primary"
-                            >
-                              This is the same problem - repost
-                            </button>
-                          </div>
-                        ))}
-                        <button
-                          type="button"
-                          onClick={() => setDuplicateDecision(true)}
-                          className="mt-3 rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground"
-                        >
-                          These are different - continue reporting
-                        </button>
+                      <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50/80 p-4 text-sm space-y-3">
+                        <div className="flex items-center gap-2 text-amber-900 font-bold text-base">
+                          <AlertTriangle size={18} className="text-amber-600 shrink-0" />
+                          <span>Similar problem already exists</span>
+                        </div>
+                        <p className="text-xs text-amber-900 leading-relaxed">
+                          A similar civic challenge has already been registered in this area. You can support the existing problem to raise its community priority and urgency, or choose to report separately if your issue is distinct.
+                        </p>
+                        <div className="space-y-2 pt-1">
+                          {duplicateMatches.map((item) => {
+                            const match = challenges.find((challenge) => challenge.id === item.challenge_id);
+                            const itemLoc = [match?.locality, match?.district].filter(Boolean).join(", ") || (item as any).locality || "Recorded location";
+                            const dist = (item as any).distance_km != null ? `${((item as any).distance_km).toFixed(1)} km away` : null;
+                            const statusStr = match?.stage?.replaceAll("_", " ") || "Under Review";
+                            const priorityStr = match?.priority_level || (match?.priority_score ? `Score ${Math.round(match.priority_score)}` : "Standard");
+
+                            return (
+                              <div key={item.challenge_id} className="p-3.5 rounded-xl bg-white border border-amber-200/80 shadow-2xs space-y-2">
+                                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-1.5">
+                                  <div>
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-mono text-xs font-bold text-[#0B5D2A]">{item.public_id}</span>
+                                      <span className="text-xs font-bold text-slate-900">{item.title}</span>
+                                    </div>
+                                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-600 mt-1">
+                                      <span><MapPin size={11} className="inline mr-0.5 text-slate-400" />{itemLoc}{dist ? ` (${dist})` : ""}</span>
+                                      <span><b>Status:</b> <span className="capitalize">{statusStr}</span></span>
+                                      <span><b>Priority:</b> <span className="text-amber-800 font-semibold">{priorityStr}</span></span>
+                                      <span><b>Similarity:</b> {Math.round(item.duplicate_score)}%</span>
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="pt-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (match) {
+                                        setReviewing(false);
+                                        void repost(match, "Supported from duplicate detection review.");
+                                      }
+                                    }}
+                                    className="px-3.5 py-1.5 rounded-lg bg-[#168a45] hover:bg-[#0B5D2A] text-white text-xs font-bold transition shadow-2xs flex items-center gap-1.5"
+                                  >
+                                    <Repeat2 size={13} />
+                                    <span>View Existing Problem &amp; Support</span>
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="pt-2 border-t border-amber-200/60 flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-xs text-amber-900 font-medium">Is this a different problem?</span>
+                          <button
+                            type="button"
+                            onClick={() => setDuplicateDecision(true)}
+                            className="px-3 py-1.5 rounded-lg bg-white border border-amber-300 hover:bg-amber-100 text-amber-900 text-xs font-bold transition"
+                          >
+                            Report Separately (Manual Override)
+                          </button>
+                        </div>
                       </div>
                     )}
                     {(duplicateMatches.length === 0 || duplicateDecision) && (
@@ -3175,7 +3268,7 @@ function Report({
           <AIClassificationRoutingPanel
             aiResult={aiResult}
             isAnalyzing={isAnalyzing}
-            selectedDomain={category}
+            selectedDomain={aiResult?.classifiedDomain || ""}
             description={description}
             locationText={locationText}
             publicId={publicId}
@@ -3185,7 +3278,6 @@ function Report({
             go={go}
           />
         </div>
->>>>>>> e2a03d66739b46fe0b7457e1b997501ecf7e79c8
       </div>
     </section>
   );
@@ -3233,22 +3325,20 @@ function ProblemProgressTimeline({ challenge, compact = false }: { challenge: Ch
           return (
             <li
               key={stage.num}
-              className={`flex items-center gap-2.5 text-xs ${
-                stage.done
-                  ? "text-foreground font-semibold"
-                  : stage.current
+              className={`flex items-center gap-2.5 text-xs ${stage.done
+                ? "text-foreground font-semibold"
+                : stage.current
                   ? "text-primary font-bold"
                   : "text-muted-foreground"
-              }`}
+                }`}
             >
               <span
-                className={`grid size-5 shrink-0 place-items-center rounded-full text-[10px] font-bold ${
-                  stage.done
-                    ? "bg-primary text-primary-foreground"
-                    : stage.current
+                className={`grid size-5 shrink-0 place-items-center rounded-full text-[10px] font-bold ${stage.done
+                  ? "bg-primary text-primary-foreground"
+                  : stage.current
                     ? "bg-primary/20 text-primary border border-primary"
                     : "bg-card text-muted-foreground/60 border border-border"
-                }`}
+                  }`}
               >
                 {statusIcon}
               </span>
@@ -3273,12 +3363,14 @@ function Explorer({
   supportedIds,
   repost,
   go,
+  flash,
 }: {
   challenges: Challenge[];
   load: (q?: string) => void | Promise<void>;
   supportedIds?: string[];
   repost?: (challenge: Challenge, note?: string) => Promise<void>;
   go: (x: Screen) => void;
+  flash?: (msg: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
@@ -3296,15 +3388,15 @@ function Explorer({
       sort === "newest"
         ? +new Date(b.created_at) - +new Date(a.created_at)
         : sort === "oldest"
-        ? +new Date(a.created_at) - +new Date(b.created_at)
-        : b.priority_score - a.priority_score
+          ? +new Date(a.created_at) - +new Date(b.created_at)
+          : b.priority_score - a.priority_score
     );
   const mediaFor = (challenge: Challenge) =>
     challenge.media?.length
       ? challenge.media
       : challenge.preview_image_path
-      ? [{ path: challenge.preview_image_path, type: "image/jpeg" }]
-      : [];
+        ? [{ path: challenge.preview_image_path, type: "image/jpeg" }]
+        : [];
   const mediaUrl = (path: string) =>
     supabase?.storage.from("challenge-previews").getPublicUrl(path).data.publicUrl ?? "";
   const priorityLabel = (challenge: Challenge) =>
@@ -3321,6 +3413,14 @@ function Explorer({
   };
   const openProblem = (challenge: Challenge) => {
     setMediaIndex(0);
+    if ((challenge as any).merged_into_id) {
+      const canonical = challenges.find((c) => c.id === (challenge as any).merged_into_id);
+      if (canonical) {
+        if (flash) flash(`Note: Problem ${challenge.public_id} was merged into canonical challenge ${canonical.public_id}. Redirecting...`);
+        setSelected(canonical);
+        return;
+      }
+    }
     setSelected(challenge);
   };
 
@@ -3413,13 +3513,12 @@ function Explorer({
                     </div>
                   )}
                   <span
-                    className={`absolute right-2 top-2 rounded-full px-2 py-1 text-[10px] font-bold text-white ${
-                      priority === "HIGH" || priority === "CRITICAL"
-                        ? "bg-destructive"
-                        : priority === "MEDIUM"
+                    className={`absolute right-2 top-2 rounded-full px-2 py-1 text-[10px] font-bold text-white ${priority === "HIGH" || priority === "CRITICAL"
+                      ? "bg-destructive"
+                      : priority === "MEDIUM"
                         ? "bg-[#d9902f]"
                         : "bg-primary"
-                    }`}
+                      }`}
                   >
                     {priority[0] + priority.slice(1).toLowerCase()} Priority
                   </span>
@@ -4000,7 +4099,7 @@ function ExplorerLegacy({
           })
         )}
       </div>
-      {selectedMapChallenge && <div className="fixed inset-0 z-[2000] grid place-items-end bg-ink/45 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-label="Problem details"><article className="card-surface max-h-[88dvh] w-full max-w-lg overflow-y-auto p-5 sm:p-6"><div className="flex items-start justify-between gap-4"><div><span className="rounded-full bg-primary-soft px-2 py-1 text-xs font-bold text-primary">{selectedMapChallenge.public_id}</span><h2 className="mt-3 text-xl font-bold">{selectedMapChallenge.title}</h2></div><button onClick={() => setSelectedMapChallenge(null)} className="grid size-10 shrink-0 place-items-center rounded-lg border border-border" aria-label="Close problem details"><X size={18}/></button></div><div className="mt-5 grid gap-3 text-sm sm:grid-cols-2"><p><b>Category</b><br/>{selectedMapChallenge.domain}</p><p><b>Location</b><br/>{selectedMapChallenge.district}</p><p><b>Date reported</b><br/>{new Date(selectedMapChallenge.created_at).toLocaleDateString()}</p><p><b>Current status</b><br/>{selectedMapChallenge.stage.replaceAll("_", " ")}</p><p><b>Supporting reports</b><br/>{selectedMapChallenge.reports + selectedMapChallenge.reposts}</p><p><b>Priority</b><br/>{selectedMapChallenge.priority_level ?? "Under review"}</p></div><p className="mt-5 rounded-lg bg-surface p-3 text-xs text-muted-foreground">Map locations are approximate public problem locations. Reporter identity and private evidence are protected.</p></article></div>}
+      {selectedMapChallenge && <div className="fixed inset-0 z-[2000] grid place-items-end bg-ink/45 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-label="Problem details"><article className="card-surface max-h-[88dvh] w-full max-w-lg overflow-y-auto p-5 sm:p-6"><div className="flex items-start justify-between gap-4"><div><span className="rounded-full bg-primary-soft px-2 py-1 text-xs font-bold text-primary">{selectedMapChallenge.public_id}</span><h2 className="mt-3 text-xl font-bold">{selectedMapChallenge.title}</h2></div><button onClick={() => setSelectedMapChallenge(null)} className="grid size-10 shrink-0 place-items-center rounded-lg border border-border" aria-label="Close problem details"><X size={18} /></button></div><div className="mt-5 grid gap-3 text-sm sm:grid-cols-2"><p><b>Category</b><br />{selectedMapChallenge.domain}</p><p><b>Location</b><br />{selectedMapChallenge.district}</p><p><b>Date reported</b><br />{new Date(selectedMapChallenge.created_at).toLocaleDateString()}</p><p><b>Current status</b><br />{selectedMapChallenge.stage.replaceAll("_", " ")}</p><p><b>Supporting reports</b><br />{selectedMapChallenge.reports + selectedMapChallenge.reposts}</p><p><b>Priority</b><br />{selectedMapChallenge.priority_level ?? "Under review"}</p></div><p className="mt-5 rounded-lg bg-surface p-3 text-xs text-muted-foreground">Map locations are approximate public problem locations. Reporter identity and private evidence are protected.</p></article></div>}
     </section>
   );
 }
@@ -4069,7 +4168,6 @@ function OrganizationRegistration({
           className="rounded-lg border border-input p-3"
         >
           <option value="University">University</option>
-          <option value="NGO">NGO</option>
           <option value="Government">Government</option>
           <option value="Industry">Industry</option>
         </select>
@@ -4221,13 +4319,13 @@ function OrganizationDashboardLegacy({
         return items.map((item) =>
           item === found
             ? {
-                ...item,
-                count,
-                history: [
-                  `${count} participants | ${new Date().toLocaleString()}`,
-                  ...item.history,
-                ],
-              }
+              ...item,
+              count,
+              history: [
+                `${count} participants | ${new Date().toLocaleString()}`,
+                ...item.history,
+              ],
+            }
             : item,
         );
       return [
@@ -4261,7 +4359,7 @@ function OrganizationDashboardLegacy({
         task.id,
         task.title,
         task.location,
-        "SamajSetu Partner Organization",
+        "Samaj Setu Partner Organization",
         i ? "XYZ Institute" : "ABC University",
         student,
         `21A01A00${i + 1}`,
@@ -4301,8 +4399,8 @@ function OrganizationDashboardLegacy({
   const visibleTasks =
     section === "Active Tasks"
       ? tasks.filter((item) =>
-          ["Accepted", "Students Assigned", "Work in Progress"].includes(item.status),
-        )
+        ["Accepted", "Students Assigned", "Work in Progress"].includes(item.status),
+      )
       : section === "Completed Tasks"
         ? tasks.filter((item) => item.status === "Solved")
         : section === "Could Not Solve"
@@ -4317,7 +4415,7 @@ function OrganizationDashboardLegacy({
               <Building2 size={20} />
             </div>
             <div>
-              <b>SamajSetu</b>
+              <b>Samaj Setu</b>
               <p className="text-xs text-muted-foreground">Organization portal</p>
             </div>
           </div>
@@ -4360,7 +4458,7 @@ function OrganizationDashboardLegacy({
             <div>
               <p className="text-sm font-medium text-primary">ORGANIZATION WORKSPACE</p>
               <h1 className="mt-1 text-2xl font-bold sm:text-3xl">
-                Welcome, SamajSetu Partner Organization
+                Welcome, Samaj Setu Partner Organization
               </h1>
               <p className="mt-1 text-sm text-muted-foreground">
                 Manage skilled participants, assignments, and outcomes in one place.
@@ -4485,25 +4583,25 @@ function OrganizationDashboardLegacy({
           {["Assigned Tasks", "Active Tasks", "Completed Tasks", "Could Not Solve"].includes(
             section,
           ) && (
-            <section className="mt-7">
-              <h2 className="text-2xl font-bold">{section}</h2>
-              <p className="mt-2 text-muted-foreground">
-                Open a task to see full citizen-provided information and manage its delivery.
-              </p>
-              <TaskTable
-                tasks={visibleTasks}
-                statusTone={statusTone}
-                onOpen={(id) => {
-                  setSelectedTask(id);
-                  setSection("Task Tracking");
-                }}
-                onAccept={(id) => {
-                  updateTask(id, { status: "Accepted" });
-                  flash("Task accepted.");
-                }}
-              />
-            </section>
-          )}
+              <section className="mt-7">
+                <h2 className="text-2xl font-bold">{section}</h2>
+                <p className="mt-2 text-muted-foreground">
+                  Open a task to see full citizen-provided information and manage its delivery.
+                </p>
+                <TaskTable
+                  tasks={visibleTasks}
+                  statusTone={statusTone}
+                  onOpen={(id) => {
+                    setSelectedTask(id);
+                    setSection("Task Tracking");
+                  }}
+                  onAccept={(id) => {
+                    updateTask(id, { status: "Accepted" });
+                    flash("Task accepted.");
+                  }}
+                />
+              </section>
+            )}
           {section === "Task Tracking" && (
             <section className="mt-7">
               <button
@@ -5109,49 +5207,49 @@ type PartnerTaskStatus =
 
 type PartnerTask = {
   id: string;
-  challengeUuid?: string;
-  assignmentId?: string;
+  challengeUuid?: string | undefined;
+  assignmentId?: string | undefined;
   title: string;
   description: string;
   category: string;
-  subdomain?: string;
+  subdomain?: string | undefined;
   location: string;
   coordinates: string;
   reported: string;
   priority: "Critical" | "High" | "Medium" | "Low";
   status: PartnerTaskStatus;
   people: string[];
-  taskIds?: string[];
-  remarks?: string;
-  acceptanceDeadline?: string | null;
-  assignedAt?: string;
+  taskIds?: string[] | undefined;
+  remarks?: string | undefined;
+  acceptanceDeadline?: string | null | undefined;
+  assignedAt?: string | undefined;
   // Smart Routing & Government metadata
-  responsibleDepartment?: string;
-  responsibleOrganization?: string;
-  responsibleJurisdiction?: string;
-  organizationCategory?: string;
-  routingStatus?: string;
-  aiConfidence?: number;
-  aiSpecificIssue?: string;
-  lifecycleStage?: string;
+  responsibleDepartment?: string | undefined;
+  responsibleOrganization?: string | undefined;
+  responsibleJurisdiction?: string | undefined;
+  organizationCategory?: string | undefined;
+  routingStatus?: string | undefined;
+  aiConfidence?: number | undefined;
+  aiSpecificIssue?: string | undefined;
+  lifecycleStage?: string | undefined;
   stakeholderRecommendations?: {
-    university?: string;
-    industry?: string;
-    community?: string;
-  };
-  keyDetails?: string[];
-  routingRecommendation?: string;
-  factors?: Record<string, any>;
+    university?: string | undefined;
+    industry?: string | undefined;
+    community?: string | undefined;
+  } | undefined;
+  keyDetails?: string[] | undefined;
+  routingRecommendation?: string | undefined;
+  factors?: Record<string, any> | undefined;
 };
 
 const LIFECYCLE_STAGES = [
   { id: 1, key: "reported", label: "Reported", desc: "Citizen submission received" },
   { id: 2, key: "ai_classified", label: "AI Classified", desc: "Domain & issue subcategory identified" },
   { id: 3, key: "routing_recommended", label: "Routing Recommended", desc: "Department & jurisdiction matched" },
-  { id: 4, key: "awaiting_validation", label: "Awaiting Validation", desc: "Pending official verification" },
-  { id: 5, key: "assigned", label: "Assigned", desc: "Assigned to department unit" },
-  { id: 6, key: "accepted", label: "Accepted", desc: "Official validated & accepted" },
-  { id: 7, key: "in_progress", label: "In Progress", desc: "Field work underway" },
+  { id: 4, key: "gov_validated", label: "Gov Validated", desc: "Official verification & scope approval" },
+  { id: 5, key: "org_assigned", label: "ULB / Partner Assigned", desc: "Routed to responsible field unit" },
+  { id: 6, key: "accepted", label: "Accepted", desc: "Department took formal ownership" },
+  { id: 7, key: "in_progress", label: "Work In Progress", desc: "Field teams / pilot deployment active" },
   { id: 8, key: "implemented", label: "Implemented / Verified", desc: "Action completed & verified" },
 ];
 
@@ -5160,7 +5258,7 @@ function ChallengeLifecycleStepper({
   lifecycleStage,
 }: {
   status: PartnerTaskStatus;
-  lifecycleStage?: string;
+  lifecycleStage?: string | undefined;
 }) {
   const getActiveIndex = () => {
     if (status === "Solved" || status === "Implemented" || lifecycleStage?.includes("Implemented") || lifecycleStage?.includes("Verified")) return 8;
@@ -5195,23 +5293,21 @@ function ChallengeLifecycleStepper({
           return (
             <div
               key={step.id}
-              className={`relative flex flex-col rounded-xl p-3 text-left transition-all ${
-                isCurrent
-                  ? "bg-primary-soft/80 border-2 border-primary shadow-sm ring-2 ring-primary/20"
-                  : isCompleted
+              className={`relative flex flex-col rounded-xl p-3 text-left transition-all ${isCurrent
+                ? "bg-primary-soft/80 border-2 border-primary shadow-sm ring-2 ring-primary/20"
+                : isCompleted
                   ? "bg-[#F6FBF8] border border-emerald-200"
                   : "bg-surface/50 border border-border/60 opacity-60"
-              }`}
+                }`}
             >
               <div className="flex items-center justify-between">
                 <span
-                  className={`grid size-6 place-items-center rounded-full text-[11px] font-bold ${
-                    isCurrent
-                      ? "bg-primary text-primary-foreground animate-pulse"
-                      : isCompleted
+                  className={`grid size-6 place-items-center rounded-full text-[11px] font-bold ${isCurrent
+                    ? "bg-primary text-primary-foreground animate-pulse"
+                    : isCompleted
                       ? "bg-emerald-700 text-white"
                       : "bg-muted text-muted-foreground"
-                  }`}
+                    }`}
                 >
                   {isCompleted ? <Check size={13} /> : step.id}
                 </span>
@@ -5247,11 +5343,9 @@ function AcceptanceCountdown({ deadline }: { deadline: string | null | undefined
 function PartnerAnalytics({
   tasks,
   partnerName,
-  isNgo,
 }: {
   tasks: PartnerTask[];
   partnerName: string;
-  isNgo: boolean;
 }) {
   const { metrics, months, assignedTotal, solved, unable, inProgress } = useMemo(() => {
     const solved = tasks.filter((task) => task.status === "Solved" || task.status === "Implemented").length;
@@ -5348,12 +5442,11 @@ function PartnerDashboard({
   const designation = String(metadata["designation"] || "Official Officer");
   const officeUnit = String(metadata["office_unit"] || "");
   const jurisdiction = String(metadata["jurisdiction"] || (partnerIdentity?.locality) || "Ward 15–25");
-  const isNgo = orgType === "NGO";
   const isGov = orgType === "Government" || officialCategory !== "" || !!metadata["department_sector"];
   const partnerName = String(
-    partnerIdentity?.name || metadata["organization_name"] || metadata["display_name"] || (isNgo ? "Community NGO" : isGov ? "Greater Visakhapatnam Municipal Corporation (GVMC)" : "Partner Organization"),
+    partnerIdentity?.name || metadata["organization_name"] || metadata["display_name"] || (isGov ? "Greater Visakhapatnam Municipal Corporation (GVMC)" : "Partner Organization"),
   );
-  const singular = isNgo ? "Volunteer" : isGov ? "Department Officer" : "Skilled Participant",
+  const singular = isGov ? "Department Officer" : "Skilled Participant",
     plural = `${singular}s`;
 
   const getOwnedOrganization = async () => {
@@ -5410,16 +5503,16 @@ function PartnerDashboard({
         {
           owner_id: user.id,
           name: partnerName,
-          organization_type: isNgo ? "NGO" : isGov ? "Government" : "Organization",
+          organization_type: isGov ? "Government" : "Organization",
           contact_email: user.email ?? null,
           latitude: Number.isFinite(latitude) ? latitude : null,
           longitude: Number.isFinite(longitude) ? longitude : null,
           district: String(meta["district"] || ""),
           locality: String(
             meta["locality"] ||
-              (meta["office_unit"]
-                ? `${meta["office_unit"]} (${meta["jurisdiction"] || ""})`
-                : meta["jurisdiction"] || "")
+            (meta["office_unit"]
+              ? `${meta["office_unit"]} (${meta["jurisdiction"] || ""})`
+              : meta["jurisdiction"] || "")
           ),
           expertise: [deptSector, officialCategory, meta["expertise"]].filter(Boolean).map(String),
           capabilities: [designation, meta["jurisdiction"] ? `Jurisdiction: ${meta["jurisdiction"]}` : null, meta["employee_id"] ? `ID: ${meta["employee_id"]}` : null].filter(Boolean) as string[],
@@ -5429,7 +5522,7 @@ function PartnerDashboard({
       .then(({ error }) => {
         if (error) flash(`Could not sync this account: ${error.message}`);
       });
-  }, [user, isNgo, isGov, partnerName, deptSector, officialCategory, designation]);
+  }, [user, isGov, partnerName, deptSector, officialCategory, designation]);
 
   useEffect(() => {
     const database = supabase;
@@ -5461,6 +5554,7 @@ function PartnerDashboard({
     if (!user || !database) return;
     let channel: ReturnType<typeof database.channel> | undefined;
     let challengeChannel: ReturnType<typeof database.channel> | undefined;
+    let isMounted = true;
 
     const statusFor = (status: string, routingStatus?: string): PartnerTaskStatus => {
       if (status === "unable_to_resolve") return "Couldn't Solve - Reassigned";
@@ -5473,6 +5567,7 @@ function PartnerDashboard({
 
     const loadAssignedTasks = async () => {
       const { organization } = await getOwnedOrganization();
+      if (!isMounted) return;
       const fetchedTasks: PartnerTask[] = [];
 
       // 1. Fetch explicit assignments from problem_assignments
@@ -5493,10 +5588,10 @@ function PartnerDashboard({
             const priorityLevel = challenge?.priority_level === "CRITICAL"
               ? "Critical"
               : priorityScore >= 75
-              ? "High"
-              : priorityScore >= 45
-              ? "Medium"
-              : "Low";
+                ? "High"
+                : priorityScore >= 45
+                  ? "Medium"
+                  : "Low";
 
             fetchedTasks.push({
               id: challenge?.public_id ?? assignment.id,
@@ -5556,10 +5651,10 @@ function PartnerDashboard({
             const priorityLevel = c.priority_level === "CRITICAL"
               ? "Critical"
               : priorityScore >= 75
-              ? "High"
-              : priorityScore >= 45
-              ? "Medium"
-              : "Low";
+                ? "High"
+                : priorityScore >= 45
+                  ? "Medium"
+                  : "Low";
 
             const routingStatus = factors.routing_status || "Recommended / Awaiting Validation";
 
@@ -5696,38 +5791,45 @@ function PartnerDashboard({
       setTasks(fetchedTasks);
     };
 
-    void loadAssignedTasks();
+    const init = async () => {
+      await loadAssignedTasks();
+      const { organization } = await getOwnedOrganization();
+      if (!isMounted) return;
 
-    if (organization) {
-      channel = database
-        .channel(`partner-assignments-${organization.id}`)
+      if (organization) {
+        channel = database
+          .channel(`partner-assignments-${organization.id}`)
+          .on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: "problem_assignments",
+              filter: `organization_id=eq.${organization.id}`,
+            },
+            () => void loadAssignedTasks(),
+          )
+          .subscribe();
+      }
+
+      challengeChannel = database
+        .channel("gov-challenges-live")
         .on(
           "postgres_changes",
           {
             event: "*",
             schema: "public",
-            table: "problem_assignments",
-            filter: `organization_id=eq.${organization.id}`,
+            table: "challenges",
           },
           () => void loadAssignedTasks(),
         )
         .subscribe();
-    }
+    };
 
-    challengeChannel = database
-      .channel("gov-challenges-live")
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "challenges",
-        },
-        () => void loadAssignedTasks(),
-      )
-      .subscribe();
+    void init();
 
     return () => {
+      isMounted = false;
       if (channel) void database.removeChannel(channel);
       if (challengeChannel) void database.removeChannel(challengeChannel);
     };
@@ -5765,8 +5867,8 @@ function PartnerDashboard({
         validated_by: user.id,
         validated_at: new Date().toISOString(),
       };
-      if (patch.responsibleDepartment) factorsUpdate.responsible_department = patch.responsibleDepartment;
-      if (patch.responsibleOrganization) factorsUpdate.responsible_organization = patch.responsibleOrganization;
+      if (patch.responsibleDepartment) factorsUpdate["responsible_department"] = patch.responsibleDepartment;
+      if (patch.responsibleOrganization) factorsUpdate["responsible_organization"] = patch.responsibleOrganization;
 
       void supabase.from("challenges").update({
         stage: patch.status === "Solved" ? "implemented" : patch.status === "Accepted" ? "verified" : "reported",
@@ -5782,12 +5884,12 @@ function PartnerDashboard({
         patch.status === "Recommended / Awaiting Validation" || patch.status === "Pending"
           ? "pending"
           : patch.status === "Accepted"
-          ? "accepted"
-          : patch.status === "Solved" || patch.status === "Implemented"
-          ? "completed"
-          : patch.status.includes("Couldn't") || patch.status === "Escalated"
-          ? "unable_to_resolve"
-          : "in_progress";
+            ? "accepted"
+            : patch.status === "Solved" || patch.status === "Implemented"
+              ? "completed"
+              : patch.status.includes("Couldn't") || patch.status === "Escalated"
+                ? "unable_to_resolve"
+                : "in_progress";
 
       void supabase
         .rpc("mark_assignment_progress", {
@@ -5845,14 +5947,14 @@ function PartnerDashboard({
     s === "Solved" || s === "Implemented"
       ? "bg-emerald-700 text-white"
       : s === "Escalated"
-      ? "bg-purple-100 text-purple-900 border border-purple-300"
-      : s.includes("Couldn't")
-      ? "bg-rose-100 text-rose-800 border border-rose-200"
-      : s === "Recommended / Awaiting Validation" || s === "Pending"
-      ? "bg-amber-100 text-amber-900 border border-amber-300 font-bold"
-      : s === "Accepted"
-      ? "bg-blue-100 text-blue-900 border border-blue-300"
-      : "bg-[#EAF7EF] text-[#0B5D2A]";
+        ? "bg-purple-100 text-purple-900 border border-purple-300"
+        : s.includes("Couldn't")
+          ? "bg-rose-100 text-rose-800 border border-rose-200"
+          : s === "Recommended / Awaiting Validation" || s === "Pending"
+            ? "bg-amber-100 text-amber-900 border border-amber-300 font-bold"
+            : s === "Accepted"
+              ? "bg-blue-100 text-blue-900 border border-blue-300"
+              : "bg-[#EAF7EF] text-[#0B5D2A]";
 
   // Filter tasks dynamically
   const filtered = useMemo(() => {
@@ -5962,22 +6064,22 @@ function PartnerDashboard({
 
   const nav = isGov
     ? [
-        "Dashboard",
-        "My Department",
-        "Awaiting Validation",
-        "Active Challenges",
-        "Implemented / Solved",
-        "Couldn't Solve / Reassigned",
-        "Department Officers",
-      ]
+      "Dashboard",
+      "My Department",
+      "Awaiting Validation",
+      "Active Challenges",
+      "Implemented / Solved",
+      "Couldn't Solve / Reassigned",
+      "Department Officers",
+    ]
     : [
-        "Dashboard",
-        plural,
-        "Assigned Tasks",
-        "Active Tasks",
-        "Completed Tasks",
-        "Couldn't Solve",
-      ];
+      "Dashboard",
+      plural,
+      "Assigned Tasks",
+      "Active Tasks",
+      "Completed Tasks",
+      "Couldn't Solve",
+    ];
 
   return (
     <div className="dashboard-shell min-h-screen bg-surface">
@@ -5989,9 +6091,9 @@ function PartnerDashboard({
               <Landmark size={20} />
             </div>
             <div className="min-w-0">
-              <b className="truncate block font-bold text-foreground">SamajSetu</b>
+              <b className="truncate block font-bold text-foreground">Samaj Setu</b>
               <p className="text-xs text-muted-foreground truncate">
-                {isGov ? "Government Portal" : isNgo ? "NGO Portal" : "Organization Portal"}
+                {isGov ? "Government Portal" : "Organization Portal"}
               </p>
             </div>
           </div>
@@ -6018,9 +6120,8 @@ function PartnerDashboard({
                 <button
                   key={item}
                   onClick={() => setSection(navKey)}
-                  className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left text-sm font-semibold transition-colors ${
-                    isSelected ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:bg-surface hover:text-foreground"
-                  }`}
+                  className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left text-sm font-semibold transition-colors ${isSelected ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:bg-surface hover:text-foreground"
+                    }`}
                 >
                   <span className="flex items-center gap-2.5 min-w-0">
                     {item === "Dashboard" ? (
@@ -6056,7 +6157,7 @@ function PartnerDashboard({
             <div className="space-y-1">
               <div className="flex flex-wrap items-center gap-2">
                 <p className="text-xs font-bold uppercase tracking-wider text-primary">
-                  {isGov ? "GOVERNMENT OFFICIAL WORKSPACE" : isNgo ? "NGO WORKSPACE" : "ORGANIZATION WORKSPACE"}
+                  {isGov ? "GOVERNMENT OFFICIAL WORKSPACE" : "ORGANIZATION WORKSPACE"}
                 </p>
                 {isGov && officialCategory && (
                   <span className="rounded-full bg-primary-soft px-2.5 py-0.5 text-[11px] font-bold text-primary">
@@ -6140,7 +6241,7 @@ function PartnerDashboard({
               </div>
 
               {/* Analytics Charts */}
-              <PartnerAnalytics tasks={tasks} partnerName={partnerName} isNgo={isNgo} />
+              <PartnerAnalytics tasks={tasks} partnerName={partnerName} />
 
               {/* Dynamic Filter Toolbar */}
               <div className="mt-8 rounded-2xl border border-border bg-card p-4 shadow-sm space-y-3">
@@ -6283,7 +6384,7 @@ function PartnerDashboard({
                   <thead className="bg-surface text-xs text-muted-foreground">
                     <tr>
                       <th className="p-4">FULL NAME</th>
-                      <th className="p-4">{isGov ? "EMPLOYEE / OFFICER ID" : isNgo ? "VOLUNTEER ID" : "ROLL / PARTICIPANT ID"}</th>
+                      <th className="p-4">{isGov ? "EMPLOYEE / OFFICER ID" : "ROLL / PARTICIPANT ID"}</th>
                       <th className="p-4">SKILL / EXPERTISE</th>
                       <th className="p-4">AVAILABILITY</th>
                       <th className="p-4">ASSIGNMENT STATUS</th>
@@ -6348,86 +6449,86 @@ function PartnerDashboard({
           {["My Department", "Assigned Tasks", "Awaiting Validation", "Active Challenges", "Active Tasks", "Implemented / Solved", "Completed Tasks", "Couldn't Solve / Reassigned", "Couldn't Solve"].includes(
             section,
           ) && (
-            <section className="mt-7">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-2xl font-bold">{section}</h2>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Every civic problem includes the full report, smart routing recommendation, GPS coordinates, priority and official human validation controls.
-                  </p>
-                </div>
-                <span className="text-xs font-bold bg-primary-soft text-primary px-3 py-1 rounded-full">
-                  {filtered.length} Challenges
-                </span>
-              </div>
-
-              {/* Filter Toolbar */}
-              <div className="mt-5 rounded-2xl border border-border bg-card p-4 shadow-sm space-y-3">
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                  <div className="relative">
-                    <Search size={14} className="absolute left-3 top-3 text-muted-foreground" />
-                    <input
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Search ID, title, location..."
-                      className="w-full rounded-lg border border-input bg-background pl-8 pr-3 py-2 text-xs"
-                    />
+              <section className="mt-7">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-2xl font-bold">{section}</h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Every civic problem includes the full report, smart routing recommendation, GPS coordinates, priority and official human validation controls.
+                    </p>
                   </div>
-
-                  <select
-                    value={filterDept}
-                    onChange={(e) => setFilterDept(e.target.value)}
-                    className="rounded-lg border border-input bg-background px-3 py-2 text-xs font-semibold text-foreground"
-                  >
-                    <option value="All">All Departments</option>
-                    <option value="Roads">Roads & Infrastructure</option>
-                    <option value="Sanitation">Sanitation & Solid Waste</option>
-                    <option value="Water">Water Supply & Quality</option>
-                    <option value="Health">Public Health</option>
-                    <option value="Electricity">Electricity & Energy</option>
-                  </select>
-
-                  <select
-                    value={filterJurisdiction}
-                    onChange={(e) => setFilterJurisdiction(e.target.value)}
-                    className="rounded-lg border border-input bg-background px-3 py-2 text-xs font-semibold text-foreground"
-                  >
-                    <option value="All">All Jurisdictions / Wards</option>
-                    <option value="Ward 20">Ward 20</option>
-                    <option value="Ward 18">Ward 18</option>
-                    <option value="Zone 3">Zone 3</option>
-                    <option value="Visakhapatnam">Visakhapatnam</option>
-                  </select>
-
-                  <select
-                    value={filterPriority}
-                    onChange={(e) => setFilterPriority(e.target.value)}
-                    className="rounded-lg border border-input bg-background px-3 py-2 text-xs font-semibold text-foreground"
-                  >
-                    <option value="All">All Urgency Priorities</option>
-                    <option value="Critical">Critical</option>
-                    <option value="High">High</option>
-                    <option value="Medium">Medium</option>
-                    <option value="Low">Low</option>
-                  </select>
+                  <span className="text-xs font-bold bg-primary-soft text-primary px-3 py-1 rounded-full">
+                    {filtered.length} Challenges
+                  </span>
                 </div>
-              </div>
 
-              <PartnerTaskCards
-                tasks={filtered}
-                tone={tone}
-                open={open}
-                accept={(id) => {
-                  update(id, {
-                    status: "Accepted",
-                    routingStatus: "Accepted",
-                    lifecycleStage: "Accepted",
-                  });
-                  flash("Routing accepted. Challenge validated and assigned to your department.");
-                }}
-              />
-            </section>
-          )}
+                {/* Filter Toolbar */}
+                <div className="mt-5 rounded-2xl border border-border bg-card p-4 shadow-sm space-y-3">
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <div className="relative">
+                      <Search size={14} className="absolute left-3 top-3 text-muted-foreground" />
+                      <input
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Search ID, title, location..."
+                        className="w-full rounded-lg border border-input bg-background pl-8 pr-3 py-2 text-xs"
+                      />
+                    </div>
+
+                    <select
+                      value={filterDept}
+                      onChange={(e) => setFilterDept(e.target.value)}
+                      className="rounded-lg border border-input bg-background px-3 py-2 text-xs font-semibold text-foreground"
+                    >
+                      <option value="All">All Departments</option>
+                      <option value="Roads">Roads & Infrastructure</option>
+                      <option value="Sanitation">Sanitation & Solid Waste</option>
+                      <option value="Water">Water Supply & Quality</option>
+                      <option value="Health">Public Health</option>
+                      <option value="Electricity">Electricity & Energy</option>
+                    </select>
+
+                    <select
+                      value={filterJurisdiction}
+                      onChange={(e) => setFilterJurisdiction(e.target.value)}
+                      className="rounded-lg border border-input bg-background px-3 py-2 text-xs font-semibold text-foreground"
+                    >
+                      <option value="All">All Jurisdictions / Wards</option>
+                      <option value="Ward 20">Ward 20</option>
+                      <option value="Ward 18">Ward 18</option>
+                      <option value="Zone 3">Zone 3</option>
+                      <option value="Visakhapatnam">Visakhapatnam</option>
+                    </select>
+
+                    <select
+                      value={filterPriority}
+                      onChange={(e) => setFilterPriority(e.target.value)}
+                      className="rounded-lg border border-input bg-background px-3 py-2 text-xs font-semibold text-foreground"
+                    >
+                      <option value="All">All Urgency Priorities</option>
+                      <option value="Critical">Critical</option>
+                      <option value="High">High</option>
+                      <option value="Medium">Medium</option>
+                      <option value="Low">Low</option>
+                    </select>
+                  </div>
+                </div>
+
+                <PartnerTaskCards
+                  tasks={filtered}
+                  tone={tone}
+                  open={open}
+                  accept={(id) => {
+                    update(id, {
+                      status: "Accepted",
+                      routingStatus: "Accepted",
+                      lifecycleStage: "Accepted",
+                    });
+                    flash("Routing accepted. Challenge validated and assigned to your department.");
+                  }}
+                />
+              </section>
+            )}
 
           {/* TASK / CHALLENGE DETAILS VIEW */}
           {section === "Task Details" && (
@@ -6928,7 +7029,7 @@ function PartnerDashboard({
       {/* COUNT MODAL */}
       {countModal && (
         <Modal
-          title={`Update ${isNgo ? "Volunteer" : "Participant"} Count`}
+          title="Update Participant Count"
           close={() => setCountModal(false)}
         >
           <p className="text-sm text-muted-foreground">
@@ -6945,7 +7046,7 @@ function PartnerDashboard({
           <button
             onClick={() => {
               setCountModal(false);
-              flash(`Available ${isNgo ? "volunteer" : "participant"} count updated.`);
+              flash("Available participant count updated.");
             }}
             className="mt-5 w-full rounded-lg bg-primary py-3 font-bold text-primary-foreground"
           >
@@ -6972,7 +7073,7 @@ function PartnerDashboard({
           <input
             value={memberIdentifier}
             onChange={(event) => setMemberIdentifier(event.target.value)}
-            placeholder={isGov ? "Employee / Officer ID" : isNgo ? "Volunteer ID" : "Roll number / Participant ID"}
+            placeholder={isGov ? "Employee / Officer ID" : "Roll number / Participant ID"}
             className="mt-3 w-full rounded-lg border border-input p-3"
           />
           <input
@@ -7575,7 +7676,7 @@ function CoordinatorDashboardLegacy({
       <section className="container-page py-12">
         <h1 className="text-3xl font-bold">Coordinator dashboard</h1>
         <p className="mt-3 text-muted-foreground">
-          Register your institution or NGO before managing work.
+          Register your institution before managing work.
         </p>
       </section>
     );
@@ -7753,7 +7854,7 @@ function FundingTransparency({ user, profile, flash, embedded = false }: { user:
   const addSource = async () => { if (!user || !donor.trim() || Number(amount) <= 0 || !purpose.trim()) return flash("Enter a valid funding source, amount, and purpose."); const { error } = await supabase!.from("funding_sources").insert({ category, donor_name: donor.trim(), amount: Number(amount), received_on: new Date().toISOString().slice(0, 10), purpose: purpose.trim(), created_by: user.id }); if (error) return flash(error.message); setDonor(""); setAmount(""); setPurpose(""); flash("Funding source recorded as pending verification."); await load(); };
   const addTransaction = async () => { if (!user || !projectId || Number(transactionAmount) <= 0 || !transactionPurpose.trim()) return flash("Select a project and enter a valid amount and purpose."); const { error } = await supabase!.from("financial_transactions").insert({ project_id: projectId, funding_source_id: transactionSourceId || null, transaction_type: transactionType, amount: Number(transactionAmount), occurred_on: new Date().toISOString().slice(0, 10), purpose: transactionPurpose.trim(), created_by: user.id }); if (error) return flash(error.message); setTransactionAmount(""); setTransactionPurpose(""); flash("Financial ledger entry recorded as pending verification."); await load(); };
   const verify = async (table: "funding_sources" | "financial_transactions", id: string) => { const { error } = await supabase!.from(table).update({ status: "verified", verified_by: user?.id ?? null, verified_at: new Date().toISOString() }).eq("id", id); if (error) flash(error.message); else { flash("Financial record verified and published."); await load(); } };
-  return <section className="container-page py-12"><span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">PUBLIC FINANCIAL TRANSPARENCY</span><h1 className="mt-4 text-3xl font-bold">Every Rupee Has a Source. Every Rupee Has a Purpose.</h1><p className="mt-2 max-w-3xl text-muted-foreground">Verified funding, project allocations, and expenditure records are published here for public accountability.</p><div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><DashboardStat label="Funds received" value={format(totalReceived)} icon={<Building2 size={18} />}/><DashboardStat label="Funds utilized" value={format(totalSpent)} icon={<Activity size={18} />}/><DashboardStat label="Funds available" value={format(totalReceived - totalSpent)} icon={<BadgeCheck size={18} />}/><DashboardStat label="Verified entries" value={sources.length + transactions.length} icon={<ClipboardCheck size={18} />}/></div><div className="mt-7 grid gap-5 lg:grid-cols-2"><section className="card-surface p-6"><h2 className="text-xl font-bold">Funding sources</h2><div className="mt-5 space-y-3">{sources.map((source) => <article key={source.id} className="rounded-lg bg-surface p-4"><div className="flex justify-between gap-3"><div><b>{cleanLegacyText(source.donor_name)}</b><p className="mt-1 text-xs capitalize text-muted-foreground">{source.category.replaceAll("_", " ")} | {new Date(source.received_on).toLocaleDateString()}</p></div><b className="text-primary">{format(Number(source.amount))}</b></div><p className="mt-2 text-sm text-muted-foreground">{cleanLegacyText(source.purpose)}</p>{admin && source.status === "pending" && <button onClick={() => void verify("funding_sources", source.id)} className="mt-2 text-xs font-bold text-primary">Verify & publish</button>}</article>)}{!sources.length && <p className="text-sm text-muted-foreground">No verified funding entries have been published.</p>}</div></section><section className="card-surface p-6"><h2 className="text-xl font-bold">Project financial timeline</h2><div className="mt-5 space-y-3">{transactions.map((transaction) => <article key={transaction.id} className="rounded-lg bg-surface p-4"><div className="flex justify-between gap-3"><div><b>{transaction.projects?.title ?? "Project"}</b><p className="mt-1 text-xs capitalize text-muted-foreground">{transaction.transaction_type} | {new Date(transaction.occurred_on).toLocaleDateString()}</p></div><b className={transaction.transaction_type === "expenditure" ? "text-destructive" : "text-primary"}>{format(Number(transaction.amount))}</b></div><p className="mt-2 text-sm text-muted-foreground">{cleanLegacyText(transaction.purpose)}</p>{admin && transaction.status === "pending" && <button onClick={() => void verify("financial_transactions", transaction.id)} className="mt-2 text-xs font-bold text-primary">Verify & publish</button>}</article>)}{!transactions.length && <p className="text-sm text-muted-foreground">No verified project transactions have been published.</p>}</div></section></div>{admin && <section className="card-surface mt-7 p-6"><h2 className="text-xl font-bold">Admin funding portal</h2><p className="mt-1 text-sm text-muted-foreground">New financial records remain pending until verified; every change is audit logged.</p><div className="mt-5 grid gap-5 lg:grid-cols-2"><div className="rounded-lg bg-surface p-4"><h3 className="font-bold">Record funding source</h3><div className="mt-3 grid gap-2"><select value={category} onChange={(e) => setCategory(e.target.value)} className="rounded border border-input bg-background p-2"><option value="government">Government</option><option value="industry_csr">Industry / CSR</option><option value="samajsetu_trust">SamajSetu Trust</option><option value="university">University</option><option value="ngo">NGO</option><option value="other_approved">Other approved</option></select><input value={donor} onChange={(e) => setDonor(e.target.value)} placeholder="Donor / organization" className="rounded border border-input p-2"/><input value={amount} onChange={(e) => setAmount(e.target.value)} type="number" min="1" placeholder="Amount in Rs." className="rounded border border-input p-2"/><textarea value={purpose} onChange={(e) => setPurpose(e.target.value)} placeholder="Purpose / restrictions" className="rounded border border-input p-2"/><button onClick={() => void addSource()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Add funding source</button></div></div><div className="rounded-lg bg-surface p-4"><h3 className="font-bold">Record project ledger entry</h3><div className="mt-3 grid gap-2"><select value={projectId} onChange={(e) => setProjectId(e.target.value)} className="rounded border border-input bg-background p-2"><option value="">Select project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}</select><select value={transactionType} onChange={(e) => setTransactionType(e.target.value)} className="rounded border border-input bg-background p-2"><option value="approval">Budget approved</option><option value="release">Funds released</option><option value="expenditure">Expenditure</option><option value="adjustment">Approved adjustment</option></select><input value={transactionAmount} onChange={(e) => setTransactionAmount(e.target.value)} type="number" min="1" placeholder="Amount in Rs." className="rounded border border-input p-2"/><textarea value={transactionPurpose} onChange={(e) => setTransactionPurpose(e.target.value)} placeholder="Purpose / expenditure detail" className="rounded border border-input p-2"/><button onClick={() => void addTransaction()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Add ledger entry</button></div></div></div></section>}</section>;
+  return <section className="container-page py-12"><span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">PUBLIC FINANCIAL TRANSPARENCY</span><h1 className="mt-4 text-3xl font-bold">Every Rupee Has a Source. Every Rupee Has a Purpose.</h1><p className="mt-2 max-w-3xl text-muted-foreground">Verified funding, project allocations, and expenditure records are published here for public accountability.</p><div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><DashboardStat label="Funds received" value={format(totalReceived)} icon={<Building2 size={18} />} /><DashboardStat label="Funds utilized" value={format(totalSpent)} icon={<Activity size={18} />} /><DashboardStat label="Funds available" value={format(totalReceived - totalSpent)} icon={<BadgeCheck size={18} />} /><DashboardStat label="Verified entries" value={sources.length + transactions.length} icon={<ClipboardCheck size={18} />} /></div><div className="mt-7 grid gap-5 lg:grid-cols-2"><section className="card-surface p-6"><h2 className="text-xl font-bold">Funding sources</h2><div className="mt-5 space-y-3">{sources.map((source) => <article key={source.id} className="rounded-lg bg-surface p-4"><div className="flex justify-between gap-3"><div><b>{cleanLegacyText(source.donor_name)}</b><p className="mt-1 text-xs capitalize text-muted-foreground">{source.category.replaceAll("_", " ")} | {new Date(source.received_on).toLocaleDateString()}</p></div><b className="text-primary">{format(Number(source.amount))}</b></div><p className="mt-2 text-sm text-muted-foreground">{cleanLegacyText(source.purpose)}</p>{admin && source.status === "pending" && <button onClick={() => void verify("funding_sources", source.id)} className="mt-2 text-xs font-bold text-primary">Verify & publish</button>}</article>)}{!sources.length && <p className="text-sm text-muted-foreground">No verified funding entries have been published.</p>}</div></section><section className="card-surface p-6"><h2 className="text-xl font-bold">Project financial timeline</h2><div className="mt-5 space-y-3">{transactions.map((transaction) => <article key={transaction.id} className="rounded-lg bg-surface p-4"><div className="flex justify-between gap-3"><div><b>{transaction.projects?.title ?? "Project"}</b><p className="mt-1 text-xs capitalize text-muted-foreground">{transaction.transaction_type} | {new Date(transaction.occurred_on).toLocaleDateString()}</p></div><b className={transaction.transaction_type === "expenditure" ? "text-destructive" : "text-primary"}>{format(Number(transaction.amount))}</b></div><p className="mt-2 text-sm text-muted-foreground">{cleanLegacyText(transaction.purpose)}</p>{admin && transaction.status === "pending" && <button onClick={() => void verify("financial_transactions", transaction.id)} className="mt-2 text-xs font-bold text-primary">Verify & publish</button>}</article>)}{!transactions.length && <p className="text-sm text-muted-foreground">No verified project transactions have been published.</p>}</div></section></div>{admin && <section className="card-surface mt-7 p-6"><h2 className="text-xl font-bold">Admin funding portal</h2><p className="mt-1 text-sm text-muted-foreground">New financial records remain pending until verified; every change is audit logged.</p><div className="mt-5 grid gap-5 lg:grid-cols-2"><div className="rounded-lg bg-surface p-4"><h3 className="font-bold">Record funding source</h3><div className="mt-3 grid gap-2"><select value={category} onChange={(e) => setCategory(e.target.value)} className="rounded border border-input bg-background p-2"><option value="government">Government</option><option value="industry_csr">Industry / CSR</option><option value="samajsetu_trust">Samaj Setu Trust</option><option value="university">University</option><option value="other_approved">Other approved</option></select><input value={donor} onChange={(e) => setDonor(e.target.value)} placeholder="Donor / organization" className="rounded border border-input p-2" /><input value={amount} onChange={(e) => setAmount(e.target.value)} type="number" min="1" placeholder="Amount in Rs." className="rounded border border-input p-2" /><textarea value={purpose} onChange={(e) => setPurpose(e.target.value)} placeholder="Purpose / restrictions" className="rounded border border-input p-2" /><button onClick={() => void addSource()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Add funding source</button></div></div><div className="rounded-lg bg-surface p-4"><h3 className="font-bold">Record project ledger entry</h3><div className="mt-3 grid gap-2"><select value={projectId} onChange={(e) => setProjectId(e.target.value)} className="rounded border border-input bg-background p-2"><option value="">Select project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}</select><select value={transactionType} onChange={(e) => setTransactionType(e.target.value)} className="rounded border border-input bg-background p-2"><option value="approval">Budget approved</option><option value="release">Funds released</option><option value="expenditure">Expenditure</option><option value="adjustment">Approved adjustment</option></select><input value={transactionAmount} onChange={(e) => setTransactionAmount(e.target.value)} type="number" min="1" placeholder="Amount in Rs." className="rounded border border-input p-2" /><textarea value={transactionPurpose} onChange={(e) => setTransactionPurpose(e.target.value)} placeholder="Purpose / expenditure detail" className="rounded border border-input p-2" /><button onClick={() => void addTransaction()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Add ledger entry</button></div></div></div></section>}</section>;
 }
 
 function FundingTransparencyV2({ user, profile, flash, embedded = false }: { user: User | null; profile: Profile | null; flash: (message: string) => void; embedded?: boolean }) {
@@ -7783,7 +7884,7 @@ function FundingTransparencyV2({ user, profile, flash, embedded = false }: { use
     setUtilized(""); setUtilizationDescription(""); flash("Fund utilization updated."); await load();
   };
   const verify = async (id: string) => { const { error } = await supabase!.from("funding_sources").update({ status: "verified", verified_by: user?.id ?? null, verified_at: new Date().toISOString() }).eq("id", id); if (error) flash(error.message); else { flash("Funding record verified and published."); await load(); } };
-  return <section id="financial-transparency" className="funding-transparency container-page py-10"><span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">PUBLIC FINANCIAL TRANSPARENCY</span><h1 className="mt-4 text-3xl font-bold">Public funds, clearly accounted for.</h1><p className="mt-2 max-w-3xl text-muted-foreground">Verified funding records show what was received, utilized, and still available to the community.</p><div className="mt-6 grid gap-3 sm:grid-cols-3"><DashboardStat label="Total funds received" value={format(totalReceived)} icon={<Building2 size={18} />} /><DashboardStat label="Total funds utilized" value={format(totalUtilized)} icon={<Activity size={18} />} /><DashboardStat label="Remaining funds" value={format(totalReceived - totalUtilized)} icon={<BadgeCheck size={18} />} /></div><div className="funding-records mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">{sources.map((source) => { const remaining = Number(source.amount) - Number(source.utilized_amount); return <article key={source.id} className="card-surface p-5"><div className="flex items-start justify-between gap-3"><div><h2 className="font-bold">{cleanLegacyText(source.donor_name)}</h2><p className="mt-1 text-xs capitalize text-muted-foreground">{source.category.replaceAll("_", " ")} | {new Date(source.received_on).toLocaleDateString()}</p></div>{admin && source.status === "pending" && <button onClick={() => void verify(source.id)} className="text-xs font-bold text-primary">Verify & publish</button>}</div><p className="mt-3 text-sm text-muted-foreground">{cleanLegacyText(source.purpose)}</p><div className="mt-4 grid grid-cols-3 gap-2 text-sm"><p><b className="block text-primary">{format(Number(source.amount))}</b><span className="text-xs text-muted-foreground">Received</span></p><p><b className="block text-accent">{format(Number(source.utilized_amount))}</b><span className="text-xs text-muted-foreground">Utilized</span></p><p><b className="block">{format(remaining)}</b><span className="text-xs text-muted-foreground">Remaining</span></p></div>{source.utilization_description && <p className="mt-3 rounded-lg bg-surface p-3 text-xs text-muted-foreground">Utilization: {source.utilization_description}</p>}</article>; })}</div>{!sources.length && <p className="card-surface mt-6 p-6 text-muted-foreground">No verified funding records have been published.</p>}{admin && <section className="card-surface mt-7 p-6"><h2 className="text-xl font-bold">Admin fund management</h2><p className="mt-1 text-sm text-muted-foreground">Funding and utilization changes are audit logged and publish to citizens only after verification.</p><div className="mt-5 grid gap-5 lg:grid-cols-2"><div className="rounded-xl bg-surface p-4"><h3 className="font-bold">Add funding record</h3><div className="mt-3 grid gap-2"><select value={category} onChange={(event) => setCategory(event.target.value)} className="rounded border border-input bg-background p-2"><option value="government">Government</option><option value="industry_csr">CSR</option><option value="samajsetu_trust">SamajSetu Charitable Trust</option><option value="ngo">NGO contribution</option><option value="other_approved">Other verified source</option></select><input value={donor} onChange={(event) => setDonor(event.target.value)} placeholder="Department / organization name" className="rounded border border-input p-2"/><input value={amount} onChange={(event) => setAmount(event.target.value)} type="number" min="1" placeholder="Amount received in Rs." className="rounded border border-input p-2"/><textarea value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder="Purpose" className="rounded border border-input p-2"/><button onClick={() => void addSource()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Add funding record</button></div></div><div className="rounded-xl bg-surface p-4"><h3 className="font-bold">Update utilized amount</h3><div className="mt-3 grid gap-2"><select value={selectedId} onChange={(event) => setSelectedId(event.target.value)} className="rounded border border-input bg-background p-2"><option value="">Select funding source</option>{sources.map((source) => <option key={source.id} value={source.id}>{cleanLegacyText(source.donor_name)} - {format(Number(source.amount))}</option>)}</select><input value={utilized} onChange={(event) => setUtilized(event.target.value)} type="number" min="0" placeholder="Total amount utilized in Rs." className="rounded border border-input p-2"/><textarea value={utilizationDescription} onChange={(event) => setUtilizationDescription(event.target.value)} placeholder="Utilization description" className="rounded border border-input p-2"/><button onClick={() => void updateUtilization()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Save utilized amount</button></div></div></div></section>}</section>;
+  return <section id="financial-transparency" className="funding-transparency container-page py-10"><span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-bold text-primary">PUBLIC FINANCIAL TRANSPARENCY</span><h1 className="mt-4 text-3xl font-bold">Public funds, clearly accounted for.</h1><p className="mt-2 max-w-3xl text-muted-foreground">Verified funding records show what was received, utilized, and still available to the community.</p><div className="mt-6 grid gap-3 sm:grid-cols-3"><DashboardStat label="Total funds received" value={format(totalReceived)} icon={<Building2 size={18} />} /><DashboardStat label="Total funds utilized" value={format(totalUtilized)} icon={<Activity size={18} />} /><DashboardStat label="Remaining funds" value={format(totalReceived - totalUtilized)} icon={<BadgeCheck size={18} />} /></div><div className="funding-records mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">{sources.map((source) => { const remaining = Number(source.amount) - Number(source.utilized_amount); return <article key={source.id} className="card-surface p-5"><div className="flex items-start justify-between gap-3"><div><h2 className="font-bold">{cleanLegacyText(source.donor_name)}</h2><p className="mt-1 text-xs capitalize text-muted-foreground">{source.category.replaceAll("_", " ")} | {new Date(source.received_on).toLocaleDateString()}</p></div>{admin && source.status === "pending" && <button onClick={() => void verify(source.id)} className="text-xs font-bold text-primary">Verify & publish</button>}</div><p className="mt-3 text-sm text-muted-foreground">{cleanLegacyText(source.purpose)}</p><div className="mt-4 grid grid-cols-3 gap-2 text-sm"><p><b className="block text-primary">{format(Number(source.amount))}</b><span className="text-xs text-muted-foreground">Received</span></p><p><b className="block text-accent">{format(Number(source.utilized_amount))}</b><span className="text-xs text-muted-foreground">Utilized</span></p><p><b className="block">{format(remaining)}</b><span className="text-xs text-muted-foreground">Remaining</span></p></div>{source.utilization_description && <p className="mt-3 rounded-lg bg-surface p-3 text-xs text-muted-foreground">Utilization: {source.utilization_description}</p>}</article>; })}</div>{!sources.length && <p className="card-surface mt-6 p-6 text-muted-foreground">No verified funding records have been published.</p>}{admin && <section className="card-surface mt-7 p-6"><h2 className="text-xl font-bold">Admin fund management</h2><p className="mt-1 text-sm text-muted-foreground">Funding and utilization changes are audit logged and publish to citizens only after verification.</p><div className="mt-5 grid gap-5 lg:grid-cols-2"><div className="rounded-xl bg-surface p-4"><h3 className="font-bold">Add funding record</h3><div className="mt-3 grid gap-2"><select value={category} onChange={(event) => setCategory(event.target.value)} className="rounded border border-input bg-background p-2"><option value="government">Government</option><option value="industry_csr">CSR</option><option value="samajsetu_trust">Samaj Setu Charitable Trust</option><option value="other_approved">Other verified source</option></select><input value={donor} onChange={(event) => setDonor(event.target.value)} placeholder="Department / organization name" className="rounded border border-input p-2" /><input value={amount} onChange={(event) => setAmount(event.target.value)} type="number" min="1" placeholder="Amount received in Rs." className="rounded border border-input p-2" /><textarea value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder="Purpose" className="rounded border border-input p-2" /><button onClick={() => void addSource()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Add funding record</button></div></div><div className="rounded-xl bg-surface p-4"><h3 className="font-bold">Update utilized amount</h3><div className="mt-3 grid gap-2"><select value={selectedId} onChange={(event) => setSelectedId(event.target.value)} className="rounded border border-input bg-background p-2"><option value="">Select funding source</option>{sources.map((source) => <option key={source.id} value={source.id}>{cleanLegacyText(source.donor_name)} - {format(Number(source.amount))}</option>)}</select><input value={utilized} onChange={(event) => setUtilized(event.target.value)} type="number" min="0" placeholder="Total amount utilized in Rs." className="rounded border border-input p-2" /><textarea value={utilizationDescription} onChange={(event) => setUtilizationDescription(event.target.value)} placeholder="Utilization description" className="rounded border border-input p-2" /><button onClick={() => void updateUtilization()} className="rounded bg-primary px-3 py-2 text-sm font-bold text-primary-foreground">Save utilized amount</button></div></div></div></section>}</section>;
 }
 
 function ProjectWorkspace({ user, profile, flash }: { user: User | null; profile: Profile | null; flash: (message: string) => void }) {
@@ -8022,9 +8123,8 @@ function ProjectWorkspace({ user, profile, flash }: { user: User | null; profile
               <button
                 key={project.id}
                 onClick={() => setSelected(project)}
-                className={`card-surface w-full p-5 text-left transition-all ${
-                  selected?.id === project.id ? "border-primary ring-1 ring-primary" : "hover:border-border"
-                }`}
+                className={`card-surface w-full p-5 text-left transition-all ${selected?.id === project.id ? "border-primary ring-1 ring-primary" : "hover:border-border"
+                  }`}
               >
                 <div className="flex items-center justify-between text-xs text-muted-foreground">
                   <span className="font-bold text-primary">{project.challenges?.public_id}</span>
@@ -8582,7 +8682,7 @@ function HolidayCalendarAdmin({ flash }: { flash: (message: string) => void }) {
     if (error) return flash(error.message);
     await load(); flash("Public holiday removed.");
   };
-  return <section className="mt-7 max-w-3xl"><h2 className="text-2xl font-bold">Public holiday calendar</h2><p className="mt-2 text-sm text-muted-foreground">The automatic assignment deadline counts three working days. Saturdays, Sundays, and these configured public holidays are excluded.</p><div className="card-surface mt-5 p-5"><div className="grid gap-3 sm:grid-cols-[1fr_1.4fr_auto]"><input type="date" value={date} onChange={(event) => setDate(event.target.value)} className="rounded-lg border border-input bg-background p-3"/><input value={name} onChange={(event) => setName(event.target.value)} placeholder="Holiday name" className="rounded-lg border border-input p-3"/><button onClick={() => void add()} className="rounded-lg bg-primary px-4 py-3 text-sm font-bold text-primary-foreground">Add holiday</button></div></div><div className="mt-5 space-y-2">{holidays.map((holiday) => <article key={holiday.holiday_date} className="card-surface flex items-center justify-between gap-3 p-4"><div><b>{holiday.name}</b><p className="mt-1 text-sm text-muted-foreground">{new Date(`${holiday.holiday_date}T00:00:00`).toLocaleDateString(undefined, { dateStyle: "long" })}</p></div><button onClick={() => void remove(holiday.holiday_date)} className="rounded-lg px-3 py-2 text-sm font-bold text-destructive hover:bg-destructive-soft">Remove</button></article>)}{!holidays.length && <p className="card-surface p-5 text-sm text-muted-foreground">No public holidays are configured.</p>}</div></section>;
+  return <section className="mt-7 max-w-3xl"><h2 className="text-2xl font-bold">Public holiday calendar</h2><p className="mt-2 text-sm text-muted-foreground">The automatic assignment deadline counts three working days. Saturdays, Sundays, and these configured public holidays are excluded.</p><div className="card-surface mt-5 p-5"><div className="grid gap-3 sm:grid-cols-[1fr_1.4fr_auto]"><input type="date" value={date} onChange={(event) => setDate(event.target.value)} className="rounded-lg border border-input bg-background p-3" /><input value={name} onChange={(event) => setName(event.target.value)} placeholder="Holiday name" className="rounded-lg border border-input p-3" /><button onClick={() => void add()} className="rounded-lg bg-primary px-4 py-3 text-sm font-bold text-primary-foreground">Add holiday</button></div></div><div className="mt-5 space-y-2">{holidays.map((holiday) => <article key={holiday.holiday_date} className="card-surface flex items-center justify-between gap-3 p-4"><div><b>{holiday.name}</b><p className="mt-1 text-sm text-muted-foreground">{new Date(`${holiday.holiday_date}T00:00:00`).toLocaleDateString(undefined, { dateStyle: "long" })}</p></div><button onClick={() => void remove(holiday.holiday_date)} className="rounded-lg px-3 py-2 text-sm font-bold text-destructive hover:bg-destructive-soft">Remove</button></article>)}{!holidays.length && <p className="card-surface p-5 text-sm text-muted-foreground">No public holidays are configured.</p>}</div></section>;
 }
 
 function AdminControlCenter({
@@ -8673,22 +8773,19 @@ function AdminControlCenter({
   useEffect(() => {
     void load();
   }, []);
-  const organizations = partners.filter((partner) => partner.organization_type !== "NGO"),
-    ngos = partners.filter((partner) => partner.organization_type === "NGO");
+  const organizations = partners;
   const activeTasks = tasks.filter(
     (task) => !["impact", "completed", "solved"].includes(task.stage),
   ).length;
   const nav = [
     "Dashboard",
     "Organizations",
-    "NGOs",
     "All Tasks",
     "Task Tracking",
     "Smart Task Allocation",
     "Public Holidays",
     "Reassignments",
     "Skilled Participants",
-    "Volunteers",
     "Expertise & Resources",
     "Financial Transparency",
     "Reports",
@@ -8697,7 +8794,7 @@ function AdminControlCenter({
     "Analytics",
     "Account Management",
   ];
-  const shownPartners = (section === "NGOs" ? ngos : organizations).filter(
+  const shownPartners = organizations.filter(
     (partner) =>
       `${partner.name} ${partner.contact_email ?? ""} ${partner.district ?? ""} ${partner.expertise.join(" ")}`
         .toLowerCase()
@@ -8731,22 +8828,15 @@ function AdminControlCenter({
   };
   const cards = [
     ["Organizations", organizations.length],
-    ["NGOs", ngos.length],
     [
       "Active organizations",
       organizations.filter((item) => (item.account_status ?? "Active") === "Active").length,
     ],
-    ["Active NGOs", ngos.filter((item) => (item.account_status ?? "Active") === "Active").length],
     [
       "Total skilled participants",
       members.filter((member) =>
         organizations.some((partner) => partner.id === member.organization_id),
       ).length,
-    ],
-    [
-      "Total volunteers",
-      members.filter((member) => ngos.some((partner) => partner.id === member.organization_id))
-        .length,
     ],
     ["Active tasks", activeTasks],
     ["Completed tasks", tasks.filter((task) => task.stage === "impact").length],
@@ -8762,7 +8852,7 @@ function AdminControlCenter({
               SS
             </div>
             <div>
-              <p className="font-bold">SamajSetu</p>
+              <p className="font-bold">Samaj Setu</p>
               <p className="text-xs text-muted-foreground">Admin Control Center</p>
             </div>
           </div>
@@ -8778,7 +8868,7 @@ function AdminControlCenter({
               >
                 {item === "Dashboard" ? (
                   <LayoutDashboard size={16} />
-                ) : item === "Organizations" || item === "NGOs" ? (
+                ) : item === "Organizations" ? (
                   <Building2 size={16} />
                 ) : item === "Pilot Approvals" ? (
                   <ShieldCheck size={16} />
@@ -8825,7 +8915,7 @@ function AdminControlCenter({
               <h1 className="mt-1 text-2xl font-bold sm:text-3xl">Admin Control Center</h1>
               <p className="mt-2 text-sm text-muted-foreground">Monitor activity, manage resources, and drive impact across communities.</p>
             </div>
-            <aside className="dashboard-quote"><span aria-hidden="true">&#10047;</span><p><b>“Stronger communities,<br />a brighter tomorrow.”</b><br /><small>— SamajSetu</small></p></aside>
+            <aside className="dashboard-quote"><span aria-hidden="true">&#10047;</span><p><b>“Stronger communities,<br />a brighter tomorrow.”</b><br /><small>— Samaj Setu</small></p></aside>
           </section>
           {section === "Financial Transparency" && <FundingTransparencyV2 user={user} profile={profile} flash={flash} />}
           {section === "Public Holidays" && <HolidayCalendarAdmin flash={flash} />}
@@ -8837,7 +8927,7 @@ function AdminControlCenter({
                     key={label}
                     label={label}
                     value={value}
-                    icon={label.includes("Organization") ? <Building2 size={18} /> : label.includes("NGO") || label.includes("volunteer") ? <Users size={18} /> : label.includes("Completed") ? <CheckCircle2 size={18} /> : label.includes("Pending") ? <Clock3 size={18} /> : label.includes("Reassigned") ? <Repeat2 size={18} /> : label.includes("participant") ? <BadgeCheck size={18} /> : <ClipboardCheck size={18} />}
+                    icon={label.includes("Organization") ? <Building2 size={18} /> : label.includes("volunteer") ? <Users size={18} /> : label.includes("Completed") ? <CheckCircle2 size={18} /> : label.includes("Pending") ? <Clock3 size={18} /> : label.includes("Reassigned") ? <Repeat2 size={18} /> : label.includes("participant") ? <BadgeCheck size={18} /> : <ClipboardCheck size={18} />}
                   />
                 ))}
               </div>
@@ -8869,7 +8959,7 @@ function AdminControlCenter({
                 <section className="card-surface p-6">
                   <h2 className="text-lg font-bold">Capability coverage</h2>
                   <p className="mt-2 text-sm text-muted-foreground">
-                    Expertise and resources reported by all registered organizations and NGOs.
+                    Expertise and resources reported by all registered organizations and institutions.
                   </p>
                   <div className="mt-5 flex flex-wrap gap-2">
                     {Array.from(new Set(partners.flatMap((partner) => partner.expertise))).map(
@@ -8888,7 +8978,6 @@ function AdminControlCenter({
             </>
           )}
           {(section === "Organizations" ||
-            section === "NGOs" ||
             section === "Account Management") &&
             !selected && (
               <section className="mt-7">
@@ -9035,13 +9124,13 @@ function AdminControlCenter({
                     {!assignments.some(
                       (assignment) => assignment.organization_id === selected.id,
                     ) && (
-                      <p className="text-sm text-muted-foreground">
-                        No task assignments have been recorded yet.
-                      </p>
-                    )}
+                        <p className="text-sm text-muted-foreground">
+                          No task assignments have been recorded yet.
+                        </p>
+                      )}
                   </div>
                   <h3 className="mt-7 font-bold">
-                    {selected.organization_type === "NGO" ? "Volunteers" : "Skilled participants"}
+                    Skilled participants
                   </h3>
                   <div className="mt-3 space-y-2">
                     {members
@@ -9057,8 +9146,7 @@ function AdminControlCenter({
                       ))}
                     {!members.some((member) => member.organization_id === selected.id) && (
                       <p className="text-sm text-muted-foreground">
-                        No {selected.organization_type === "NGO" ? "volunteers" : "participants"}{" "}
-                        have been recorded yet.
+                        No participants have been recorded yet.
                       </p>
                     )}
                   </div>
@@ -9108,29 +9196,29 @@ function AdminControlCenter({
                       className="card-surface p-5"
                     >
                       <div className="flex flex-wrap items-center justify-between gap-4">
-                      <div>
-                        <p className="text-xs font-bold text-primary">
-                          {task.public_id} | {task.domain}
-                        </p>
-                        <h3 className="mt-1 font-bold">{task.title}</h3>
-                        <p className="mt-1 text-sm text-muted-foreground">
-                          {task.district} | Reported{" "}
-                          {new Date(task.created_at).toLocaleDateString()}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="rounded-full bg-surface px-3 py-1 text-xs font-bold">
-                          {task.verification.replaceAll("_", " ")}
-                        </span>
-                        {!['community_verified', 'officially_verified'].includes(task.verification) && (
-                          <button
-                            onClick={() => void verifyChallenge(task)}
-                            className="rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground"
-                          >
-                            Verify challenge
-                          </button>
-                        )}
-                      </div>
+                        <div>
+                          <p className="text-xs font-bold text-primary">
+                            {task.public_id} | {task.domain}
+                          </p>
+                          <h3 className="mt-1 font-bold">{task.title}</h3>
+                          <p className="mt-1 text-sm text-muted-foreground">
+                            {task.district} | Reported{" "}
+                            {new Date(task.created_at).toLocaleDateString()}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="rounded-full bg-surface px-3 py-1 text-xs font-bold">
+                            {task.verification.replaceAll("_", " ")}
+                          </span>
+                          {!['community_verified', 'officially_verified'].includes(task.verification) && (
+                            <button
+                              onClick={() => void verifyChallenge(task)}
+                              className="rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground"
+                            >
+                              Verify challenge
+                            </button>
+                          )}
+                        </div>
                       </div>
                       <ProblemProgressTimeline challenge={task} compact />
                     </article>
@@ -9147,18 +9235,18 @@ function AdminControlCenter({
             "Expertise & Resources",
             "Analytics",
           ].includes(section) && (
-            <AdminDataSection
-              section={section}
-              query={query}
-              partners={partners}
-              tasks={tasks}
-              members={members}
-              assignments={assignments}
-              transfers={transfers}
-              rankings={rankings}
-              allocationSettings={allocationSettings}
-            />
-          )}
+              <AdminDataSection
+                section={section}
+                query={query}
+                partners={partners}
+                tasks={tasks}
+                members={members}
+                assignments={assignments}
+                transfers={transfers}
+                rankings={rankings}
+                allocationSettings={allocationSettings}
+              />
+            )}
           {section === "Reports" && <AdminProblemReview flash={flash} refresh={refresh} />}
           {section === "Pilot Approvals" && <GovernmentPilotApprovals flash={flash} refresh={refresh} />}
           {section === "Adoption & Scaling" && <GovernmentAdoptionScaling flash={flash} refresh={refresh} />}
@@ -9220,15 +9308,22 @@ const SUPPORT_CATEGORIES = [
 ];
 
 const GOV_DEPARTMENTS = [
-  "Municipal Administration & Engineering",
-  "Public Health & Sanitation",
-  "Water Resources & Sewerage",
-  "Transport & Traffic Engineering",
-  "Electrical & Energy Infrastructure",
-  "Environmental Protection & Forest",
-  "Disaster Management & Civil Defense",
-  "Public Works Department (PWD)",
-  "Social Welfare & Urban Development",
+  "Rural Development / Panchayati Raj / Public Works Department (PWD)",
+  "Rural Water Supply & Sanitation / Public Health Engineering Department (PHED)",
+  "Panchayati Raj / Rural Development / Municipal or Local Body authority",
+  "State Electricity Distribution Company (DISCOM) / Energy Department",
+  "Health & Family Welfare Department",
+  "School Education Department / Department of School Education",
+  "Agriculture Department",
+  "Rural Development Department",
+  "Women & Child Development (WCD) Department",
+  "Police Department / Home Department",
+  "Rural Development / Housing Department / Panchayati Raj",
+  "Transport Department / State Road Transport authority",
+  "Environment & Forest Department / State Pollution Control Board",
+  "Revenue Department",
+  "Social Welfare Department",
+  "District Administration / appropriate department after classification",
 ];
 
 function AdminProblemReview({ flash, refresh }: { flash: (message: string) => void; refresh: () => void }) {
@@ -9240,6 +9335,11 @@ function AdminProblemReview({ flash, refresh }: { flash: (message: string) => vo
   const [expandedScopeId, setExpandedScopeId] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectionReason, setRejectionReason] = useState("");
+  const [mergeModalOpen, setMergeModalOpen] = useState(false);
+  const [mergeCanonicalId, setMergeCanonicalId] = useState("");
+  const [mergeDuplicateId, setMergeDuplicateId] = useState("");
+  const [mergeReason, setMergeReason] = useState("");
+  const [merging, setMerging] = useState(false);
   const [scopeDrafts, setScopeDrafts] = useState<
     Record<
       string,
@@ -9258,6 +9358,35 @@ function AdminProblemReview({ flash, refresh }: { flash: (message: string) => vo
     >
   >({});
 
+  const handleMergeProblems = async () => {
+    if (!supabase || !mergeCanonicalId || !mergeDuplicateId) {
+      return flash("Please select both a primary canonical problem and a duplicate problem.");
+    }
+    if (mergeCanonicalId === mergeDuplicateId) {
+      return flash("Canonical problem and duplicate problem cannot be the same.");
+    }
+    setMerging(true);
+    try {
+      const { data, error } = await supabase.rpc("merge_challenges", {
+        canonical_id: mergeCanonicalId,
+        duplicate_id: mergeDuplicateId,
+        merge_reason: mergeReason.trim() || "Consolidated by authorized reviewer as duplicate problem.",
+      });
+      if (error) throw error;
+      flash("Problems successfully merged! Reports, media, and supports moved to canonical challenge.");
+      setMergeModalOpen(false);
+      setMergeCanonicalId("");
+      setMergeDuplicateId("");
+      setMergeReason("");
+      await load();
+      refresh();
+    } catch (err: any) {
+      flash(`Merge failed: ${err.message || "Unable to merge problems"}`);
+    } finally {
+      setMerging(false);
+    }
+  };
+
   const load = async () => {
     const { data, error } = await supabase!.rpc("admin_problem_review");
     if (error) {
@@ -9272,7 +9401,8 @@ function AdminProblemReview({ flash, refresh }: { flash: (message: string) => vo
   }, []);
 
   const getScopeDraft = (item: AdminReviewProblem) => {
-    if (scopeDrafts[item.challenge_id]) return scopeDrafts[item.challenge_id];
+    const existing = scopeDrafts[item.challenge_id];
+    if (existing) return existing;
     return {
       dept: item.responsible_department || "",
       scope_text: item.technical_scope || "",
@@ -9310,9 +9440,9 @@ function AdminProblemReview({ flash, refresh }: { flash: (message: string) => vo
   };
 
   const toggleSupportTag = (challengeId: string, tag: string) => {
-    const current = getScopeDraft(
-      items.find((i) => i.challenge_id === challengeId)!,
-    ).needed_support;
+    const item = items.find((i) => i.challenge_id === challengeId);
+    if (!item) return;
+    const current = getScopeDraft(item).needed_support;
     const next = current.includes(tag)
       ? current.filter((t) => t !== tag)
       : [...current, tag];
@@ -9430,15 +9560,22 @@ function AdminProblemReview({ flash, refresh }: { flash: (message: string) => vo
             <button
               key={key}
               onClick={() => setFilter(key)}
-              className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
-                filter === key
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-surface text-muted-foreground hover:bg-card hover:text-foreground"
-              }`}
+              className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${filter === key
+                ? "bg-primary text-primary-foreground"
+                : "bg-surface text-muted-foreground hover:bg-card hover:text-foreground"
+                }`}
             >
               {label}
             </button>
           ))}
+          <button
+            type="button"
+            onClick={() => setMergeModalOpen(true)}
+            className="rounded-lg bg-[#0B5D2A] px-3.5 py-1.5 text-xs font-bold text-white hover:bg-[#168a45] transition flex items-center gap-1.5 shadow-xs"
+          >
+            <Repeat2 size={13} />
+            <span>Merge Problems</span>
+          </button>
         </div>
       </div>
 
@@ -9604,17 +9741,16 @@ function AdminProblemReview({ flash, refresh }: { flash: (message: string) => vo
                       setExpandedScopeId(isScopeOpen ? null : item.challenge_id);
                       setRejectingId(null);
                     }}
-                    className={`rounded-lg px-4 py-2 text-xs font-bold transition ${
-                      isScopeOpen
-                        ? "bg-muted text-foreground"
-                        : "bg-primary text-primary-foreground"
-                    }`}
+                    className={`rounded-lg px-4 py-2 text-xs font-bold transition ${isScopeOpen
+                      ? "bg-muted text-foreground"
+                      : "bg-primary text-primary-foreground"
+                      }`}
                   >
                     {isScopeOpen
                       ? "Close Scoping Form"
                       : item.scope_defined_at
-                      ? "Edit Technical Scope"
-                      : "Define Technical Scope for Universities"}
+                        ? "Edit Technical Scope"
+                        : "Define Technical Scope for Universities"}
                   </button>
 
                   {!item.rejection_reason && (
@@ -9626,6 +9762,19 @@ function AdminProblemReview({ flash, refresh }: { flash: (message: string) => vo
                       className="rounded-lg border border-input px-3 py-2 text-xs font-medium text-destructive hover:bg-destructive-soft"
                     >
                       {isRejectOpen ? "Cancel Rejection" : "Reject Submission"}
+                    </button>
+                  )}
+
+                  {!item.rejection_reason && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMergeDuplicateId(item.challenge_id);
+                        setMergeModalOpen(true);
+                      }}
+                      className="rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 px-3 py-2 text-xs font-bold text-amber-900 transition"
+                    >
+                      Merge Duplicate
                     </button>
                   )}
                 </div>
@@ -9852,11 +10001,10 @@ function AdminProblemReview({ flash, refresh }: { flash: (message: string) => vo
                             type="button"
                             key={category}
                             onClick={() => toggleSupportTag(item.challenge_id, category)}
-                            className={`rounded-full border px-3 py-1 text-xs font-bold transition ${
-                              isSelected
-                                ? "border-primary bg-primary text-primary-foreground"
-                                : "border-input bg-background text-muted-foreground hover:border-primary/50 hover:text-foreground"
-                            }`}
+                            className={`rounded-full border px-3 py-1 text-xs font-bold transition ${isSelected
+                              ? "border-primary bg-primary text-primary-foreground"
+                              : "border-input bg-background text-muted-foreground hover:border-primary/50 hover:text-foreground"
+                              }`}
                           >
                             {isSelected ? `✓ ${category}` : `+ ${category}`}
                           </button>
@@ -9899,6 +10047,113 @@ function AdminProblemReview({ flash, refresh }: { flash: (message: string) => vo
           </div>
         )}
       </div>
+
+      {/* PROBLEM MERGING MODAL */}
+      {mergeModalOpen && (
+        <div className="fixed inset-0 z-[2100] bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl border border-[#ddebe2] max-w-xl w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-[#ddebe2] pb-3">
+              <div className="flex items-center gap-2">
+                <Repeat2 size={20} className="text-[#0B5D2A]" />
+                <h3 className="text-base font-bold text-[#17231b] font-display">
+                  Merge Duplicate Civic Problems
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMergeModalOpen(false)}
+                className="p-1 rounded-lg text-[#66736b] hover:bg-slate-100"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="bg-[#eaf7ef] border border-[#0B5D2A]/20 rounded-2xl p-3.5 text-xs text-[#0B5D2A] space-y-1">
+              <p className="font-bold">Merging Policy &amp; Preserved Data:</p>
+              <ul className="list-disc pl-4 space-y-0.5 text-[11px] text-[#17231b]">
+                <li>All citizen reports and private evidence from the duplicate will be linked to the primary canonical problem.</li>
+                <li>All community reposts/supports will be transferred to the canonical problem, raising its priority.</li>
+                <li>The duplicate problem will be marked as merged and hidden from independent public listings.</li>
+                <li>Direct visits to the duplicate problem's URL will automatically redirect to the primary problem.</li>
+                <li>An official record is logged in the platform audit trail.</li>
+              </ul>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block font-bold text-[#17231b] mb-1">
+                  1. Primary / Canonical Problem (To Keep &amp; Consolidate Under)
+                </label>
+                <select
+                  value={mergeCanonicalId}
+                  onChange={(e) => setMergeCanonicalId(e.target.value)}
+                  className="w-full p-2.5 rounded-xl border border-[#ddebe2] bg-[#f6fbf8] text-[#17231b] focus:outline-none focus:border-[#168a45]"
+                >
+                  <option value="">-- Select Canonical Problem --</option>
+                  {items
+                    .filter((i) => !i.rejection_reason && i.challenge_id !== mergeDuplicateId)
+                    .map((i) => (
+                      <option key={i.challenge_id} value={i.challenge_id}>
+                        {i.public_id} - {i.title} ({i.district})
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-[#17231b] mb-1">
+                  2. Duplicate Problem (To Merge Into Canonical)
+                </label>
+                <select
+                  value={mergeDuplicateId}
+                  onChange={(e) => setMergeDuplicateId(e.target.value)}
+                  className="w-full p-2.5 rounded-xl border border-[#ddebe2] bg-[#f6fbf8] text-[#17231b] focus:outline-none focus:border-[#168a45]"
+                >
+                  <option value="">-- Select Duplicate Problem --</option>
+                  {items
+                    .filter((i) => !i.rejection_reason && i.challenge_id !== mergeCanonicalId)
+                    .map((i) => (
+                      <option key={i.challenge_id} value={i.challenge_id}>
+                        {i.public_id} - {i.title} ({i.district})
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-[#17231b] mb-1">
+                  3. Official Merge Reason / Note (Audit Trail)
+                </label>
+                <textarea
+                  rows={3}
+                  value={mergeReason}
+                  onChange={(e) => setMergeReason(e.target.value)}
+                  placeholder="Explain why these problems represent the same underlying civic issue (e.g. identical location, overlapping infrastructure defect)..."
+                  className="w-full p-3 rounded-xl border border-[#ddebe2] bg-[#f6fbf8] text-[#17231b] focus:outline-none focus:border-[#168a45]"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-[#ddebe2] pt-3">
+              <button
+                type="button"
+                onClick={() => setMergeModalOpen(false)}
+                className="px-4 py-2 rounded-xl border border-[#ddebe2] text-[#66736b] text-xs font-semibold hover:bg-[#f6fbf8]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={merging || !mergeCanonicalId || !mergeDuplicateId}
+                onClick={() => void handleMergeProblems()}
+                className="px-4 py-2 rounded-xl bg-[#0B5D2A] disabled:opacity-50 text-white text-xs font-bold hover:bg-[#168a45] transition shadow-xs"
+              >
+                {merging ? "Merging Problems..." : "Confirm & Execute Merge"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -9973,7 +10228,7 @@ function GovernmentPilotApprovals({
     if (error) {
       flash(`Could not load pilots: ${error.message}`);
     } else {
-      setPilots((data ?? []) as GovernmentPilotRecord[]);
+      setPilots((data ?? []) as unknown as GovernmentPilotRecord[]);
     }
   };
 
@@ -10010,8 +10265,8 @@ function GovernmentPilotApprovals({
       decision === "approved"
         ? `Pilot "${pilot.title}" has been officially approved for field deployment.`
         : decision === "verified"
-        ? `Pilot "${pilot.title}" results verified. Project is ready for adoption and scaling.`
-        : `Modifications requested for pilot "${pilot.title}".`,
+          ? `Pilot "${pilot.title}" results verified. Project is ready for adoption and scaling.`
+          : `Modifications requested for pilot "${pilot.title}".`,
     );
     setEditingPilotId(null);
     await loadPilots();
@@ -10061,15 +10316,14 @@ function GovernmentPilotApprovals({
                       </span>
                     )}
                     <span
-                      className={`rounded-full px-2.5 py-0.5 text-xs font-bold capitalize ${
-                        pilot.status === "approved"
-                          ? "bg-emerald-500/10 text-emerald-600"
-                          : pilot.status === "running"
+                      className={`rounded-full px-2.5 py-0.5 text-xs font-bold capitalize ${pilot.status === "approved"
+                        ? "bg-emerald-500/10 text-emerald-600"
+                        : pilot.status === "running"
                           ? "bg-blue-500/10 text-blue-600"
                           : pilot.status === "verified"
-                          ? "bg-purple-500/10 text-purple-600"
-                          : "bg-amber-500/10 text-amber-600"
-                      }`}
+                            ? "bg-purple-500/10 text-purple-600"
+                            : "bg-amber-500/10 text-amber-600"
+                        }`}
                     >
                       Status: {pilot.status}
                     </span>
@@ -10685,33 +10939,33 @@ function AdminDataSection({
   const latestRankings = Array.from(new Set(rankings.map((row) => row.challenge_id)))
     .filter((challengeId) => challenge(challengeId)?.stage !== "impact")
     .flatMap(
-    (challengeId) => {
-      const activeAssignment = assignments
-        .filter(
-          (assignment) =>
-            assignment.challenge_id === challengeId &&
-            !["completed", "verified", "unable_to_resolve"].includes(assignment.status),
-        )
-        .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
-      const candidates = rankings.filter((row) => row.challenge_id === challengeId);
-      // Follow the selected organization of the live assignment. This keeps the display on the
-      // reassignment snapshot instead of incorrectly showing the original failed assignment.
-      const selected = candidates
-        .filter(
-          (row) =>
-            row.is_selected &&
-            (!activeAssignment || row.organization_id === activeAssignment.organization_id),
-        )
-        .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
-      const snapshotAt =
-        selected?.created_at ??
-        candidates.reduce(
-          (latest, row) => (row.created_at > latest ? row.created_at : latest),
-          "",
-        );
-      return candidates.filter((row) => row.created_at === snapshotAt);
-    },
-  );
+      (challengeId) => {
+        const activeAssignment = assignments
+          .filter(
+            (assignment) =>
+              assignment.challenge_id === challengeId &&
+              !["completed", "verified", "unable_to_resolve"].includes(assignment.status),
+          )
+          .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+        const candidates = rankings.filter((row) => row.challenge_id === challengeId);
+        // Follow the selected organization of the live assignment. This keeps the display on the
+        // reassignment snapshot instead of incorrectly showing the original failed assignment.
+        const selected = candidates
+          .filter(
+            (row) =>
+              row.is_selected &&
+              (!activeAssignment || row.organization_id === activeAssignment.organization_id),
+          )
+          .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+        const snapshotAt =
+          selected?.created_at ??
+          candidates.reduce(
+            (latest, row) => (row.created_at > latest ? row.created_at : latest),
+            "",
+          );
+        return candidates.filter((row) => row.created_at === snapshotAt);
+      },
+    );
   const saveWeights = async () => {
     if (!supabase) return;
     const total = Object.values(weights).reduce((sum, value) => sum + Number(value || 0), 0);
@@ -10775,13 +11029,10 @@ function AdminDataSection({
         </div>
       </section>
     );
-  if (section === "Skilled Participants" || section === "Volunteers") {
+  if (section === "Skilled Participants") {
     const rows = members.filter((member) => {
       const owner = partner(member.organization_id);
       return (
-        (isVolunteerView
-          ? owner?.organization_type === "NGO"
-          : owner?.organization_type !== "NGO") &&
         matches(`${member.name} ${member.skills.join(" ")} ${owner?.name ?? ""}`)
       );
     });
@@ -10796,7 +11047,7 @@ function AdminDataSection({
             <thead className="bg-surface text-xs text-muted-foreground">
               <tr>
                 <th className="p-4">NAME</th>
-                <th className="p-4">{isVolunteerView ? "NGO" : "ORGANIZATION"}</th>
+                <th className="p-4">ORGANIZATION</th>
                 <th className="p-4">SKILL / EXPERTISE</th>
                 <th className="p-4">AVAILABILITY</th>
                 <th className="p-4">CURRENT TASK</th>
@@ -11040,10 +11291,8 @@ function AdminAnalytics({
   const partnerFor = (id: string) => partners.find((partner) => partner.id === id);
   const challengeFor = (id: string) => tasks.find((task) => task.id === id);
   const solved = assignments.filter((item) => ["completed", "verified"].includes(item.status));
-  const organizationAssignments = assignments.filter((item) => partnerFor(item.organization_id)?.organization_type !== "NGO");
-  const ngoAssignments = assignments.filter((item) => partnerFor(item.organization_id)?.organization_type === "NGO");
-  const organizationSolved = solved.filter((item) => partnerFor(item.organization_id)?.organization_type !== "NGO").length;
-  const ngoSolved = solved.filter((item) => partnerFor(item.organization_id)?.organization_type === "NGO").length;
+  const organizationAssignments = assignments;
+  const organizationSolved = solved.length;
   const inProgress = assignments.filter((item) => ["accepted", "in_progress"].includes(item.status)).length;
   const couldNotSolve = assignments.filter((item) => item.status === "unable_to_resolve").length;
   const aggregate = (key: (assignment: AdminAssignment) => string) => {
@@ -11062,10 +11311,10 @@ function AdminAnalytics({
   }
   const categoryData = aggregate((item) => challengeFor(item.challenge_id)?.domain || "Uncategorised");
   const districtData = aggregate((item) => challengeFor(item.challenge_id)?.district || "Unspecified");
-  const maximum = Math.max(organizationSolved, ngoSolved, ...categoryData.map((item) => item.value), ...districtData.map((item) => item.value), 1);
+  const maximum = Math.max(organizationSolved, ...categoryData.map((item) => item.value), ...districtData.map((item) => item.value), 1);
   const trendMaximum = Math.max(...monthLabels.map((month) => month.value), 1);
   const HorizontalChart = ({ title, data }: { title: string; data: { label: string; value: number }[] }) => <section className="card-surface p-5"><h3 className="font-bold">{title}</h3><div className="mt-5 space-y-3">{data.length ? data.map((item) => <div key={item.label}><div className="mb-1 flex justify-between gap-3 text-sm"><span className="truncate">{item.label}</span><b>{item.value}</b></div><div className="h-3 overflow-hidden rounded-full bg-surface"><div className="h-full rounded-full bg-primary" style={{ width: `${(item.value / maximum) * 100}%` }} /></div></div>) : <p className="text-sm text-muted-foreground">No solved problems recorded yet.</p>}</div></section>;
-  return <><div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><DashboardStat label="Problems solved by organizations" value={organizationSolved} icon={<Building2 size={18} />} /><DashboardStat label="Problems solved by NGOs" value={ngoSolved} icon={<ShieldCheck size={18} />} /><DashboardStat label="Total problems solved" value={solved.length} icon={<CheckCircle2 size={18} />} /><DashboardStat label="Handled by organizations" value={organizationAssignments.length} icon={<ClipboardCheck size={18} />} /><DashboardStat label="Handled by NGOs" value={ngoAssignments.length} icon={<ClipboardCheck size={18} />} /><DashboardStat label="Currently being worked on" value={inProgress} icon={<Activity size={18} />} /><DashboardStat label="Could not be solved" value={couldNotSolve} icon={<XCircle size={18} />} /><DashboardStat label="Reassigned problems" value={transfers.length} icon={<Repeat2 size={18} />} /></div><div className="mt-5 grid gap-5 lg:grid-cols-2"><section className="card-surface p-5"><h3 className="font-bold">Organization vs NGO solved problems</h3><p className="mt-1 text-sm text-muted-foreground">Completed assignments, grouped by the assigned partner type.</p><div className="mt-5 space-y-4">{[{ label: "Organizations", value: organizationSolved, color: "bg-primary" }, { label: "NGOs", value: ngoSolved, color: "bg-accent" }].map((item) => <div key={item.label}><div className="mb-1 flex justify-between text-sm"><span>{item.label}</span><b>{item.value}</b></div><div className="h-5 overflow-hidden rounded-full bg-surface"><div className={`h-full rounded-full ${item.color}`} style={{ width: `${(item.value / maximum) * 100}%` }} /></div></div>)}</div></section><section className="card-surface p-5"><h3 className="font-bold">Monthly problems solved</h3><p className="mt-1 text-sm text-muted-foreground">Last six months, based on each assignment's resolution date.</p><div className="mt-5 flex h-38 items-end justify-between gap-2">{monthLabels.map((month) => <div key={month.key} className="flex h-full min-w-0 flex-1 flex-col justify-end text-center"><b className="mb-1 text-xs">{month.value}</b><div className="min-h-1 rounded-t bg-primary" style={{ height: `${Math.max(4, (month.value / trendMaximum) * 100)}%` }} /><span className="mt-2 text-xs text-muted-foreground">{month.label}</span></div>)}</div></section><HorizontalChart title="Category-wise problems solved" data={categoryData} /><HorizontalChart title="District-wise problems solved" data={districtData} /></div></>;
+  return <><div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><DashboardStat label="Total problems solved" value={organizationSolved} icon={<CheckCircle2 size={18} />} /><DashboardStat label="Handled by organizations" value={organizationAssignments.length} icon={<ClipboardCheck size={18} />} /><DashboardStat label="Currently being worked on" value={inProgress} icon={<Activity size={18} />} /><DashboardStat label="Could not be solved" value={couldNotSolve} icon={<XCircle size={18} />} /><DashboardStat label="Reassigned problems" value={transfers.length} icon={<Repeat2 size={18} />} /></div><div className="mt-5 grid gap-5 lg:grid-cols-2"><section className="card-surface p-5"><h3 className="font-bold">Monthly problems solved</h3><p className="mt-1 text-sm text-muted-foreground">Last six months, based on each assignment's resolution date.</p><div className="mt-5 flex h-38 items-end justify-between gap-2">{monthLabels.map((month) => <div key={month.key} className="flex h-full min-w-0 flex-1 flex-col justify-end text-center"><b className="mb-1 text-xs">{month.value}</b><div className="min-h-1 rounded-t bg-primary" style={{ height: `${Math.max(4, (month.value / trendMaximum) * 100)}%` }} /><span className="mt-2 text-xs text-muted-foreground">{month.label}</span></div>)}</div></section><HorizontalChart title="Category-wise problems solved" data={categoryData} /><HorizontalChart title="District-wise problems solved" data={districtData} /></div></>;
 }
 
 function SupportFunding({ flash }: { flash: (message: string) => void }) {
@@ -11093,7 +11342,7 @@ function SupportFunding({ flash }: { flash: (message: string) => void }) {
     const { error } = await supabase!.from("support_information").delete().eq("id", id);
     if (error) flash(error.message); else { await load(); flash("Support listing deleted."); }
   };
-  return <section className="mt-7"><h2 className="text-2xl font-bold">Support & Funding</h2><p className="mt-1 text-sm text-muted-foreground">Manage government schemes, CSR opportunities, NGO programs, emergency resources, and official contacts. Pending entries are never presented as official schemes.</p><div className="mt-5 grid gap-3 rounded-xl border border-border bg-card p-4 sm:grid-cols-2"><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Program or scheme title" className="rounded-lg border border-input p-2 text-sm" /><select value={type} onChange={(e) => setType(e.target.value)} className="rounded-lg border border-input bg-card p-2 text-sm"><option value="government_scheme">Government scheme</option><option value="government_assistance">Government assistance</option><option value="csr_funding">CSR funding</option><option value="ngo_program">NGO support program</option><option value="department">Relevant department</option><option value="emergency_resource">Emergency resource</option></select><input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Official application link" className="rounded-lg border border-input p-2 text-sm" /><input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Contact information" className="rounded-lg border border-input p-2 text-sm" /><button onClick={() => void add()} className="rounded-lg bg-primary px-4 py-2 text-sm font-bold text-primary-foreground">Add pending listing</button></div><div className="mt-5 space-y-3">{items.map((item) => <article key={item.id} className="card-surface flex flex-wrap items-center justify-between gap-3 p-4"><div><b>{item.title}</b><p className="mt-1 text-xs text-muted-foreground">{item.support_type.replaceAll("_", " ")} | {item.official_url || item.contact_information || "No link/contact supplied"}</p></div><div className="flex items-center gap-2"><span className={`rounded-full px-2 py-1 text-xs font-bold ${item.verification_status === "verified" ? "bg-[#EAF7EF] text-[#0B5D2A]" : "bg-[#F6FBF8] text-[#0B5D2A]"}`}>{item.verification_status}</span><button onClick={() => void updateStatus(item.id, item.verification_status === "verified" ? "pending" : "verified")} className="text-sm font-bold text-primary">{item.verification_status === "verified" ? "Mark pending" : "Verify"}</button><button onClick={() => void remove(item.id)} className="text-sm font-bold text-destructive">Delete</button></div></article>)}{!items.length && <p className="rounded-lg bg-surface p-5 text-sm text-muted-foreground">No support listings yet.</p>}</div></section>;
+  return <section className="mt-7"><h2 className="text-2xl font-bold">Support & Funding</h2><p className="mt-1 text-sm text-muted-foreground">Manage government schemes, CSR opportunities, civic support programs, emergency resources, and official contacts. Pending entries are never presented as official schemes.</p><div className="mt-5 grid gap-3 rounded-xl border border-border bg-card p-4 sm:grid-cols-2"><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Program or scheme title" className="rounded-lg border border-input p-2 text-sm" /><select value={type} onChange={(e) => setType(e.target.value)} className="rounded-lg border border-input bg-card p-2 text-sm"><option value="government_scheme">Government scheme</option><option value="government_assistance">Government assistance</option><option value="csr_funding">CSR funding</option><option value="department">Relevant department</option><option value="emergency_resource">Emergency resource</option></select><input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Official application link" className="rounded-lg border border-input p-2 text-sm" /><input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Contact information" className="rounded-lg border border-input p-2 text-sm" /><button onClick={() => void add()} className="rounded-lg bg-primary px-4 py-2 text-sm font-bold text-primary-foreground">Add pending listing</button></div><div className="mt-5 space-y-3">{items.map((item) => <article key={item.id} className="card-surface flex flex-wrap items-center justify-between gap-3 p-4"><div><b>{item.title}</b><p className="mt-1 text-xs text-muted-foreground">{item.support_type.replaceAll("_", " ")} | {item.official_url || item.contact_information || "No link/contact supplied"}</p></div><div className="flex items-center gap-2"><span className={`rounded-full px-2 py-1 text-xs font-bold ${item.verification_status === "verified" ? "bg-[#EAF7EF] text-[#0B5D2A]" : "bg-[#F6FBF8] text-[#0B5D2A]"}`}>{item.verification_status}</span><button onClick={() => void updateStatus(item.id, item.verification_status === "verified" ? "pending" : "verified")} className="text-sm font-bold text-primary">{item.verification_status === "verified" ? "Mark pending" : "Verify"}</button><button onClick={() => void remove(item.id)} className="text-sm font-bold text-destructive">Delete</button></div></article>)}{!items.length && <p className="rounded-lg bg-surface p-5 text-sm text-muted-foreground">No support listings yet.</p>}</div></section>;
 }
 
 function Admin({ flash, refresh }: { flash: (x: string) => void; refresh: (q?: string) => void }) {

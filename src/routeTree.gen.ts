@@ -10,33 +10,77 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as PriDashboardRouteImport } from './routes/pri/dashboard'
+import { Route as UniversityDashboardRouteImport } from './routes/university/dashboard'
+import { Route as GovernmentDepartmentDashboardRouteImport } from './routes/government/department/dashboard'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PriDashboardRoute = PriDashboardRouteImport.update({
+  id: '/pri/dashboard',
+  path: '/pri/dashboard',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const UniversityDashboardRoute = UniversityDashboardRouteImport.update({
+  id: '/university/dashboard',
+  path: '/university/dashboard',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const GovernmentDepartmentDashboardRoute =
+  GovernmentDepartmentDashboardRouteImport.update({
+    id: '/government/department/dashboard',
+    path: '/government/department/dashboard',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/pri/dashboard': typeof PriDashboardRoute
+  '/university/dashboard': typeof UniversityDashboardRoute
+  '/government/department/dashboard': typeof GovernmentDepartmentDashboardRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/pri/dashboard': typeof PriDashboardRoute
+  '/university/dashboard': typeof UniversityDashboardRoute
+  '/government/department/dashboard': typeof GovernmentDepartmentDashboardRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/pri/dashboard': typeof PriDashboardRoute
+  '/university/dashboard': typeof UniversityDashboardRoute
+  '/government/department/dashboard': typeof GovernmentDepartmentDashboardRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths:
+    | '/'
+    | '/pri/dashboard'
+    | '/university/dashboard'
+    | '/government/department/dashboard'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to:
+    | '/'
+    | '/pri/dashboard'
+    | '/university/dashboard'
+    | '/government/department/dashboard'
+  id:
+    | '__root__'
+    | '/'
+    | '/pri/dashboard'
+    | '/university/dashboard'
+    | '/government/department/dashboard'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  PriDashboardRoute: typeof PriDashboardRoute
+  UniversityDashboardRoute: typeof UniversityDashboardRoute
+  GovernmentDepartmentDashboardRoute: typeof GovernmentDepartmentDashboardRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -48,11 +92,35 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/pri/dashboard': {
+      id: '/pri/dashboard'
+      path: '/pri/dashboard'
+      fullPath: '/pri/dashboard'
+      preLoaderRoute: typeof PriDashboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/university/dashboard': {
+      id: '/university/dashboard'
+      path: '/university/dashboard'
+      fullPath: '/university/dashboard'
+      preLoaderRoute: typeof UniversityDashboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/government/department/dashboard': {
+      id: '/government/department/dashboard'
+      path: '/government/department/dashboard'
+      fullPath: '/government/department/dashboard'
+      preLoaderRoute: typeof GovernmentDepartmentDashboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  PriDashboardRoute: PriDashboardRoute,
+  UniversityDashboardRoute: UniversityDashboardRoute,
+  GovernmentDepartmentDashboardRoute: GovernmentDepartmentDashboardRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

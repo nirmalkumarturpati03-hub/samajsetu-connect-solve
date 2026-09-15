@@ -1,0 +1,425 @@
+{
+  "name": "CivicAura — Email OTP Verification Delivery",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "civicaura-otp-verification",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": false
+        }
+      },
+      "id": "node-webhook-trigger",
+      "name": "CivicAura OTP Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        340
+      ],
+      "webhookId": "civicaura-otp-verification-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Step 1: Validate Webhook Secret\nconst headers = $input.item.json.headers || {};\nconst authHeader = headers['authorization'] || headers['Authorization'] || '';\nconst configuredSecret = $env.N8N_WEBHOOK_SECRET || 'civicaura_secure_webhook_secret_2026';\n\nlet isAuthorized = false;\nif (authHeader.startsWith('Bearer ')) {\n  const token = authHeader.substring(7).trim();\n  if (token === configuredSecret) {\n    isAuthorized = true;\n  }\n}\n\nreturn {\n  json: {\n    ...($input.item.json.body || {}),\n    _is_authorized: isAuthorized\n  }\n};"
+      },
+      "id": "node-auth-check",
+      "name": "Validate Authorization Header",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json._is_authorized }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "node-if-authorized",
+      "name": "If Authorized?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        700,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": false,\n  \"error\": \"UNAUTHORIZED\",\n  \"message\": \"Invalid or missing Bearer token\"\n}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "node-resp-401",
+      "name": "Respond 401 Unauthorized",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        940,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Step 2: Validate Payload Structure\nconst payload = $input.item.json;\n\nconst email = (payload.email || '').trim().toLowerCase();\nconst otp = String(payload.otp || '').trim();\nconst purpose = (payload.purpose || '').trim();\nconst requestId = (payload.request_id || '').trim();\nconst expiresAt = (payload.expires_at || '').trim();\nconst rawName = (payload.name || 'Civic Official').trim();\n\n// RFC compliant email regex\nconst emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$/;\nconst isEmailValid = emailRegex.test(email);\n\n// Exactly 6 numeric digits\nconst isOtpValid = /^\\d{6}$/.test(otp);\n\n// Purpose must strictly equal registration_verification\nconst isPurposeValid = purpose === 'registration_verification';\n\n// Request ID non-empty\nconst isRequestIdValid = requestId.length > 0;\n\n// Valid ISO timestamp\nconst parsedExpiry = new Date(expiresAt);\nconst isExpiryValid = !isNaN(parsedExpiry.getTime());\n\n// Sanitize name against HTML injection\nconst sanitizedName = rawName\n  .replace(/&/g, '&amp;')\n  .replace(/</g, '&lt;')\n  .replace(/>/g, '&gt;')\n  .replace(/\"/g, '&quot;')\n  .replace(/'/g, '&#039;');\n\nconst isValid = isEmailValid && isOtpValid && isPurposeValid && isRequestIdValid && isExpiryValid;\n\nreturn {\n  json: {\n    email,\n    otp,\n    purpose,\n    request_id: requestId,\n    expires_at: expiresAt,\n    name: sanitizedName,\n    _is_valid: isValid,\n    _validation_error: !isValid ? 'INVALID_PAYLOAD' : null\n  }\n};"
+      },
+      "id": "node-payload-check",
+      "name": "Validate Input Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        940,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json._is_valid }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "node-if-payload-valid",
+      "name": "If Payload Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1180,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": false,\n  \"error\": \"INVALID_PAYLOAD\",\n  \"message\": \"Malformed request. Required: valid email, 6-digit numeric OTP, registration_verification purpose, request_id, and ISO expires_at.\"\n}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "node-resp-400-invalid",
+      "name": "Respond 400 Invalid Payload",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1420,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Step 3: Defense-in-Depth Expiry Check (60-second limit)\nconst expiresAtTime = new Date($input.item.json.expires_at).getTime();\nconst currentTime = Date.now();\nconst isExpired = currentTime >= expiresAtTime;\n\nreturn {\n  json: {\n    ...$input.item.json,\n    _is_expired: isExpired\n  }\n};"
+      },
+      "id": "node-expiry-check",
+      "name": "Check Expiry (Defense-in-Depth)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1420,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json._is_expired }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "node-if-expired",
+      "name": "If Expired?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1660,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": false,\n  \"error\": \"OTP_EXPIRED\",\n  \"message\": \"This verification code has expired (validity is 60 seconds). Request a new OTP.\"\n}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "node-resp-400-expired",
+      "name": "Respond 400 OTP Expired",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1900,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Step 4: Prepare Samaj Setu Branded Responsive Email (HTML & Text)\nconst item = $input.item.json;\nconst name = item.name || 'Citizen / Official';\nconst otp = item.otp;\nconst requestId = item.request_id;\nconst currentYear = new Date().getFullYear();\n\n// Split OTP digits for accessible rendering\nconst formattedOtp = otp.split('').join(' ');\n\nconst htmlBody = `\n<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"UTF-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n  <title>Samaj Setu Verification Code</title>\n  <style>\n    body { margin: 0; padding: 0; background-color: #f6fbf8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #17231b; -webkit-font-smoothing: antialiased; }\n    .wrapper { width: 100%; table-layout: fixed; background-color: #f6fbf8; padding: 40px 0; }\n    .container { max-width: 580px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px -5px rgba(11, 93, 42, 0.1), 0 8px 10px -6px rgba(11, 93, 42, 0.05); border: 1px solid #ddebe2; }\n    .header { background: linear-gradient(135deg, #0B5D2A 0%, #168a45 50%, #083c1b 100%); padding: 36px 32px; text-align: center; color: #ffffff; }\n    .logo-badge { display: inline-flex; align-items: center; justify-content: center; width: 54px; height: 54px; border-radius: 14px; background: rgba(255, 255, 255, 0.15); border: 1px solid rgba(255, 255, 255, 0.25); margin-bottom: 12px; font-size: 26px; }\n    .brand-title { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.02em; color: #ffffff; }\n    .brand-sub { margin: 4px 0 0 0; font-size: 12px; font-weight: 600; color: #eaf7ef; text-transform: uppercase; letter-spacing: 0.08em; }\n    .content { padding: 36px 32px 28px 32px; }\n    .greeting { font-size: 17px; font-weight: 600; color: #0B5D2A; margin: 0 0 14px 0; }\n    .lead-text { font-size: 15px; line-height: 1.6; color: #475569; margin: 0 0 26px 0; }\n    .otp-card { background: #f6fbf8; border: 2px dashed #168a45; border-radius: 12px; padding: 24px 20px; text-align: center; margin: 0 0 26px 0; }\n    .otp-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: #0B5D2A; margin: 0 0 8px 0; }\n    .otp-digits { font-family: 'Courier New', Courier, monospace; font-size: 38px; font-weight: 800; letter-spacing: 0.25em; color: #0B5D2A; margin: 0; }\n    .expiry-badge { display: inline-block; background-color: #fee2e2; border: 1px solid #fca5a5; color: #991b1b; padding: 6px 14px; border-radius: 9999px; font-size: 12px; font-weight: 700; margin-top: 14px; }\n    .advisory-box { background-color: #eaf7ef; border-left: 4px solid #168a45; border-radius: 0 8px 8px 0; padding: 14px 18px; margin: 0 0 28px 0; }\n    .advisory-title { font-size: 13px; font-weight: 700; color: #0B5D2A; margin: 0 0 4px 0; }\n    .advisory-item { font-size: 12px; line-height: 1.5; color: #2d4a36; margin: 2px 0; }\n    .footer { background-color: #f6fbf8; border-top: 1px solid #ddebe2; padding: 24px 32px; text-align: center; }\n    .footer-text { font-size: 12px; color: #66736b; line-height: 1.5; margin: 0 0 6px 0; }\n    .request-meta { font-size: 11px; font-family: monospace; color: #88998e; margin: 0; }\n  </style>\n</head>\n<body>\n  <div class=\"wrapper\">\n    <div class=\"container\">\n      <div class=\"header\">\n        <div class=\"logo-badge\">🏛️</div>\n        <h1 class=\"brand-title\">Samaj Setu</h1>\n        <p class=\"brand-sub\">Samaj Setu — SIH26043 | Community Innovation Platform</p>\n      </div>\n      <div class=\"content\">\n        <p class=\"greeting\">Hello ${name},</p>\n        <p class=\"lead-text\">\n          You are registering your official account on Samaj Setu. Please use the One-Time Password (OTP) below to verify your email address.\n        </p>\n        <div class=\"otp-card\">\n          <div class=\"otp-label\">Your Verification Code</div>\n          <div class=\"otp-digits\">${formattedOtp}</div>\n          <div class=\"expiry-badge\">⏱️ Strictly Valid for 60 Seconds</div>\n        </div>\n        <div class=\"advisory-box\">\n          <div class=\"advisory-title\">Important Security Instructions</div>\n          <p class=\"advisory-item\">• Do not disclose this code to anyone, including Samaj Setu support.</p>\n          <p class=\"advisory-item\">• Samaj Setu will never ask for your verification code via phone or chat.</p>\n          <p class=\"advisory-item\">• If you did not initiate this registration request, please ignore this email.</p>\n        </div>\n      </div>\n      <div class=\"footer\">\n        <p class=\"footer-text\">This is an automated system notification from Samaj Setu — SIH26043.</p>\n        <p class=\"request-meta\">Reference ID: ${requestId} • ${currentYear}</p>\n      </div>\n    </div>\n  </div>\n</body>\n</html>\n`;\n\nconst textBody = `Hello ${name},\n\nWelcome to Samaj Setu — SIH26043.\n\nYour One-Time Password (OTP) for email verification is:\n\n${otp}\n\nIMPORTANT: This OTP is strictly valid for 60 SECONDS (1 minute).\n\nSecurity Guidelines:\n- Do not share this OTP with anyone.\n- Samaj Setu personnel will never request your OTP.\n- If you did not request this verification, please safely ignore this email.\n\nReference ID: ${requestId}\nSamaj Setu — SIH26043 Community Innovation Platform`;\n\nreturn {\n  json: {\n    email: item.email,\n    request_id: requestId,\n    subject: 'Samaj Setu — Your Email Verification OTP',\n    html_body: htmlBody,\n    text_body: textBody\n  }\n};"
+      },
+      "id": "node-prepare-email",
+      "name": "Prepare CivicAura Branded Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1900,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.SENDER_EMAIL || 'no-reply@civicaura.gov.in' }}",
+        "toEmail": "={{ $json.email }}",
+        "subject": "={{ $json.subject }}",
+        "html": "={{ $json.html_body }}",
+        "text": "={{ $json.text_body }}",
+        "options": {}
+      },
+      "id": "node-send-email-smtp",
+      "name": "Send OTP Email (SMTP Provider)",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        2140,
+        340
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "civicaura-smtp-credential",
+          "name": "CivicAura Verified SMTP"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ !!$json.error }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "node-if-send-error",
+      "name": "Did Send Fail?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2380,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": false,\n  \"request_id\": \"{{ $json.request_id }}\",\n  \"error\": \"EMAIL_DELIVERY_FAILED\",\n  \"message\": \"Unable to deliver verification email. Please retry or contact system administrator.\"\n}",
+        "options": {
+          "responseCode": 500
+        }
+      },
+      "id": "node-resp-500-delivery-failed",
+      "name": "Respond 500 Delivery Failed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2620,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"request_id\": \"{{ $json.request_id }}\"\n}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "node-resp-200-success",
+      "name": "Respond 200 Minimal Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2620,
+        460
+      ]
+    }
+  ],
+  "connections": {
+    "CivicAura OTP Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Authorization Header",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Authorization Header": {
+      "main": [
+        [
+          {
+            "node": "If Authorized?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Authorized?": {
+      "main": [
+        [
+          {
+            "node": "Validate Input Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 401 Unauthorized",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input Payload": {
+      "main": [
+        [
+          {
+            "node": "If Payload Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Payload Valid?": {
+      "main": [
+        [
+          {
+            "node": "Check Expiry (Defense-in-Depth)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 400 Invalid Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Expiry (Defense-in-Depth)": {
+      "main": [
+        [
+          {
+            "node": "If Expired?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Expired?": {
+      "main": [
+        [
+          {
+            "node": "Respond 400 OTP Expired",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare CivicAura Branded Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare CivicAura Branded Email": {
+      "main": [
+        [
+          {
+            "node": "Send OTP Email (SMTP Provider)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send OTP Email (SMTP Provider)": {
+      "main": [
+        [
+          {
+            "node": "Did Send Fail?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Did Send Fail?": {
+      "main": [
+        [
+          {
+            "node": "Respond 500 Delivery Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 200 Minimal Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false,
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "executionTimeout": 30
+  },
+  "tags": [
+    {
+      "name": "CivicAura"
+    },
+    {
+      "name": "Email Verification"
+    },
+    {
+      "name": "Security"
+    }
+  ]
+}
